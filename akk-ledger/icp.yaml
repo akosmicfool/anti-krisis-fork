@@ -1,0 +1,9 @@
+canisters:
+  - name: akk_ledger
+    build:
+      steps:
+        - type: pre-built
+          url: https://github.com/dfinity/ic/releases/download/ledger-suite-icrc-2026-03-09/ic-icrc1-ledger.wasm.gz
+    init_args:
+      path: akk_ledger_init.args
+      format: candid
