@@ -1,0 +1,268 @@
+import { 
+  AuditAction,
+  ClaimStatus,
+  MinerStatus,
+  ProfileError,
+  TribeError,
+ } from "../backend";
+import type { 
+  AllowlistedToken,
+  AuditLogEntry,
+  BlockRecord,
+  ClaimRecord,
+  MinerView,
+  Profile,
+  ProfileInput,
+  TransformationInput,
+  TransformationOutput,
+  Tribe,
+  backendInterface,
+ } from "../backend";
+import { Principal } from "@icp-sdk/core/principal";
+
+const samplePrincipal = Principal.fromText("aaaaa-aa");
+
+const sampleTokens: AllowlistedToken[] = [
+  {
+    tokenAddress: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+    chain: "ethereum",
+    name: "USD Coin",
+    symbol: "USDC",
+    decimals: BigInt(6),
+    priceUSD: 1.0,
+  },
+  {
+    tokenAddress: "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+    chain: "ethereum",
+    name: "Tether USD",
+    symbol: "USDT",
+    decimals: BigInt(6),
+    priceUSD: 1.0,
+  },
+  {
+    tokenAddress: "0x6B175474E89094C44Da98b954EedeAC495271d0F",
+    chain: "ethereum",
+    name: "Dai Stablecoin",
+    symbol: "DAI",
+    decimals: BigInt(18),
+    priceUSD: 1.0,
+  },
+];
+
+const sampleClaims: ClaimRecord[] = [
+  {
+    txHash: "0xabc123def456789012345678901234567890abcdef0123456789abcdef012345",
+    chain: "ethereum",
+    tokenAddress: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+    tokenSymbol: "USDC",
+    tokenDecimals: BigInt(6),
+    amountBurned: 500.0,
+    usdValue: 500.0,
+    gritMinted: BigInt(500_000_000_000),
+    claimant: samplePrincipal,
+    status: ClaimStatus.verified,
+    timestamp: BigInt(Date.now() * 1_000_000 - 86400_000_000_000),
+  },
+  {
+    txHash: "0xdef456abc789012345678901234567890abcdef0123456789abcdef0123456789",
+    chain: "polygon",
+    tokenAddress: "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+    tokenSymbol: "USDT",
+    tokenDecimals: BigInt(6),
+    amountBurned: 250.0,
+    usdValue: 250.0,
+    gritMinted: BigInt(250_000_000_000),
+    claimant: samplePrincipal,
+    status: ClaimStatus.pending,
+    timestamp: BigInt(Date.now() * 1_000_000 - 3600_000_000_000),
+  },
+  {
+    txHash: "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+    chain: "ethereum",
+    tokenAddress: "0x6B175474E89094C44Da98b954EedeAC495271d0F",
+    tokenSymbol: "DAI",
+    tokenDecimals: BigInt(18),
+    amountBurned: 100.0,
+    usdValue: 100.0,
+    gritMinted: BigInt(0),
+    claimant: samplePrincipal,
+    status: ClaimStatus.failed,
+    timestamp: BigInt(Date.now() * 1_000_000 - 7200_000_000_000),
+  },
+  {
+    txHash: "0xfedc9876543210fedc9876543210fedc9876543210fedc9876543210fedc9876",
+    chain: "base",
+    tokenAddress: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+    tokenSymbol: "USDC",
+    tokenDecimals: BigInt(6),
+    amountBurned: 75.0,
+    usdValue: 75.0,
+    gritMinted: BigInt(0),
+    claimant: samplePrincipal,
+    status: ClaimStatus.pendingFee,
+    timestamp: BigInt(Date.now() * 1_000_000 - 1800_000_000_000),
+  },
+];
+
+const sampleAuditLog: AuditLogEntry[] = [
+  {
+    action: AuditAction.add,
+    adminPrincipal: samplePrincipal,
+    tokenAddress: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+    chain: "ethereum",
+    timestamp: BigInt(Date.now() * 1_000_000 - 172800_000_000_000),
+  },
+  {
+    action: AuditAction.add,
+    adminPrincipal: samplePrincipal,
+    tokenAddress: "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+    chain: "ethereum",
+    timestamp: BigInt(Date.now() * 1_000_000 - 86400_000_000_000),
+  },
+];
+
+const sampleProfile: Profile = {
+  username: "CryptoMiner",
+  displayName: "Crypto Miner",
+  bio: "Mining AKK and burning GRIT since day one.",
+  location: "The Metaverse",
+  born: "1990",
+  superpowers: "Pixel art, DeFi, VRF sorcery",
+  socials: [{ name: "Twitter", url: "https://twitter.com/cryptominer" }],
+  coverImage: "",
+  profilePicture: "",
+  hasOgBadge: false,
+  playerBadgeLevel: 0n,
+  miningStreak: 0n,
+};
+
+const sampleTribes: Tribe[] = [
+  {
+    id: "tribe-alpha",
+    name: "Alpha Miners",
+    description: "The first and strongest mining tribe.",
+    ownerId: samplePrincipal,
+    createdAt: BigInt(Date.now() * 1_000_000 - 604800_000_000_000),
+    memberCount: BigInt(5),
+    photoUrl: undefined,
+    coverImageUrl: undefined,
+    cumulativeAkk: BigInt(12500),
+    cumulativeGrit: BigInt(75_000_000_000_000),
+  },
+  {
+    id: "tribe-beta",
+    name: "Beta Burners",
+    description: "We burn everything in our path.",
+    ownerId: samplePrincipal,
+    createdAt: BigInt(Date.now() * 1_000_000 - 259200_000_000_000),
+    memberCount: BigInt(3),
+    photoUrl: undefined,
+    coverImageUrl: undefined,
+    cumulativeAkk: BigInt(4200),
+    cumulativeGrit: BigInt(30_000_000_000_000),
+  },
+];
+
+export const mockBackend: backendInterface = {
+  getTokens: async () => sampleTokens,
+  getMyBalance: async () => BigInt(11_299_000_000_000),
+  getMyClaimHistory: async () => sampleClaims,
+  getAllClaimHistory: async () => sampleClaims,
+  getAllowlistAuditLog: async () => sampleAuditLog,
+  addToken: async (_token: AllowlistedToken) => undefined,
+  removeToken: async (_tokenAddress: string, _chain: string) => undefined,
+  addAdmin: async (_newAdmin: Principal) => undefined,
+  removeAdmin: async (_toRemove: Principal) => undefined,
+  getAdmins: async () => [Principal.fromText("aaaaa-aa")],
+  getFeePercent: async () => 0.69,
+  setFeePercent: async (_percent: number) => undefined,
+  initiateClaim: async (_txHash: string, _feeTxHash: string, _chain: string, _tokenAddress: string) => ({
+    __kind__: "ok" as const,
+    ok: null,
+  }),
+  transform: async (input: TransformationInput): Promise<TransformationOutput> => ({
+    status: BigInt(200),
+    body: input.response.body,
+    headers: [],
+  }),
+  transformResponse: async (input: TransformationInput): Promise<TransformationOutput> => ({
+    status: BigInt(200),
+    body: input.response.body,
+    headers: [],
+  }),
+  transformPriceResponse: async (input: TransformationInput): Promise<TransformationOutput> => ({
+    status: BigInt(200),
+    body: input.response.body,
+    headers: [],
+  }),
+  getFeeRecipient: async () => "0x000000000000000000000000000000000000dead",
+  setFeeRecipient: async (_address: string) => undefined,
+  bootstrapAdmin: async () => ({ __kind__: "ok" as const, ok: null }),
+  whoami: async () => Principal.fromText("aaaaa-aa"),
+  createMiner: async (_name: string, _gritAmount: bigint, _rate: bigint) => ({
+    __kind__: "ok" as const,
+    ok: BigInt(1),
+  }),
+  editMiner: async (
+    _minerId: bigint,
+    _nameChange: string | null,
+    _topUp: bigint | null,
+    _rateChange: bigint | null,
+    _pause: boolean | null,
+  ) => ({ __kind__: "ok" as const, ok: null }),
+  getAkkBalance: async () => BigInt(0),
+  getBlockHistory: async (_limit: bigint): Promise<BlockRecord[]> => [],
+  getCurrentBlockInfo: async () => ({
+    nextBlockIn: BigInt(690),
+    blockNumber: BigInt(1),
+    lastBlockTime: BigInt(Date.now() * 1_000_000),
+  }),
+  getMinerCreationFees: async (): Promise<Array<import("../backend").ChainFeeEntry>> => [
+    { chain: "base", feeWei: BigInt("1000000000000000") },
+    { chain: "celo", feeWei: BigInt("1000000000000000") },
+    { chain: "optimism", feeWei: BigInt("1000000000000000") },
+    { chain: "ethereum", feeWei: BigInt("1000000000000000") },
+  ],
+  getMyMiners: async (): Promise<MinerView[]> => [],
+  getGritIssuanceRate: async () => BigInt(1_000_000_000),
+  setGritIssuanceRate: async (_rate: bigint) => undefined,
+  resetAndClaimAdmin: async () => ({ __kind__: "ok" as const, ok: null }),
+  recheckPendingClaims: async () => undefined,
+  retryFeeClaim: async (
+    _txHash: string,
+    _feeTxHash: string,
+  ) => ({ __kind__: "ok" as const, ok: BigInt(500_000_000_000) }),
+  // Profile methods
+  getMyProfile: async (): Promise<Profile | null> => sampleProfile,
+  saveMyProfile: async (_input: ProfileInput) => ({
+    __kind__: "ok" as const,
+    ok: sampleProfile,
+  }),
+  getProfileByUsername: async (_username: string): Promise<Profile | null> => sampleProfile,
+  hasUsername: async () => true,
+  isUsernameAvailable: async (_username: string) => true,
+  // Tribe methods
+  getMyTribe: async (): Promise<Tribe | null> => sampleTribes[0],
+  getMyOwnedTribes: async (): Promise<Tribe[]> => sampleTribes,
+  createTribe: async (_name: string, _description: string, _photoUrl: string | null, _coverImageUrl: string | null) => ({
+    __kind__: "ok" as const,
+    ok: sampleTribes[0],
+  }),
+  editTribe: async (_tribeId: string, _name: string | null, _description: string | null, _photoUrl: string | null, _coverImageUrl: string | null) => ({
+    __kind__: "ok" as const,
+    ok: sampleTribes[0],
+  }),
+  getTribe: async (_tribeId: string): Promise<Tribe | null> => sampleTribes[0],
+  getTribeByName: async (_name: string): Promise<Tribe | null> => sampleTribes[0],
+  getTribeMembers: async (_tribeId: string): Promise<string[]> => ["aaaaa-aa"],
+  searchTribes: async (_query: string): Promise<Tribe[]> => sampleTribes,
+  joinTribe: async (_tribeId: string) => ({
+    __kind__: "ok" as const,
+    ok: sampleTribes[0],
+  }),
+  leaveTribe: async () => ({ __kind__: "ok" as const, ok: null }),
+  transferTribeOwnership: async (_tribeId: string, _newOwnerUsername: string) => ({
+    __kind__: "ok" as const,
+    ok: sampleTribes[0],
+  }),
+} as unknown as backendInterface;

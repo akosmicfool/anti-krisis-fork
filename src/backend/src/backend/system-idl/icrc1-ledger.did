@@ -1,0 +1,103 @@
+// ICRC-1/2/3 Ledger canister IDL
+// Used by the Motoko compiler (--actor-idl) to type-check inter-canister calls
+// to the AKK token ledger deployed with the NNS ICRC-1 Ledger Wasm.
+
+type Account = record {
+  owner : principal;
+  subaccount : opt blob;
+};
+
+type TransferArg = record {
+  from_subaccount : opt blob;
+  to : Account;
+  amount : nat;
+  fee : opt nat;
+  memo : opt blob;
+  created_at_time : opt nat64;
+};
+
+type TransferError = variant {
+  BadFee : record { expected_fee : nat };
+  BadBurn : record { min_burn_amount : nat };
+  InsufficientFunds : record { balance : nat };
+  TooOld;
+  CreatedInFuture : record { ledger_time : nat64 };
+  Duplicate : record { duplicate_of : nat };
+  TemporarilyUnavailable;
+  GenericError : record { error_code : nat; message : text };
+};
+
+type TransferResult = variant { Ok : nat; Err : TransferError };
+
+type ApproveArg = record {
+  from_subaccount : opt blob;
+  spender : Account;
+  amount : nat;
+  expected_allowance : opt nat;
+  expires_at : opt nat64;
+  fee : opt nat;
+  memo : opt blob;
+  created_at_time : opt nat64;
+};
+
+type ApproveError = variant {
+  BadFee : record { expected_fee : nat };
+  InsufficientFunds : record { balance : nat };
+  AllowanceChanged : record { current_allowance : nat };
+  Expired : record { ledger_time : nat64 };
+  TooOld;
+  CreatedInFuture : record { ledger_time : nat64 };
+  Duplicate : record { duplicate_of : nat };
+  TemporarilyUnavailable;
+  GenericError : record { error_code : nat; message : text };
+};
+
+type ApproveResult = variant { Ok : nat; Err : ApproveError };
+
+type TransferFromArg = record {
+  spender_subaccount : opt blob;
+  from : Account;
+  to : Account;
+  amount : nat;
+  fee : opt nat;
+  memo : opt blob;
+  created_at_time : opt nat64;
+};
+
+type TransferFromError = variant {
+  BadFee : record { expected_fee : nat };
+  BadBurn : record { min_burn_amount : nat };
+  InsufficientFunds : record { balance : nat };
+  InsufficientAllowance : record { allowance : nat };
+  TooOld;
+  CreatedInFuture : record { ledger_time : nat64 };
+  Duplicate : record { duplicate_of : nat };
+  TemporarilyUnavailable;
+  GenericError : record { error_code : nat; message : text };
+};
+
+type TransferFromResult = variant { Ok : nat; Err : TransferFromError };
+
+type Value = variant {
+  Nat : nat;
+  Int : int;
+  Text : text;
+  Blob : blob;
+};
+
+type MetadataEntry = record { text; Value };
+
+service : {
+  icrc1_transfer : (TransferArg) -> (TransferResult);
+  icrc1_balance_of : (Account) -> (nat) query;
+  icrc1_total_supply : () -> (nat) query;
+  icrc1_metadata : () -> (vec MetadataEntry) query;
+  icrc1_name : () -> (text) query;
+  icrc1_symbol : () -> (text) query;
+  icrc1_decimals : () -> (nat8) query;
+  icrc1_fee : () -> (nat) query;
+  icrc1_minting_account : () -> (opt Account) query;
+  icrc2_approve : (ApproveArg) -> (ApproveResult);
+  icrc2_transfer_from : (TransferFromArg) -> (TransferFromResult);
+  icrc2_allowance : (record { account : Account; spender : Account }) -> (record { allowance : nat; expires_at : opt nat64 }) query;
+};

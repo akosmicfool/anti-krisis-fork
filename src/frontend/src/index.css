@@ -1,0 +1,249 @@
+@import url("https://fonts.googleapis.com/css2?family=Handjet:wght@100..900&family=Tomorrow:wght@400;700&family=VT323&display=swap");
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --font-display: "VT323", monospace;
+    --font-body: "Tomorrow", sans-serif;
+    --font-mono: "Tomorrow", sans-serif;
+    --radius: 0px;
+
+    --background: 0.08 0 0;
+    --foreground: 0.93 0.005 0;
+    --card: 0.11 0.02 142;
+    --card-foreground: 0.93 0.005 0;
+    --popover: 0.1 0.02 142;
+    --popover-foreground: 0.93 0.005 0;
+
+    --primary: 0.88 0.29 142;
+    --primary-foreground: 0.04 0 0;
+
+    --secondary: 0.18 0.05 142;
+    --secondary-foreground: 0.8 0.005 0;
+    --muted: 0.14 0.04 142;
+    --muted-foreground: 0.65 0.005 0;
+
+    --accent: 0.88 0.29 142;
+    --accent-foreground: 0.04 0 0;
+
+    --destructive: 0.6 0.24 25;
+    --destructive-foreground: 0.97 0 0;
+
+    --border: 0.32 0.11 142;
+    --input: 0.09 0.02 142;
+    --ring: 0.88 0.29 142;
+
+    --chart-1: 0.88 0.29 142;
+    --chart-2: 0.6 0.24 25;
+    --chart-3: 0.8 0.18 82;
+    --chart-4: 0.72 0.15 200;
+    --chart-5: 0.65 0.2 142;
+
+    --sidebar: 0.11 0.02 142;
+    --sidebar-foreground: 0.93 0.005 0;
+    --sidebar-primary: 0.88 0.29 142;
+    --sidebar-primary-foreground: 0.04 0 0;
+    --sidebar-accent: 0.14 0.04 142;
+    --sidebar-accent-foreground: 0.8 0.005 0;
+    --sidebar-border: 0.32 0.11 142;
+    --sidebar-ring: 0.88 0.29 142;
+  }
+
+  .dark {
+    --background: 0.08 0 0;
+    --foreground: 0.93 0.005 0;
+    --card: 0.11 0.02 142;
+    --card-foreground: 0.93 0.005 0;
+    --popover: 0.1 0.02 142;
+    --popover-foreground: 0.93 0.005 0;
+
+    --primary: 0.88 0.29 142;
+    --primary-foreground: 0.04 0 0;
+
+    --secondary: 0.18 0.05 142;
+    --secondary-foreground: 0.8 0.005 0;
+    --muted: 0.14 0.04 142;
+    --muted-foreground: 0.65 0.005 0;
+
+    --accent: 0.88 0.29 142;
+    --accent-foreground: 0.04 0 0;
+
+    --destructive: 0.6 0.24 25;
+    --destructive-foreground: 0.97 0 0;
+
+    --border: 0.32 0.11 142;
+    --input: 0.09 0.02 142;
+    --ring: 0.88 0.29 142;
+
+    --chart-1: 0.88 0.29 142;
+    --chart-2: 0.6 0.24 25;
+    --chart-3: 0.8 0.18 82;
+    --chart-4: 0.72 0.15 200;
+    --chart-5: 0.65 0.2 142;
+
+    --sidebar: 0.11 0.02 142;
+    --sidebar-foreground: 0.93 0.005 0;
+    --sidebar-primary: 0.88 0.29 142;
+    --sidebar-primary-foreground: 0.04 0 0;
+    --sidebar-accent: 0.14 0.04 142;
+    --sidebar-accent-foreground: 0.8 0.005 0;
+    --sidebar-border: 0.32 0.11 142;
+    --sidebar-ring: 0.88 0.29 142;
+  }
+
+  * {
+    @apply border-border;
+  }
+  html {
+    color-scheme: dark;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: "Tomorrow", sans-serif;
+    position: relative;
+  }
+}
+
+@layer utilities {
+  .transition-smooth {
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .font-display {
+    font-family: "VT323", monospace;
+    letter-spacing: 0.05em;
+  }
+
+  .font-accent {
+    font-family: "Handjet", sans-serif;
+  }
+
+  .font-body {
+    font-family: "Tomorrow", sans-serif;
+  }
+
+  .font-pixel {
+    font-family: "Handjet", sans-serif;
+  }
+
+  .pixel-border {
+    border: 1px solid #00ff41;
+    box-shadow: inset 0 0 0 1px rgba(0, 255, 65, 0.1);
+  }
+
+  .btn-glow:hover,
+  .btn-glow:focus-visible {
+    box-shadow: 0 0 8px #00ff41, 0 0 16px rgba(0, 255, 65, 0.3);
+  }
+
+  .energy-pulse {
+    animation: pixel-pulse 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+
+  @keyframes pixel-pulse {
+    0%,
+    100% {
+      box-shadow: 0 0 4px rgba(0, 255, 65, 0.4), 0 0 8px rgba(0, 255, 65, 0.2);
+    }
+    50% {
+      box-shadow: 0 0 12px rgba(0, 255, 65, 0.8), 0 0 24px rgba(0, 255, 65, 0.4);
+    }
+  }
+
+  @keyframes pixel-pulse {
+    0%,
+    100% {
+      box-shadow: 0 0 4px oklch(var(--primary) / 0.4), 0 0 8px
+        oklch(var(--primary) / 0.2);
+    }
+    50% {
+      box-shadow: 0 0 12px oklch(var(--primary) / 0.8), 0 0 20px
+        oklch(var(--primary) / 0.4);
+    }
+  }
+
+  .accent-border {
+    @apply border border-accent;
+  }
+
+  .mono-value {
+    @apply font-mono text-sm tracking-tighter;
+  }
+
+  .card-elevated {
+    @apply bg-card border border-border;
+  }
+
+  .input-industrial {
+    @apply bg-input border border-border focus:ring-2 focus:ring-accent focus:outline-none;
+  }
+}
+
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9999;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.07) 2px,
+    rgba(0, 0, 0, 0.07) 4px
+  );
+}
+
+h1,
+h2,
+h3,
+.font-display {
+  font-family: "VT323", monospace;
+  letter-spacing: 0.05em;
+}
+
+@keyframes cursor-blink {
+  0%,
+  100% {
+    caret-color: #00ff41;
+  }
+  50% {
+    caret-color: transparent;
+  }
+}
+
+@keyframes fadeSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-slide-in {
+  animation: fadeSlideIn 0.6s ease-out forwards;
+  opacity: 0;
+}
+
+input:not([type="range"]):not([type="checkbox"]):not([type="radio"]):not(
+    [type="file"]
+  ),
+textarea {
+  caret-color: #00ff41;
+  animation: cursor-blink 1s step-end infinite;
+}
+
+@keyframes blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.15;
+  }
+}

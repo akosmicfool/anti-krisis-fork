@@ -1,0 +1,313 @@
+// Version: 1.0.0
+type Account__819657603 = {owner : Principal; subaccount : ?Blob};
+type AllowlistedToken__414245149 =
+  {
+    chain : Text;
+    decimals : Nat;
+    name : Text;
+    priceUSD : Float;
+    symbol : Text;
+    tokenAddress : Text
+  };
+type ApproveArg__1041132573 =
+  {
+    amount : Nat;
+    created_at_time : ?Nat64;
+    expected_allowance : ?Nat;
+    expires_at : ?Nat64;
+    fee : ?Nat;
+    from_subaccount : ?Blob;
+    memo : ?Blob;
+    spender : Account__819657603
+  };
+type ApproveError__930904010 =
+  {
+    #AllowanceChanged : {current_allowance : Nat};
+    #BadFee : {expected_fee : Nat};
+    #CreatedInFuture : {ledger_time : Nat64};
+    #Duplicate : {duplicate_of : Nat};
+    #Expired : {ledger_time : Nat64};
+    #GenericError : {error_code : Nat; message : Text};
+    #InsufficientFunds : {balance : Nat};
+    #TemporarilyUnavailable;
+    #TooOld
+  };
+type ApproveResult__25063651 = {#Err : ApproveError__930904010; #Ok : Nat};
+type AuditAction__794733437 = {#add; #remove};
+type AuditLogEntry__47853364 =
+  {
+    action : AuditAction__794733437;
+    adminPrincipal : Principal;
+    chain : Text;
+    timestamp : Int;
+    tokenAddress : Text
+  };
+type BlockRecord__623108740 =
+  {
+    akkReward : Nat;
+    blockNumber : Nat;
+    minerGritSpent : [(MinerId__132706660, Nat)];
+    minerParticipants : [(MinerId__132706660, Principal)];
+    minerWeights : [(MinerId__132706660, Float)];
+    timestamp : Int;
+    totalGritSpent : Nat;
+    vrfValue : Nat64;
+    winnerMinerId : ?MinerId__132706660;
+    winnerOwner : ?Principal
+  };
+type ClaimRecord__432977010 =
+  {
+    amountBurned : Float;
+    chain : Text;
+    claimant : Principal;
+    feeTxHash : ?Text;
+    gritMinted : Nat;
+    status : ClaimStatus__840929718;
+    timestamp : Int;
+    tokenAddress : Text;
+    tokenDecimals : Nat;
+    tokenSymbol : Text;
+    txHash : Text;
+    usdValue : Float
+  };
+type ClaimStatus__840929718 = {#failed; #pending; #pendingFee; #verified};
+type ContributionSnapshot__522488315 = {akk : Nat; grit : Nat};
+type DailyNetworkSnapshot__223453211 =
+  {dayKey : Text; totalAkkWon : Nat; totalGritEarned : Nat};
+type DailyPlayerSnapshot__1071706212 =
+  {akkWon : Nat; dayKey : Text; gritEarned : Nat; principal : Principal};
+type Data__552063367<K, V> = {var count : Nat__93962160; kvs : [var ?(K, V)]};
+type IcrcLedger__450849709 =
+  actor {
+    icrc1_balance_of : shared query Account__819657603 -> async Nat;
+    icrc1_metadata :
+      shared query () ->
+        async [(Text, {#Blob : Blob; #Int : Int; #Nat : Nat; #Text : Text})];
+    icrc1_minting_account : shared query () -> async ?Account__819657603;
+    icrc1_total_supply : shared query () -> async Nat;
+    icrc1_transfer :
+      shared TransferArg__449957322 -> async TransferResult__566942182;
+    icrc2_allowance :
+      shared query {
+                     account : Account__819657603;
+                     spender : Account__819657603
+                   } ->
+        async {allowance : Nat; expires_at : ?Nat64};
+    icrc2_approve :
+      shared ApproveArg__1041132573 -> async ApproveResult__25063651;
+    icrc2_transfer_from :
+      shared TransferFromArg__149092959 ->
+        async TransferFromResult__679773490
+  };
+type Internal__455405067<K, V> =
+  {children : [var ?Node__279997185<K, V>]; data : Data__552063367<K, V>};
+type Leaf__114713147<K, V> = {data : Data__552063367<K, V>};
+type List__716101829<T> =
+  {
+    var blockIndex : Nat__93962160;
+    var blocks : [var [var ?T]];
+    var elementIndex : Nat__93962160
+  };
+type List__852723865<T> = List__716101829<T>;
+type Map__190625089<K, V> = Map__719753394<K, V>;
+type Map__246123559<K, V> = Map__190625089<K, V>;
+type Map__719753394<K, V> =
+  {var root : Node__279997185<K, V>; var size : Nat__93962160};
+type MembershipEvent__448412440 =
+  {
+    joinDay : Text;
+    var leaveDay : ?Text;
+    member : Principal;
+    tribeId : TribeId__1048016567
+  };
+type MinerCreationFeeConfig__1049342358 = Map__246123559<Text, Nat>;
+type MinerId__132706660 = Nat;
+type MinerRecord__774265879 =
+  {
+    var blocksMined : Nat;
+    createdAt : Int;
+    var gritBalance : Nat;
+    var gritSpent : Nat;
+    id : MinerId__132706660;
+    var lastProcessedBlock : Nat;
+    var miningRate : Nat;
+    var name : Text;
+    owner : Principal;
+    var status : MinerStatus__130069337
+  };
+type MinerStatus__130069337 = {#active; #exhausted; #paused};
+type MintRetryEntry__12290828 =
+  {
+    amount : Nat;
+    var attempts : Nat;
+    blockId : Nat;
+    var error : Text;
+    var lastAttemptTime : Int;
+    minerId : Text;
+    owner : Principal
+  };
+type Nat__920180692 = Nat;
+type Nat__93962160 = Nat__920180692;
+type Node__279997185<K, V> =
+  {#internal : Internal__455405067<K, V>; #leaf : Leaf__114713147<K, V>};
+type Profile__901378260 =
+  {
+    bio : Text;
+    born : Text;
+    coverImage : Text;
+    displayName : Text;
+    evmAddress : ?Text;
+    hasOgBadge : Bool;
+    location : Text;
+    miningStreak : Nat;
+    playerBadgeLevel : Nat;
+    profilePicture : Text;
+    socials : [SocialLink__785863559];
+    superpowers : Text;
+    username : Text
+  };
+type SocialLink__785863559 = {name : Text; url : Text};
+type TimerId__905074129 = Nat;
+type Timestamp__301639476 = Int;
+type TransferArg__449957322 =
+  {
+    amount : Nat;
+    created_at_time : ?Nat64;
+    fee : ?Nat;
+    from_subaccount : ?Blob;
+    memo : ?Blob;
+    to : Account__819657603
+  };
+type TransferError__697284834 =
+  {
+    #BadBurn : {min_burn_amount : Nat};
+    #BadFee : {expected_fee : Nat};
+    #CreatedInFuture : {ledger_time : Nat64};
+    #Duplicate : {duplicate_of : Nat};
+    #GenericError : {error_code : Nat; message : Text};
+    #InsufficientFunds : {balance : Nat};
+    #TemporarilyUnavailable;
+    #TooOld
+  };
+type TransferFromArg__149092959 =
+  {
+    amount : Nat;
+    created_at_time : ?Nat64;
+    fee : ?Nat;
+    from : Account__819657603;
+    memo : ?Blob;
+    spender_subaccount : ?Blob;
+    to : Account__819657603
+  };
+type TransferFromError__625593257 =
+  {
+    #BadBurn : {min_burn_amount : Nat};
+    #BadFee : {expected_fee : Nat};
+    #CreatedInFuture : {ledger_time : Nat64};
+    #Duplicate : {duplicate_of : Nat};
+    #GenericError : {error_code : Nat; message : Text};
+    #InsufficientAllowance : {allowance : Nat};
+    #InsufficientFunds : {balance : Nat};
+    #TemporarilyUnavailable;
+    #TooOld
+  };
+type TransferFromResult__679773490 =
+  {#Err : TransferFromError__625593257; #Ok : Nat};
+type TransferResult__566942182 = {#Err : TransferError__697284834; #Ok : Nat};
+type TribeId__1048016567 = Text;
+type TribeRecord__167543766 =
+  {
+    var coverImageUrl : ?Text;
+    createdAt : Timestamp__301639476;
+    var cumulativeAkk : Nat;
+    var cumulativeGrit : Nat;
+    var description : Text;
+    id : TribeId__1048016567;
+    var memberCount : Nat;
+    var name : Text;
+    ownerId : UserId__158757552;
+    var photoUrl : ?Text
+  };
+type UserId__158757552 = Principal;
+actor {
+  stable adminState :
+    {
+      admins : List__852723865<Principal>;
+      var bootstrapPrincipalSet : Bool;
+      var feePercent : Float;
+      var feeRecipient : ?Text;
+      var gritIssuanceRate : Nat;
+      var isLaunched : Bool
+    };
+  stable allowlistState :
+    {
+      auditLog : List__852723865<AuditLogEntry__47853364>;
+      tokens : List__852723865<AllowlistedToken__414245149>
+    };
+  stable blockTimerState : {var timerId : ?TimerId__905074129};
+  stable bootstrapAdminPrincipal : ?Principal;
+  stable var cachedLedgerActor : ?IcrcLedger__450849709;
+  stable gateState :
+    {
+      var gateEnabled : Bool;
+      var gateEndTime : Int;
+      var gateStartTime : Int;
+      var launchTime : Int;
+      var launchTimeEnabled : Bool;
+      var nftGateEnabled : Bool
+    };
+  stable gritState :
+    {
+      balances : Map__246123559<Principal, Nat>;
+      claims : List__852723865<ClaimRecord__432977010>;
+      totalEarned : Map__246123559<Principal, Nat>
+    };
+  stable miningState :
+    {
+      abandonedMints : List__852723865<MintRetryEntry__12290828>;
+      akkBalances : Map__246123559<Principal, Nat>;
+      var akkLedgerId : ?Principal;
+      var akkTransferFee : Nat;
+      blockHistory : List__852723865<BlockRecord__623108740>;
+      var blockNumber : Nat;
+      gritSpentByUser : Map__246123559<Principal, Nat>;
+      var lastBlockWasEmpty : Bool;
+      minerCreationFees : MinerCreationFeeConfig__1049342358;
+      miners : Map__246123559<MinerId__132706660, MinerRecord__774265879>;
+      mintedBlockIds : List__852723865<Nat>;
+      var nextMinerId : Nat;
+      pendingMints : List__852723865<MintRetryEntry__12290828>;
+      var totalAkkMined : Nat;
+      totalAkkWonByUser : Map__246123559<Principal, Nat>;
+      var totalMintAbandoned : Nat;
+      var totalMintRetried : Nat;
+      var totalMintSucceeded : Nat
+    };
+  stable priceCache :
+    {var root : Node__279997185<Text, Float>; var size : Nat__93962160};
+  stable profileState :
+    {profiles : Map__246123559<Principal, Profile__901378260>};
+  stable scoringState :
+    {
+      lastNetworkTotals : {var akk : Nat; var grit : Nat};
+      networkSnapshots :
+        Map__246123559<Text, DailyNetworkSnapshot__223453211>;
+      playerLastTotals : Map__246123559<Principal, {akk : Nat; grit : Nat}>;
+      playerSnapshots : Map__246123559<Text, DailyPlayerSnapshot__1071706212>
+    };
+  stable var seedVersion : Nat;
+  stable var selfPrincipal : ?Principal;
+  stable testingState : {overrides : Map__246123559<Principal, Float>};
+  stable tribeState :
+    {
+      contributionSnapshots :
+        Map__246123559<Principal, ContributionSnapshot__522488315>;
+      memberTribeMap : Map__246123559<Principal, TribeId__1048016567>;
+      membershipHistory : List__852723865<MembershipEvent__448412440>;
+      tribeMembers :
+        Map__246123559<TribeId__1048016567, List__852723865<Principal>>;
+      tribes : Map__246123559<TribeId__1048016567, TribeRecord__167543766>;
+      userOwnedTribes :
+        Map__246123559<Principal, List__852723865<TribeId__1048016567>>
+    }
+};
