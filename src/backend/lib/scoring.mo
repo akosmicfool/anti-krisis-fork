@@ -516,10 +516,17 @@ module {
 
   // ─── Streak maintenance ─────────────────────────────────────────────────────
 
-  /// Update mining streaks based on the completed UTC day's player snapshots.
-  /// Called once per day at UTC rollover. Mirrors legacy semantics: a player
-  /// who spent GRIT on the completed day extends their streak if they were
-  /// active the day before, otherwise starts a new streak of 1.
+  func activeOn(state : State, day : Text, p : Principal) : Bool {
+    switch (state.playerSnapshots.get(compositeKey(day, p))) {
+      case null false;
+      case (?s) s.gritSpent > 0;
+    };
+  };
+
+  /// Recompute mining streaks from the completed UTC day's snapshots. The new
+  /// streak equals the run of consecutive active days ending at completedDay,
+  /// derived purely from snapshots — fully idempotent no matter how many times
+  /// the rollover runs for the same day.
   public func updateStreaksForCompletedDay(
     state        : State,
     profileState : ProfileLib.State,
@@ -527,13 +534,13 @@ module {
   ) {
     for ((_, snap) in state.playerSnapshots.entries()) {
       if (snap.dayKey == completedDay and snap.gritSpent > 0) {
-        let prevActive = switch (state.playerSnapshots.get(compositeKey(prevDay(completedDay), snap.principal))) {
-          case null false;
-          case (?prev) prev.gritSpent > 0;
+        var run : Nat = 0;
+        var cursor = completedDay;
+        while (activeOn(state, cursor, snap.principal)) {
+          run += 1;
+          cursor := prevDay(cursor);
         };
-        let current = ProfileLib.getMiningStreak(profileState, snap.principal);
-        let next : Nat = if (prevActive) current + 1 else 1;
-        ignore ProfileLib.updateMiningStreak(profileState, snap.principal, next);
+        ignore ProfileLib.updateMiningStreak(profileState, snap.principal, run);
       };
     };
   };

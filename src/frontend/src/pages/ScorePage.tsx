@@ -25,6 +25,7 @@ function rankStyle(rank: number): React.CSSProperties {
 
 // ─── Timescale selector ───────────────────────────────────────────────────────
 const TIMESCALES: { value: Timescale; label: string }[] = [
+  { value: "daily", label: "DAILY" },
   { value: "weekly", label: "WEEKLY" },
   { value: "monthly", label: "MONTHLY" },
   { value: "quarterly", label: "QUARTERLY" },

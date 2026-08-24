@@ -32,6 +32,7 @@ export interface TribeScoreEntry {
 }
 
 export type Timescale =
+  | "daily"
   | "weekly"
   | "monthly"
   | "quarterly"
