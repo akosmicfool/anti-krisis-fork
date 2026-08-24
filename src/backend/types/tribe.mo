@@ -33,11 +33,16 @@ module {
   };
 
   /// Historical membership event: when a principal joined and (optionally) left a tribe.
+  /// joinAt/leaveAt are nanosecond timestamps used for exact (timestamp-prorated)
+  /// AK69 attribution; joinDay/leaveDay are the UTC day strings kept for display
+  /// and legacy period summaries.
   public type MembershipEvent = {
     member   : Principal;
     tribeId  : TribeId;
-    joinDay  : Text;   // "YYYY-MM-DD" UTC
+    joinDay  : Text;      // "YYYY-MM-DD" UTC
     var leaveDay : ?Text; // null while still a member
+    joinAt   : Int;       // ns timestamp of join
+    var leaveAt  : ?Int;  // ns timestamp of leave; null while still a member
   };
 
   /// Snapshot of a member's GRIT+AKK at the time they joined the current tribe.

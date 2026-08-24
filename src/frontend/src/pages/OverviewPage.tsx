@@ -29,8 +29,8 @@ function useLeaderboardCounts() {
     queryFn: async () => {
       if (!actor) return { players: 0, tribes: 0 };
       const [players, tribes] = await Promise.all([
-        actor.getTopPlayers("allTime"),
-        actor.getTopTribes("allTime"),
+        actor.getTopPlayers("alltime"),
+        actor.getTopTribes("alltime"),
       ]);
       return { players: players.length, tribes: tribes.length };
     },
@@ -39,19 +39,20 @@ function useLeaderboardCounts() {
 }
 
 // ─── Hook: total AK69 score ───────────────────────────────────────────────────
-// ─── Hook: AK69 stockpile (history-based) ────────────────────────────────────
+// ─── Hook: AK69 stockpile (cumulative all-time player scores) ─────────────────
 function useTotalAk69Score() {
   const { actor, isFetching } = useActor(createActor);
   return useQuery({
     queryKey: ["totalAk69Stockpile"],
     queryFn: async () => {
       if (!actor) return 0;
-      // Use history-based stockpile calculation (sums real block-history AKK per player)
+      // Stockpile = sum of every player's all-time AK69 score (daily scores
+      // summed from genesis). Grows as days accrue.
       try {
         const v = await actor.getHistoryBasedAk69Stockpile();
         return typeof v === "number" ? v : Number(v);
       } catch {
-        // Fall back to the live normalized aggregate if unavailable
+        // Fall back to the identical aggregate endpoint if unavailable
         return actor.getTotalAk69Score();
       }
     },

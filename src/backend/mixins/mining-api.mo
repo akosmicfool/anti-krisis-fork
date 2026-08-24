@@ -133,7 +133,7 @@ mixin (
     if (amount == 0) { return #err "Amount must be greater than 0" };
     switch (state.akkLedgerId) {
       case null {
-        let callerBal = MiningLib.getAkkEarned(state, caller);
+        let callerBal = MiningLib.getAkkBalance(state, caller);
         if (callerBal < amount) {
           return #err ("Insufficient AKK balance. Available: " # callerBal.toText() # " e8s");
         };

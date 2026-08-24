@@ -1038,7 +1038,7 @@ function TribeCard({
   onTransfer?: () => void;
   leaveLoading?: boolean;
 }) {
-  const { data: tribeLeaderboard } = useGetTribeLeaderboard("allTime");
+  const { data: tribeLeaderboard } = useGetTribeLeaderboard("alltime");
   const leaderboardEntry = tribeLeaderboard?.find(
     (entry) => entry.tribeId === tribe.id,
   );

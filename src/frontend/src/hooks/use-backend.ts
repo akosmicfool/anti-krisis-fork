@@ -1027,7 +1027,7 @@ export function useGetMyTribe() {
   });
 }
 
-export function useGetTribeLeaderboard(timescale = "allTime") {
+export function useGetTribeLeaderboard(timescale = "alltime") {
   const { actor, isFetching } = useActorInstance();
   return useQuery({
     queryKey: ["tribeLeaderboard", timescale],

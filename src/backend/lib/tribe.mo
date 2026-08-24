@@ -112,8 +112,32 @@ module {
     for (event in state.membershipHistory.values()) {
       if (Principal.equal(event.member, member) and event.tribeId == tribeId and event.leaveDay == null) {
         event.leaveDay := ?today;
+        event.leaveAt := ?Time.now();
       };
     };
+  };
+
+  /// Return the tribe the member belonged to at the given nanosecond timestamp,
+  /// using exact membership windows [joinAt, leaveAt). Returns null if the
+  /// member was in no tribe at that moment. If multiple events match (should
+  /// not happen), the most recent join wins.
+  public func tribeIdAt(state : State, member : Principal, ts : Int) : ?TribeTypes.TribeId {
+    var result : ?TribeTypes.TribeId = null;
+    var bestJoin : Int = -1;
+    for (event in state.membershipHistory.values()) {
+      if (Principal.equal(event.member, member)) {
+        let joined = event.joinAt <= ts;
+        let notYetLeft = switch (event.leaveAt) {
+          case null    true;
+          case (?la)   ts < la;
+        };
+        if (joined and notYetLeft and event.joinAt >= bestJoin) {
+          bestJoin := event.joinAt;
+          result := ?event.tribeId;
+        };
+      };
+    };
+    result;
   };
 
   // ─── Public API ─────────────────────────────────────────────────────────────
@@ -197,6 +221,8 @@ module {
       tribeId  = tribeId;
       joinDay  = today;
       var leaveDay : ?Text = null;
+      joinAt   = Time.now();
+      var leaveAt  : ?Int = null;
     });
 
     let members = switch (state.tribeMembers.get(tribeId)) {

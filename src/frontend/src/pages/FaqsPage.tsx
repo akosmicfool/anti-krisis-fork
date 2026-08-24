@@ -105,14 +105,17 @@ export const faqData: FaqCategory[] = [
         question: "How is AK69 score calculated?",
         answer: (
           <>
-            AK69 score is calculated by equally combining your normalized GRIT
-            and normalized $AKK won. Normalization is a process of accounting
-            for your contribution relative to the whole protocol in a specific
-            timeframe. These daily normalization scores are then summed over
-            different rolling windows (like weekly or monthly) to reward
-            consistent participation, and finally multiplied by 100 for display.
-            In the future, normalized scores from other games will be added to
-            reflect contributions across all games in the Anti Krisis ecosystem.
+            AK69 rewards both effort and outcomes with equal weight: your GRIT
+            spent on mining and the $AKK you win. Each UTC day, your
+            contribution on both legs is normalized against the whole network's
+            activity for that day, and the two halves are averaged and scaled
+            by 100 to form your Daily Score. Higher timescales are simply sums
+            of Daily Scores: weekly adds the last 7 days, monthly 30,
+            quarterly 90, yearly 365, and All-Time is the cumulative sum from
+            genesis — so consistent participation compounds. Days without
+            activity contribute 0. For tribes, each member's mining effort and
+            wins are credited to their tribe for exactly the period they were a
+            member (timestamp-accurate, even across mid-day switches).
           </>
         ),
       },

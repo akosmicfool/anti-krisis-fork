@@ -298,26 +298,29 @@ import ClaimStatusValue "types/ClaimStatusValue";
   include ProfileMixin(profileState, scoringState, gritState, miningState, tribeState);
   include TribeMixin(tribeState, profileState, gritState, miningState);
 
-  include ScoringMixin(scoringState, gritState, miningState, profileState, tribeState, testingState);
+  include ScoringMixin(scoringState, profileState, tribeState, testingState);
   include TestingMixin(testingState, adminState, profileState);
 
-  // Bootstrap: take a snapshot for today if one hasn't been taken yet.
-  // This ensures the leaderboard is never empty after an upgrade or fresh deploy.
-  ScoringLib.takeSnapshotIfNeeded(scoringState, gritState, miningState, ?profileState);
+  // Rebuild AK69 daily raws from mining block history whenever snapshots are
+  // empty (fresh deploy or first start after the scoring overhaul). Synchronous:
+  // block records are local state, no awaits required.
+  if (scoringState.networkSnapshots.size() == 0) {
+    ScoringLib.rebuildAllFromBlockHistory(scoringState, tribeState, miningState);
+  };
 
-  // Daily snapshot timer — fires immediately on startup, then every 86400s
-  ignore Timer.setTimer<system>(
-    #seconds 0,
-    func() : async () {
-      ScoringLib.takeDailySnapshot(scoringState, gritState, miningState, ?profileState);
-      ignore Timer.recurringTimer<system>(
-        #seconds 86_400,
-        func() : async () {
-          ScoringLib.takeDailySnapshot(scoringState, gritState, miningState, ?profileState);
-        },
-      );
-    },
-  );
+  // UTC-midnight-aligned daily rollover: refreshes mining streaks for the day
+  // that just ended. Self-rescheduling one-shot timer stays aligned to true UTC
+  // midnight across upgrades and drift.
+  func scheduleUtcRollover<system>() {
+    ignore Timer.setTimer<system>(
+      #seconds (ScoringLib.secondsUntilNextUtcMidnight()),
+      func() : async () {
+        ScoringLib.onUtcRollover(scoringState, profileState);
+        scheduleUtcRollover();
+      },
+    );
+  };
+  scheduleUtcRollover();
 
 
   /// Get or create the cached ledger actor from the stored canister ID.
@@ -513,6 +516,10 @@ import ClaimStatusValue "types/ClaimStatusValue";
       miningState,
       ?mintAkkToWinner,
       null, // onAkkCredited is handled inside mintAkkToWinner
+      ?(func(block : MiningTypes.BlockRecord) {
+        // Attribute this block's raws to the AK69 scoring engine immediately
+        ScoringLib.applyBlock(scoringState, tribeState, block);
+      }),
     );
     if (timerReset) {
       // Mining just resumed after a pause — cancel the old recurring timer (if any)
@@ -771,7 +778,8 @@ import ClaimStatusValue "types/ClaimStatusValue";
         .controllerOnly()
         .build(),
 
-      // networkSnapshot — admin/aggregate analytics; auto-derive (all-primitive).
+      // networkSnapshot — per-day network raws (GRIT spent / AKK won) attributed
+      // from block history; admin/aggregate analytics; auto-derive (all-primitive).
       scoringState.networkSnapshots.toEntity(
         "networkSnapshot",
         "DailyNetworkSnapshot",
@@ -779,13 +787,13 @@ import ClaimStatusValue "types/ClaimStatusValue";
       )
         .sample({
           dayKey = "";
-          totalGritEarned = 0;
+          totalGritSpent = 0;
           totalAkkWon = 0;
         })
         .controllerOnly()
         .build(),
 
-      // playerSnapshot — per-user daily snapshots; auto-derive with
+      // playerSnapshot — per-user daily raw contributions; auto-derive with
       // `principal` as the owner column. `.controllerOrScoped()` lets the
       // agent answer aggregate questions while each user reads only their own.
       scoringState.playerSnapshots.toEntity(
@@ -796,11 +804,27 @@ import ClaimStatusValue "types/ClaimStatusValue";
         .sample({
           dayKey = "";
           principal = Principal.fromText("aaaaa-aa");
-          gritEarned = 0;
+          gritSpent = 0;
           akkWon = 0;
         })
         .ownedBy("principal")
         .controllerOrScoped()
+        .build(),
+
+      // tribeSnapshot — per-tribe daily raw contributions (timestamp-prorated
+      // membership at block time); admin/aggregate analytics.
+      scoringState.tribeSnapshots.toEntity(
+        "tribeSnapshot",
+        "DailyTribeSnapshot",
+        "dayKey",
+      )
+        .sample({
+          dayKey = "";
+          tribeId = "";
+          gritSpent = 0;
+          akkWon = 0;
+        })
+        .controllerOnly()
         .build(),
 
       // claim — burn/claim records; manual mode because ClaimRecord has a

@@ -178,9 +178,11 @@ module {
   };
 
   /// Withdraw (transfer) AKK from caller's balance to a recipient principal.
-  /// Withdraw AKK from caller's earned balance to a recipient principal.
-  /// Reads from and deducts from totalAkkWonByUser (the all-time earned map,
-  /// which is the only map populated by block rewards in single-canister mode).
+  /// Withdraw (transfer) AKK from caller's spendable balance to a recipient
+  /// principal. Draft/single-canister mode only (with a live ledger configured,
+  /// withdrawals execute on the ledger instead).
+  /// Moves tokens between akkBalances (spendable); the all-time earned map
+  /// totalAkkWonByUser is NEVER touched here — lifetime "AKK won" is immutable.
   public func withdrawAkk(
     state : State,
     caller : Principal,
@@ -188,15 +190,15 @@ module {
     amount : Nat,
   ) : { #ok : Text; #err : Text } {
     if (amount == 0) { return #err "Amount must be greater than 0" };
-    let callerBal = getAkkEarned(state, caller);
+    let callerBal = getAkkBalance(state, caller);
     if (callerBal < amount) {
       return #err ("Insufficient AKK balance. Available: " # callerBal.toText() # " e8s");
     };
-    // Deduct from the all-time earned map (this is the spendable balance in single-canister mode)
-    state.totalAkkWonByUser.add(caller, callerBal - amount);
-    // Credit recipient
-    let recipientBal = getAkkEarned(state, recipient);
-    state.totalAkkWonByUser.add(recipient, recipientBal + amount);
+    // Deduct from spendable balance
+    state.akkBalances.add(caller, callerBal - amount);
+    // Credit recipient's spendable balance (lifetime-won map untouched)
+    let recipientBal = getAkkBalance(state, recipient);
+    state.akkBalances.add(recipient, recipientBal + amount);
     #ok (amount.toText() # " AKK withdrawn to " # recipient.toText());
   };
 
@@ -233,12 +235,15 @@ module {
   /// even if the canister's mutable blockNumber has been updated by a concurrent call.
   /// onAkkCredited is called AFTER minting with (owner, newAkkBalance) for side-effects
   /// like tribe stat updates (only used in non-ledger / draft mode).
+  /// onBlock is called synchronously with the recorded BlockRecord right after it is
+  /// appended to blockHistory (used by the AK69 scoring engine to attribute raws).
   /// Returns true when mining just resumed after a pause (lastBlockWasEmpty transitioned
   /// from true to false), signalling main.mo to reset the 690s block timer from now.
   public func processBlock(
     state : State,
     mintAkk : ?((Principal, Nat, Nat) -> async ()),
     onAkkCredited : ?((Principal, Nat) -> ()),
+    onBlock : ?((MiningTypes.BlockRecord) -> ()),
   ) : async Bool {
     let ic : actor { raw_rand : () -> async Blob } = actor "aaaaa-aa";
     let now = Time.now();
@@ -405,6 +410,10 @@ module {
     };
     state.blockHistory.add(record);
     state.blockNumber += 1;
+    switch (onBlock) {
+      case null {};
+      case (?cb) { cb(record) };
+    };
     timerReset;
   };
 

@@ -47,7 +47,7 @@ mixin (
   /// Badge level is a ratchet — it only increases, never decreases.
   /// Returns #ok on success, #err("Profile not found") if the caller has no profile.
   public shared ({ caller }) func updatePlayerBadge() : async { #ok; #err : Text } {
-    let score = ScoringLib.playerScore(scoringState, caller, "alltime", gritState, miningState);
+    let score = ScoringLib.playerScore(scoringState, caller, "alltime");
     if (ProfileLib.updatePlayerBadgeLevel(profileState, caller, score)) {
       #ok;
     } else {
