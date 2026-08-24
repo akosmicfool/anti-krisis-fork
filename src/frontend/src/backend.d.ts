@@ -15,7 +15,12 @@ export type Timestamp = bigint;
 export interface TransformationOutput {
     status: bigint;
     body: Uint8Array;
-    headers: Array<http_header>;
+    headers: Array<HttpHeader>;
+}
+export interface HttpRequestResult {
+    status: bigint;
+    body: Uint8Array;
+    headers: Array<HttpHeader>;
 }
 export interface SocialLink {
     url: string;
@@ -58,10 +63,13 @@ export interface AllowlistedToken {
 }
 export interface TransformationInput {
     context: Uint8Array;
-    response: http_request_result;
+    response: HttpRequestResult;
+}
+export interface Cell {
+    value: Value;
+    name: string;
 }
 export type MinerId = bigint;
-export type TribeId = string;
 export interface ClaimRecord {
     status: ClaimStatus;
     amountBurned: number;
@@ -76,6 +84,26 @@ export interface ClaimRecord {
     txHash: string;
     feeTxHash?: string;
 }
+export type TribeId = string;
+export type Value = {
+    __kind__: "int";
+    int: bigint;
+} | {
+    __kind__: "nat";
+    nat: bigint;
+} | {
+    __kind__: "float";
+    float: number;
+} | {
+    __kind__: "bool";
+    bool: boolean;
+} | {
+    __kind__: "null";
+    null: null;
+} | {
+    __kind__: "text";
+    text: string;
+};
 export interface MinerView {
     id: MinerId;
     blocksMined: bigint;
@@ -120,14 +148,9 @@ export interface MintRetryView {
     error: string;
     amount: bigint;
 }
-export interface http_header {
+export interface HttpHeader {
     value: string;
     name: string;
-}
-export interface http_request_result {
-    status: bigint;
-    body: Uint8Array;
-    headers: Array<http_header>;
 }
 export interface TribeMemberWithRole {
     username: string;
@@ -151,12 +174,23 @@ export interface PublicProfile {
     evmAddress?: string;
     location: string;
 }
+export interface Result {
+    hasMore: boolean;
+    rows: Array<Array<Cell>>;
+}
 export interface PlayerScoreEntry {
     principal: Principal;
     username: string;
     tribeId?: TribeId;
     displayName: string;
     rank: bigint;
+    score: number;
+    tribeName: string;
+}
+export interface TribeScoreEntry {
+    tribeId: TribeId;
+    rank: bigint;
+    memberCount: bigint;
     score: number;
     tribeName: string;
 }
@@ -172,13 +206,6 @@ export interface BlockDetailView {
     totalGritSpent: bigint;
     minerGritSpent: Array<[MinerId, bigint]>;
     minerCount: bigint;
-}
-export interface TribeScoreEntry {
-    tribeId: TribeId;
-    rank: bigint;
-    memberCount: bigint;
-    score: number;
-    tribeName: string;
 }
 export interface ProfileInput {
     bio: string;
@@ -304,6 +331,7 @@ export interface backendInterface {
         __kind__: "err";
         err: TribeError;
     }>;
+    execute(qJson: string): Promise<Result>;
     getAbandonedMints(): Promise<Array<MintRetryView>>;
     getAdmins(): Promise<Array<Principal>>;
     getAkkBalance(): Promise<bigint>;
@@ -376,21 +404,12 @@ export interface backendInterface {
         blocksUntilHalving: bigint;
         currentBlock: bigint;
     }>;
-    getSupplyVsBalanceAudit(): Promise<{
-        totalAkkMined: bigint;
-        discrepancy: bigint;
-        pendingMints: bigint;
-        sumOfAllBalances: bigint;
-    }>;
     getTestScore(): Promise<number | null>;
     getTokens(): Promise<Array<AllowlistedToken>>;
     getTopPlayers(timescale: string): Promise<Array<PlayerScoreEntry>>;
     getTopTribes(timescale: string): Promise<Array<TribeScoreEntry>>;
     getTotalAk69Score(): Promise<number>;
     getTotalAkkFromHistory(): Promise<bigint>;
-    /**
-     * / Captures the canister's own principal into selfPrincipal using the low-level prim.
-     */
     getTotalBlockCount(): Promise<bigint>;
     getTribe(tribeId: TribeId): Promise<Tribe | null>;
     getTribeAkkFromHistory(tribeId: TribeId): Promise<bigint>;
@@ -432,13 +451,6 @@ export interface backendInterface {
     } | {
         __kind__: "err";
         err: TribeError;
-    }>;
-    recalculateTotalAkkMined(): Promise<{
-        __kind__: "ok";
-        ok: bigint;
-    } | {
-        __kind__: "err";
-        err: string;
     }>;
     recheckClaimByHash(txHash: string): Promise<{
         __kind__: "ok";
@@ -485,6 +497,7 @@ export interface backendInterface {
         __kind__: "err";
         err: ProfileError;
     }>;
+    schema(): Promise<string>;
     searchTribes(searchQuery: string): Promise<Array<Tribe>>;
     setAkkLedgerCanisterId(id: Principal): Promise<{
         __kind__: "ok";

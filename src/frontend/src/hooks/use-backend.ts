@@ -1,7 +1,12 @@
 import { useActor } from "@caffeineai/core-infrastructure";
 import { Principal } from "@icp-sdk/core/principal";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { type MintRetryView, TribeError, createActor } from "../backend";
+import {
+  type MintRetryView,
+  ProfileError,
+  TribeError,
+  createActor,
+} from "../backend";
 import type {
   AllowlistedToken,
   AuditLogEntry,
@@ -16,7 +21,37 @@ import type {
 } from "../backend";
 import { fetchDexScreenerPrice } from "../utils/dexscreener";
 import { useAuth } from "./use-auth";
-// import { useCreditAbandonedMints } from "@/hooks/use-backend";
+
+export function profileErrorMessage(err: ProfileError | string): string {
+  switch (err) {
+    case ProfileError.usernameAlreadyTaken:
+    case "usernameAlreadyTaken":
+      return "Username already taken";
+    case ProfileError.usernameRequired:
+    case "usernameRequired":
+      return "Username is required";
+    case ProfileError.usernameTooLong:
+    case "usernameTooLong":
+      return "Username must be 15 characters or less";
+    case ProfileError.displayNameTooLong:
+    case "displayNameTooLong":
+      return "Display name must be 30 characters or less";
+    case ProfileError.bioTooLong:
+    case "bioTooLong":
+      return "Bio must be 500 characters or less";
+    case ProfileError.locationTooLong:
+    case "locationTooLong":
+      return "Location must be 30 characters or less";
+    case ProfileError.superpowersTooLong:
+    case "superpowersTooLong":
+      return "Superpowers must be 250 characters or less";
+    case ProfileError.socialLinkTooLong:
+    case "socialLinkTooLong":
+      return "Social link name and URL must be 100 characters or less";
+    default:
+      return typeof err === "string" && err ? err : "Could not save profile";
+  }
+}
 
 function useActorInstance() {
   return useActor(createActor);
@@ -891,16 +926,53 @@ export function useSaveMyProfile() {
       superpowers: string;
       profilePicture: string;
       coverImage: string;
+      evmAddress: string | null;
       socials: SocialLink[];
     }) => {
       if (!actor) throw new Error("Not connected");
-      const result = await actor.saveMyProfile(
-        input as unknown as ProfileInput,
-      );
-      if (result.__kind__ === "err") throw new Error(result.err);
+      const result = await actor.saveMyProfile({
+        ...input,
+        username: input.username.trim(),
+      } as unknown as ProfileInput);
+      if (result.__kind__ === "err") {
+        const code = result.err;
+        const error = new Error(profileErrorMessage(code)) as Error & {
+          profileError: ProfileError | string;
+        };
+        error.profileError = code;
+        throw error;
+      }
       return result.ok;
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["myProfile"] }),
+    onSuccess: (saved) => {
+      // Optimistic cache update: write the saved profile (returned by the
+      // backend) into the ['myProfile'] cache immediately so the UI reflects
+      // the save without waiting for a query refetch that could hit a stale
+      // replica (read-after-write replica lag). Then invalidate so a
+      // background refetch eventually reconciles with canonical state.
+      const p = saved as unknown as Record<string, unknown>;
+      const normalized = {
+        username: (p.username as string) ?? "",
+        displayName: (p.displayName as string) ?? "",
+        bio: (p.bio as string) ?? "",
+        location: (p.location as string) ?? "",
+        born: (p.born as string) ?? "",
+        superpowers: (p.superpowers as string) ?? "",
+        profilePicture: (p.profilePicture as string) ?? "",
+        coverImage: (p.coverImage as string) ?? "",
+        evmAddress: (p.evmAddress as string | null | undefined) ?? null,
+        hasOgBadge: (p.hasOgBadge as boolean) ?? false,
+        playerBadgeLevel: (p.playerBadgeLevel as bigint) ?? 0n,
+        socials: Array.isArray(p.socials)
+          ? (p.socials as SocialLink[]).map((s, idx) => ({
+              ...s,
+              id: `social-${idx}`,
+            }))
+          : [],
+      };
+      qc.setQueryData(["myProfile"], normalized);
+      qc.invalidateQueries({ queryKey: ["myProfile"] });
+    },
   });
 }
 
@@ -1370,29 +1442,6 @@ export function useSetAkkLedgerCanisterId() {
     },
   });
 }
-export function useGetSupplyVsBalanceAudit() {
-  const { actor, isFetching } = useActorInstance();
-  return useQuery<{
-    totalAkkMined: bigint;
-    sumOfAllBalances: bigint;
-    pendingMints: bigint;
-    discrepancy: bigint;
-  }>({
-    queryKey: ["supplyVsBalanceAudit"],
-    queryFn: async () => {
-      if (!actor)
-        return {
-          totalAkkMined: 0n,
-          sumOfAllBalances: 0n,
-          pendingMints: 0n,
-          discrepancy: 0n,
-        };
-      return actor.getSupplyVsBalanceAudit();
-    },
-    enabled: !!actor && !isFetching,
-    staleTime: 30_000,
-  });
-}
 
 export function useCreditAbandonedMints() {
   const { actor } = useActorInstance();
@@ -1408,22 +1457,6 @@ export function useCreditAbandonedMints() {
       qc.invalidateQueries({ queryKey: ["abandonedMints"] });
       qc.invalidateQueries({ queryKey: ["mintRetryStats"] });
       qc.invalidateQueries({ queryKey: ["pendingMints"] });
-      qc.invalidateQueries({ queryKey: ["protocolStats"] });
-      qc.invalidateQueries({ queryKey: ["supplyVsBalanceAudit"] });
-    },
-  });
-}
-
-export function useRecalculateTotalAkkMined() {
-  const { actor } = useActorInstance();
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: async () => {
-      if (!actor) throw new Error("Not connected");
-      await actor.recalculateTotalAkkMined();
-    },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["supplyVsBalanceAudit"] });
       qc.invalidateQueries({ queryKey: ["protocolStats"] });
     },
   });

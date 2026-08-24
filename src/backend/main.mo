@@ -2,6 +2,8 @@ import Map "mo:core/Map";
 import List "mo:core/List";
 import Principal "mo:core/Principal";
 import Int "mo:core/Int";
+import Nat64 "mo:core/Nat64";
+import Text "mo:core/Text";
 import OutCall "mo:caffeineai-http-outcalls/outcall";
 import Utils "lib/utils";
 import Time "mo:core/Time";
@@ -21,6 +23,18 @@ import ScoringMixin "mixins/scoring-api";
 import TestingTypes "types/testing";
 import TestingMixin "mixins/testing-api";
 import AkkLedgerTypes "types/akk-ledger";
+import Migration "migration";
+import OQL "mo:caffeineai-oql";
+import Expose "mo:caffeineai-oql/Expose";
+import MiningTypes "types/mining";
+import TribeTypes "types/tribe";
+import GritTypes "types/grit";
+import AllowlistTypes "types/allowlist";
+import ScoringTypes "types/scoring";
+import ProfileTypes "types/profile";
+import AuditActionValue "types/AuditActionValue";
+import MinerStatusValue "types/MinerStatusValue";
+import ClaimStatusValue "types/ClaimStatusValue";
 
 
 
@@ -38,7 +52,7 @@ import AkkLedgerTypes "types/akk-ledger";
 
 
 
-actor self {
+(with migration = Migration.run) actor self {
   // Stable canister self-principal for subaccount-based AKK custody.
   // Set once on first actor init; survives upgrades via orthogonal persistence.
   var selfPrincipal : ?Principal = null;
@@ -46,6 +60,12 @@ actor self {
   // Cached ledger actor -- non-stable (actors cannot be stable), re-derived on each actor
   // start and invalidated when setAkkLedgerCanisterId() changes the stored ID.
   var cachedLedgerActor : ?AkkLedgerTypes.IcrcLedger = null;
+  // The Principal that cachedLedgerActor was built from. When it does not match
+  // miningState.akkLedgerId, getLedgerActor() invalidates the cache and rebuilds
+  // against the new ID. This catches ledger swaps where the ID changes from one
+  // non-null value to another (setAkkLedgerCanisterId lives in the mining mixin
+  // and has no reference to cachedLedgerActor, so it cannot clear the cache directly).
+  var cachedLedgerActorId : ?Principal = null;
 
   // Wrapper kept for call-site compatibility; delegates to Utils.
   func principalToSubaccount(p : Principal) : Blob {
@@ -306,9 +326,24 @@ actor self {
     switch (miningState.akkLedgerId) {
       case null {
         cachedLedgerActor := null;
+        cachedLedgerActorId := null;
         return null;
       };
       case (?id) {
+        // Invalidate the cache if the stored ID changed since the actor was cached.
+        // This is the fix for the stale-cache bug: setAkkLedgerCanisterId (in the
+        // mining mixin) updates miningState.akkLedgerId but cannot clear
+        // cachedLedgerActor directly. By comparing cachedLedgerActorId to the
+        // current akkLedgerId here, we detect the swap on the next call and
+        // rebuild a fresh actor against the NEW ledger.
+        let stale = switch (cachedLedgerActorId) {
+          case null true;
+          case (?cachedId) { not Principal.equal(cachedId, id) };
+        };
+        if (stale) {
+          cachedLedgerActor := null;
+          cachedLedgerActorId := ?id;
+        };
         switch (cachedLedgerActor) {
           case (?a) ?a;
           case null {
@@ -386,11 +421,14 @@ actor self {
             to = { owner; subaccount = null };
             amount = mintAmount;
             fee = null;
-            memo = null;
-            created_at_time = null;
+            memo = ?Utils.blockIdMemo(blockId);
+            created_at_time = ?Nat64.fromNat(Int.abs(Time.now()));
           });
           switch (result) {
             case (#Ok _) {
+              miningState.mintedBlockIds.add(blockId);
+            };
+            case (#Err(#Duplicate _)) {
               miningState.mintedBlockIds.add(blockId);
             };
             case (#Err e) {
@@ -428,6 +466,7 @@ actor self {
     };
     // Re-derive cached ledger actor on every startup (actors cannot be stable)
     cachedLedgerActor := null; // lazily re-created on first getLedgerActor() call
+    cachedLedgerActorId := null;
   };
 
   // Capture on first actor init.
@@ -436,9 +475,8 @@ actor self {
 
 
   /// Helper: attempt a single ledger mint and return true on success.
-  /// Helper: attempt a single ledger mint and return true on success.
   /// Used by drainPendingMints to retry queued entries.
-  func tryLedgerMint(owner : Principal, amount : Nat) : async Bool {
+  func tryLedgerMint(owner : Principal, amount : Nat, blockId : Nat) : async Bool {
     switch (getLedgerActor()) {
       case null false;
       case (?ledger) {
@@ -449,11 +487,12 @@ actor self {
             to = { owner; subaccount = null };
             amount;
             fee = null;
-            memo = null;
-            created_at_time = null;
+            memo = ?Utils.blockIdMemo(blockId);
+            created_at_time = ?Nat64.fromNat(Int.abs(Time.now()));
           });
           switch (result) {
             case (#Ok _) true;
+            case (#Err(#Duplicate _)) true;
             case (#Err _) false;
           };
         } catch (_e) { false };
@@ -541,4 +580,252 @@ actor self {
     #seconds 15,
     func() : async () { await recheckPendingClaims() },
   );
+
+  // ─── OQL (Data Intelligence) ────────────────────────────────────────────────
+  // Exposes the canister's persisted collections as queryable entities so the
+  // Caffeine Data Intelligence agent can answer natural-language questions over
+  // them. Each entity declares its own authorization level; per-user data uses
+  // `.controllerOrScoped()` with an owner column so the agent (controller) sees
+  // aggregates while each signed-in user only reads their own rows.
+  include Expose({
+    entities = [
+      // miners — owner-keyed via the `owner` field; manual mode because
+      // MinerRecord has `var` fields and a MinerStatus variant.
+      OQL.Entity.manual<MiningTypes.MinerRecord>(
+        "miner",
+        func() = miningState.miners.values(),
+        "MinerRecord",
+        "id",
+      )
+        .payload("id", func(m) = m.id)
+        .payload("owner", func(m) = m.owner)
+        .payload("name", func(m) = m.name)
+        .payload("gritBalance", func(m) = m.gritBalance)
+        .payload("miningRate", func(m) = m.miningRate)
+        .payload("status", func(m) = m.status, )
+        .ownedBy("owner")
+        .controllerOrScoped()
+        .build(),
+
+      // blocks — admin/aggregate analytics; manual mode because BlockRecord
+      // has tuple-array fields and optional fields.
+      OQL.Entity.manual<MiningTypes.BlockRecord>(
+        "block",
+        func() = miningState.blockHistory.values(),
+        "BlockRecord",
+        "blockNumber",
+      )
+        .payload("blockNumber", func(b) = b.blockNumber)
+        .payload("timestamp", func(b) = b.timestamp)
+        .payload("akkReward", func(b) = b.akkReward)
+        .payload("totalGritSpent", func(b) = b.totalGritSpent)
+        .payload("vrfValue", func(b) = b.vrfValue)
+        .payload("winnerMinerId", func(b) = switch (b.winnerMinerId) { case null 0; case (?n) n })
+        .payload("winnerOwner", func(b) = switch (b.winnerOwner) { case null ""; case (?p) p.toText() })
+        .controllerOnly()
+        .build(),
+
+      // gritBalance — owner-keyed Map<Principal, Nat>; manual mode iterates
+      // all entries, .ownedBy("owner") + .controllerOrScoped() enforce
+      // per-user scoping.
+      OQL.Entity.manual<(Principal, Nat)>(
+        "gritBalance",
+        func() = gritState.balances.entries(),
+        "GritBalance",
+        "owner",
+      )
+        .payload("owner", func((p, _)) = p)
+        .payload("balance", func((_, n)) = n)
+        .ownedBy("owner")
+        .controllerOrScoped()
+        .build(),
+
+      // gritTotalEarned — all-time GRIT credited per user (never decremented).
+      OQL.Entity.manual<(Principal, Nat)>(
+        "gritTotalEarned",
+        func() = gritState.totalEarned.entries(),
+        "GritTotalEarned",
+        "owner",
+      )
+        .payload("owner", func((p, _)) = p)
+        .payload("totalEarned", func((_, n)) = n)
+        .ownedBy("owner")
+        .controllerOrScoped()
+        .build(),
+
+      // akkBalance — internal draft-mode AKK balance per user.
+      OQL.Entity.manual<(Principal, Nat)>(
+        "akkBalance",
+        func() = miningState.akkBalances.entries(),
+        "AkkBalance",
+        "owner",
+      )
+        .payload("owner", func((p, _)) = p)
+        .payload("balance", func((_, n)) = n)
+        .ownedBy("owner")
+        .controllerOrScoped()
+        .build(),
+
+      // akkWon — cumulative all-time AKK earned per user from block rewards.
+      OQL.Entity.manual<(Principal, Nat)>(
+        "akkWon",
+        func() = miningState.totalAkkWonByUser.entries(),
+        "AkkWon",
+        "owner",
+      )
+        .payload("owner", func((p, _)) = p)
+        .payload("totalWon", func((_, n)) = n)
+        .ownedBy("owner")
+        .controllerOrScoped()
+        .build(),
+
+      // gritSpentByUser — cumulative GRIT spent per user on mining.
+      OQL.Entity.manual<(Principal, Nat)>(
+        "gritSpent",
+        func() = miningState.gritSpentByUser.entries(),
+        "GritSpent",
+        "owner",
+      )
+        .payload("owner", func((p, _)) = p)
+        .payload("spent", func((_, n)) = n)
+        .ownedBy("owner")
+        .controllerOrScoped()
+        .build(),
+
+      // profile — owner-keyed Map<Principal, Profile>; manual mode because
+      // Profile has a `socials : [SocialLink]` array field and `evmAddress : ?Text`.
+      OQL.Entity.manual<(Principal, ProfileTypes.Profile)>(
+        "profile",
+        func() = profileState.profiles.entries(),
+        "Profile",
+        "owner",
+      )
+        .payload("owner", func((p, _)) = p)
+        .payload("username", func((_, pr)) = pr.username)
+        .payload("displayName", func((_, pr)) = pr.displayName)
+        .payload("bio", func((_, pr)) = pr.bio)
+        .payload("location", func((_, pr)) = pr.location)
+        .payload("born", func((_, pr)) = pr.born)
+        .payload("superpowers", func((_, pr)) = pr.superpowers)
+        .payload("profilePicture", func((_, pr)) = pr.profilePicture)
+        .payload("coverImage", func((_, pr)) = pr.coverImage)
+        .payload("evmAddress", func((_, pr)) = switch (pr.evmAddress) { case null ""; case (?t) t })
+        .payload("hasOgBadge", func((_, pr)) = pr.hasOgBadge)
+        .payload("playerBadgeLevel", func((_, pr)) = pr.playerBadgeLevel)
+        .payload("miningStreak", func((_, pr)) = pr.miningStreak)
+        .ownedBy("owner")
+        .controllerOrScoped()
+        .build(),
+
+      // tribe — public catalogue of tribes; manual mode because TribeRecord
+      // has `var` fields and `?Text` fields.
+      OQL.Entity.manual<TribeTypes.TribeRecord>(
+        "tribe",
+        func() = tribeState.tribes.values(),
+        "TribeRecord",
+        "id",
+      )
+        .payload("id", func(t) = t.id)
+        .payload("name", func(t) = t.name)
+        .payload("description", func(t) = t.description)
+        .payload("photoUrl", func(t) = switch (t.photoUrl) { case null ""; case (?u) u })
+        .payload("coverImageUrl", func(t) = switch (t.coverImageUrl) { case null ""; case (?u) u })
+        .payload("ownerId", func(t) = t.ownerId)
+        .payload("createdAt", func(t) = t.createdAt)
+        .payload("memberCount", func(t) = t.memberCount)
+        .payload("cumulativeGrit", func(t) = t.cumulativeGrit)
+        .payload("cumulativeAkk", func(t) = t.cumulativeAkk)
+        .public_()
+        .build(),
+
+      // allowlistedToken — public catalogue; auto-derive (all-primitive record).
+      allowlistState.tokens.toEntity(
+        "allowlistedToken",
+        "AllowlistedToken",
+        "tokenAddress",
+      )
+        .sample({
+          tokenAddress = "";
+          chain = "";
+          name = "";
+          symbol = "";
+          decimals = 0;
+          priceUSD = 0.0;
+        })
+        .public_()
+        .build(),
+
+      // auditLog — admin-only; auto-derive with AuditActionValue helper.
+      allowlistState.auditLog.toEntity(
+        "auditLog",
+        "AuditLogEntry",
+        "timestamp",
+      )
+        .sample({
+          action = #add;
+          tokenAddress = "";
+          chain = "";
+          adminPrincipal = Principal.fromText("aaaaa-aa");
+          timestamp = 0;
+        })
+        .controllerOnly()
+        .build(),
+
+      // networkSnapshot — admin/aggregate analytics; auto-derive (all-primitive).
+      scoringState.networkSnapshots.toEntity(
+        "networkSnapshot",
+        "DailyNetworkSnapshot",
+        "dayKey",
+      )
+        .sample({
+          dayKey = "";
+          totalGritEarned = 0;
+          totalAkkWon = 0;
+        })
+        .controllerOnly()
+        .build(),
+
+      // playerSnapshot — per-user daily snapshots; auto-derive with
+      // `principal` as the owner column. `.controllerOrScoped()` lets the
+      // agent answer aggregate questions while each user reads only their own.
+      scoringState.playerSnapshots.toEntity(
+        "playerSnapshot",
+        "DailyPlayerSnapshot",
+        "dayKey",
+      )
+        .sample({
+          dayKey = "";
+          principal = Principal.fromText("aaaaa-aa");
+          gritEarned = 0;
+          akkWon = 0;
+        })
+        .ownedBy("principal")
+        .controllerOrScoped()
+        .build(),
+
+      // claim — burn/claim records; manual mode because ClaimRecord has a
+      // ClaimStatus variant and `?Text` fields. Owner-keyed by `claimant`.
+      OQL.Entity.manual<GritTypes.ClaimRecord>(
+        "claim",
+        func() = gritState.claims.values(),
+        "ClaimRecord",
+        "txHash",
+      )
+        .payload("txHash", func(c) = c.txHash)
+        .payload("feeTxHash", func(c) = switch (c.feeTxHash) { case null ""; case (?t) t })
+        .payload("tokenAddress", func(c) = c.tokenAddress)
+        .payload("chain", func(c) = c.chain)
+        .payload("tokenSymbol", func(c) = c.tokenSymbol)
+        .payload("tokenDecimals", func(c) = c.tokenDecimals)
+        .payload("amountBurned", func(c) = c.amountBurned)
+        .payload("usdValue", func(c) = c.usdValue)
+        .payload("gritMinted", func(c) = c.gritMinted)
+        .payload("status", func(c) = c.status, )
+        .payload("timestamp", func(c) = c.timestamp)
+        .payload("claimant", func(c) = c.claimant)
+        .ownedBy("claimant")
+        .controllerOrScoped()
+        .build(),
+    ];
+  });
 };

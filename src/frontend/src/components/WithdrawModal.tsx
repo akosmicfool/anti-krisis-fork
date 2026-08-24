@@ -13,7 +13,9 @@ import { useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, CheckCircle2, Coins } from "lucide-react";
 import { useState } from "react";
 import { createActor } from "../backend";
+import { useAuth } from "../hooks/use-auth";
 import { useGetAkkTransferFee } from "../hooks/use-backend";
+import { resolveBackendHost, transferAkk } from "../lib/akk-ledger";
 
 interface WithdrawModalProps {
   akkBalance: bigint;
@@ -27,19 +29,14 @@ function extractErrorMessage(err: unknown): string {
   if (typeof err === "string" && err) return err;
   if (typeof err === "object" && err !== null) {
     const e = err as Record<string, unknown>;
-    // Standard {message: string}
     if (typeof e.message === "string" && e.message) return e.message;
-    // {err: string} — Candid result variant
     if (typeof e.err === "string" && e.err) return e.err;
-    // {Err: string}
     if (typeof e.Err === "string" && e.Err) return e.Err;
-    // {Err: {message: string}}
     if (typeof e.Err === "object" && e.Err !== null) {
       const inner = e.Err as Record<string, unknown>;
       if (typeof inner.message === "string" && inner.message)
         return inner.message;
     }
-    // ICRC-1 transfer errors: { InsufficientFunds: { balance: bigint } }
     if ("InsufficientFunds" in e)
       return "Insufficient AKK balance for this withdrawal.";
     if ("BadFee" in e) return "Incorrect transfer fee. Please try again.";
@@ -55,21 +52,12 @@ function extractErrorMessage(err: unknown): string {
       return "Transaction timestamp is in the future.";
     if ("Duplicate" in e) return "This transaction was already processed.";
     if ("BadBurn" in e) {
-      const bb = e.BadBurn as Record<string, unknown>;
-      const minBurn =
-        typeof bb?.min_burn_amount === "bigint"
-          ? (Number(bb.min_burn_amount) / 1e8).toLocaleString("en-US", {
-              maximumFractionDigits: 8,
-            })
-          : "unknown";
-      return `Minimum burn amount required: ${minBurn} AKK`;
+      return "Transfer amount is below the minimum required.";
     }
     if ("InsufficientAllowance" in e)
       return "Insufficient allowance for this transfer.";
-    // ICP replica rejection code
     if (typeof e.code === "number")
       return "The transaction was rejected. Please try again.";
-    // Reject stringifying the object — show a safe fallback
     return "Withdrawal failed. Please try again.";
   }
   return "Withdrawal failed. Please try again.";
@@ -77,6 +65,7 @@ function extractErrorMessage(err: unknown): string {
 
 export function WithdrawModal({ akkBalance, onClose }: WithdrawModalProps) {
   const { actor } = useActor(createActor);
+  const { identity } = useAuth();
   const queryClient = useQueryClient();
   const { data: feeE8s = 10000n } = useGetAkkTransferFee();
   const [address, setAddress] = useState("");
@@ -135,12 +124,34 @@ export function WithdrawModal({ akkBalance, onClose }: WithdrawModalProps) {
         throw new Error("Invalid ICP principal address");
       }
 
-      // withdrawAkk uses Account type: { owner: Principal; subaccount?: Uint8Array }
-      const recipient = { owner, subaccount: undefined };
-      const result = await actor.withdrawAkk(recipient, amtE8s);
-      if (result.__kind__ === "err") {
-        throw new Error(result.err);
+      const ledgerId = await actor.getAkkLedgerCanisterId();
+
+      if (ledgerId) {
+        // Live mode: AKK sits on the user's principal. Transfer must be signed
+        // by their Internet Identity (backend as minting account would MINT).
+        if (!identity) {
+          throw new Error("Sign in with Internet Identity to withdraw AKK");
+        }
+        const host = await resolveBackendHost();
+        const result = await transferAkk({
+          ledgerId: ledgerId.toText(),
+          identity,
+          to: owner,
+          amountE8s: amtE8s,
+          host,
+        });
+        if (!result.ok) {
+          throw new Error(result.error);
+        }
+      } else {
+        // Draft mode: no external ledger — internal balance map withdraw.
+        const recipient = { owner, subaccount: undefined };
+        const result = await actor.withdrawAkk(recipient, amtE8s);
+        if (result.__kind__ === "err") {
+          throw new Error(result.err);
+        }
       }
+
       setStatus("success");
       queryClient.invalidateQueries({ queryKey: ["akkBalance"] });
     } catch (err) {
@@ -192,7 +203,6 @@ export function WithdrawModal({ akkBalance, onClose }: WithdrawModalProps) {
           </div>
         ) : (
           <div className="space-y-5 pt-1">
-            {/* Token info block */}
             <div className="border border-[#00ff41]/15 bg-[#00ff41]/3 p-3 space-y-1.5">
               <div className="flex justify-between">
                 <span className="font-accent text-xs text-muted-foreground uppercase tracking-widest">
@@ -218,7 +228,6 @@ export function WithdrawModal({ akkBalance, onClose }: WithdrawModalProps) {
               </div>
             </div>
 
-            {/* Destination address */}
             <div className="space-y-1.5">
               <Label
                 htmlFor="withdraw-address"
@@ -243,7 +252,6 @@ export function WithdrawModal({ akkBalance, onClose }: WithdrawModalProps) {
               </p>
             </div>
 
-            {/* Amount */}
             <div className="space-y-1.5">
               <Label
                 htmlFor="withdraw-amount"
@@ -280,7 +288,6 @@ export function WithdrawModal({ akkBalance, onClose }: WithdrawModalProps) {
               )}
             </div>
 
-            {/* Error message */}
             {status === "error" && errorMsg && (
               <div
                 className="flex items-start gap-2 text-destructive text-xs font-body"
@@ -291,7 +298,6 @@ export function WithdrawModal({ akkBalance, onClose }: WithdrawModalProps) {
               </div>
             )}
 
-            {/* Actions */}
             <div className="flex gap-2 pt-1">
               <Button
                 type="button"

@@ -1,7 +1,9 @@
 node_modules/
-dist/
 .mops/
 .old/
 .platform/
 .pnpm-store/
 .cache/
+**/dist/
+.DS_Store
+akk-ledger/.icp/cache/

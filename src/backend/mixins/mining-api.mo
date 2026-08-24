@@ -8,12 +8,15 @@ import Order "mo:core/Order";
 import Nat "mo:core/Nat";
 import AkkLedgerTypes "../types/akk-ledger";
 import Principal "mo:core/Principal";
+import Text "mo:core/Text";
 import Blob "mo:core/Blob";
 import Array "mo:core/Array";
 import Int "mo:core/Int";
+import Nat64 "mo:core/Nat64";
 import Time "mo:core/Time";
 import Utils "../lib/utils";
-import Runtime "mo:core/Runtime";import Error "mo:core/Error";
+import Runtime "mo:core/Runtime";
+import Error "mo:core/Error";
 
 
 
@@ -113,11 +116,16 @@ mixin (
   };
 
   /// Withdraw AKK from caller's balance to a recipient ICRC-1 Account.
-  /// Accepts an ICRC-1 Account (with optional subaccount) for real ledger transfer.
-  /// Transfer fee (state.akkTransferFee e8s) is deducted from the caller's balance on top of amount.
-  /// Withdraw AKK from caller's balance to a recipient ICRC-1 Account.
-  /// In live mode (external ledger set), calls icrc1_transfer directly on the ledger.
-  /// The caller's AKK lives at their principal account on the ledger (no subaccount).
+  ///
+  /// Draft mode (no external ledger): moves balances in the internal map.
+  ///
+  /// Live mode (external ICRC-1 ledger): AKK is held on the USER's principal on the
+  /// ledger (minted there by this canister as minting_account). The backend cannot
+  /// call icrc1_transfer on behalf of the user — that would execute as a MINT from
+  /// the minting account (fee must be 0) and does not move the user's tokens.
+  /// Live withdrawals must be signed by the user's Internet Identity via the
+  /// frontend (direct ledger icrc1_transfer). This endpoint only supports optional
+  /// ICRC-2 transfer_from after the user has approved this canister as spender.
   public shared ({ caller }) func withdrawAkk(
     recipient : AkkLedgerTypes.Account,
     amount : Nat,
@@ -125,7 +133,6 @@ mixin (
     if (amount == 0) { return #err "Amount must be greater than 0" };
     switch (state.akkLedgerId) {
       case null {
-        // Draft mode: internal balance transfer
         let callerBal = MiningLib.getAkkEarned(state, caller);
         if (callerBal < amount) {
           return #err ("Insufficient AKK balance. Available: " # callerBal.toText() # " e8s");
@@ -133,13 +140,45 @@ mixin (
         MiningLib.withdrawAkk(state, caller, recipient.owner, amount);
       };
       case (?ledgerId) {
-        // Live mode: real ICRC-1 transfer from caller's account on the ledger
         let ledger : AkkLedgerTypes.IcrcLedger = actor (ledgerId.toText());
-        let transferResult = await ledger.icrc1_transfer({
-          from_subaccount = null; // caller's principal account
+
+        let liveFee : Nat = try {
+          let f = await ledger.icrc1_fee();
+          if (f != state.akkTransferFee) { state.akkTransferFee := f };
+          f;
+        } catch (_) {
+          return #err "Could not read the ledger fee. Please retry in a moment.";
+        };
+
+        // Prefer ICRC-2 transfer_from when the user has approved this canister.
+        // This moves tokens from the caller's ledger account (not a mint).
+        let selfP = miningCanisterPrincipal();
+        let spender : AkkLedgerTypes.Account = { owner = selfP; subaccount = null };
+        let fromAcct : AkkLedgerTypes.Account = { owner = caller; subaccount = null };
+
+        let allowance = try {
+          await ledger.icrc2_allowance({ account = fromAcct; spender })
+        } catch (_) {
+          { allowance = 0 : Nat; expires_at = null };
+        };
+
+        let needed = amount + liveFee;
+        if (allowance.allowance < needed) {
+          return #err (
+            "Live AKK withdrawals must be signed by your Internet Identity. " #
+            "Approve this app as spender for at least " # needed.toText() #
+            " e8s (amount + fee) on the AKK ledger, or use the in-app withdraw " #
+            "flow which signs the transfer directly. Current allowance: " #
+            allowance.allowance.toText() # " e8s."
+          );
+        };
+
+        let transferResult = await ledger.icrc2_transfer_from({
+          spender_subaccount = null;
+          from = fromAcct;
           to = recipient;
           amount;
-          fee = ?state.akkTransferFee;
+          fee = ?liveFee;
           memo = null;
           created_at_time = null;
         });
@@ -152,8 +191,12 @@ mixin (
               case (#InsufficientFunds _) {
                 "Insufficient balance. Check your AKK balance and try again.";
               };
-              case (#BadFee _) {
-                "Transfer fee mismatch. Please refresh and retry.";
+              case (#InsufficientAllowance { allowance }) {
+                "Insufficient allowance (" # allowance.toText() # " e8s). Re-approve and retry.";
+              };
+              case (#BadFee { expected_fee }) {
+                "Transfer fee mismatch. The ledger expects a fee of " # expected_fee.toText() #
+                " e8s. Please contact an admin to update the configured fee.";
               };
               case (#BadBurn _) {
                 "Transfer amount is below the minimum required.";
@@ -210,7 +253,9 @@ mixin (
     };
     try {
       let name = await probe.icrc1_name();
-      if (name != "Anti Krisis Koin") {
+      // Case-insensitive / outer-whitespace-tolerant match
+      let normalized = name.trim(#char ' ').toLower();
+      if (normalized != "anti krisis koin") {
         return #err("Ledger validation failed: target returned name '" # name # "', expected 'Anti Krisis Koin'");
       };
       // Verify the ledger's minting account matches this canister.
@@ -239,10 +284,8 @@ mixin (
   };
 
   /// Query the currently configured AKK ledger canister ID.
-  public shared query ({ caller }) func getAkkLedgerCanisterId() : async ?Principal {
-    if (not AllowlistLib.isAdmin(adminState, caller)) {
-      return null;
-    };
+  /// Public so any user can resolve the ledger for signed withdrawals.
+  public shared query func getAkkLedgerCanisterId() : async ?Principal {
     state.akkLedgerId;
   };
 
@@ -354,11 +397,19 @@ mixin (
                 to = { owner = entry.owner; subaccount = null };
                 amount = entry.amount;
                 fee = null;
-                memo = null;
-                created_at_time = null;
+                memo = ?Utils.blockIdMemo(entry.blockId);
+                created_at_time = ?Nat64.fromNat(Int.abs(Time.now()));
               });
               switch (result) {
                 case (#Ok _) {
+                  state.mintedBlockIds.add(entry.blockId);
+                  let without = state.abandonedMints.filter(func(e : MiningLib.MintRetryEntry) : Bool { e.blockId != entry.blockId });
+                  state.abandonedMints.clear();
+                  for (e in without.values()) { state.abandonedMints.add(e) };
+                  state.totalMintSucceeded += 1;
+                  credited += 1;
+                };
+                case (#Err(#Duplicate _)) {
                   state.mintedBlockIds.add(entry.blockId);
                   let without = state.abandonedMints.filter(func(e : MiningLib.MintRetryEntry) : Bool { e.blockId != entry.blockId });
                   state.abandonedMints.clear();
@@ -434,58 +485,10 @@ mixin (
     MiningLib.getPendingMints(state);
   };
 
-  /// Admin: audit Current Supply vs sum of all actual balances.
-  /// Returns totalAkkMined, sumOfAllBalances (akkBalances map),
-  /// pendingMints total, and discrepancy = totalAkkMined - (sumOfAllBalances + pendingMints).
-  /// Admin: audit Current Supply vs sum of all actual balances.
-  /// In live mode, totalAkkMined is the authoritative supply counter.
-  public shared query ({ caller }) func getSupplyVsBalanceAudit() : async {
-    totalAkkMined : Nat;
-    sumOfAllBalances : Nat;
-    pendingMints : Nat;
-    discrepancy : Int;
-  } {
-    if (not AllowlistLib.isAdmin(adminState, caller)) {
-      return { totalAkkMined = 0; sumOfAllBalances = 0; pendingMints = 0; discrepancy = 0 };
-    };
-    // In live mode akkBalances is a draft-only buffer; use totalAkkWonByUser for audit
-    var sumBalances : Nat = 0;
-    for ((_, earned) in state.totalAkkWonByUser.entries()) {
-      sumBalances += earned;
-    };
-    var pendingTotal : Nat = 0;
-    for (entry in state.pendingMints.values()) {
-      pendingTotal += entry.amount;
-    };
-    let discrepancy : Int = state.totalAkkMined.toInt() - (sumBalances + pendingTotal).toInt();
-    {
-      totalAkkMined    = state.totalAkkMined;
-      sumOfAllBalances = sumBalances;
-      pendingMints     = pendingTotal;
-      discrepancy;
-    };
-  };
-
-  /// Query: compute total AKK minted from real block history (read-only cross-check).
   public shared query func getTotalAkkFromHistory() : async Nat {
     MiningLib.getTotalAkkFromHistory(state);
   };
 
-  /// Admin: recalculate totalAkkMined by summing akkReward across all blockHistory entries.
-  /// Corrects inflation caused by ghost blocks or double-counting before the timer fix.
-  public shared ({ caller }) func recalculateTotalAkkMined() : async { #ok : Nat; #err : Text } {
-    if (not AllowlistLib.isAdmin(adminState, caller)) {
-      return #err "Unauthorized: admins only";
-    };
-    var sum : Nat = 0;
-    for (b in state.blockHistory.values()) {
-      sum += b.akkReward;
-    };
-    state.totalAkkMined := sum;
-    #ok sum;
-  };
-
-  /// Admin: return mints that exhausted all retry attempts.
   public shared ({ caller }) func getAbandonedMints() : async [MiningTypes.MintRetryView] {
     if (not AllowlistLib.isAdmin(adminState, caller)) {
       return [];

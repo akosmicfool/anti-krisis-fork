@@ -551,7 +551,7 @@ module {
   /// Returns the number of entries successfully drained.
   public func drainPendingMints(
     state   : State,
-    tryMint : (Principal, Nat) -> async Bool,
+    tryMint : (Principal, Nat, Nat) -> async Bool,
   ) : async Nat {
     var drained : Nat = 0;
     // Collect entries to process (snapshot before mutation)
@@ -572,7 +572,7 @@ module {
         state.abandonedMints.add(entry);
         state.totalMintAbandoned += 1;
       } else {
-        let success = await tryMint(entry.owner, entry.amount);
+        let success = await tryMint(entry.owner, entry.amount, entry.blockId);
         entry.attempts += 1;
         entry.lastAttemptTime := Time.now();
         state.totalMintRetried += 1;

@@ -113,6 +113,7 @@ export function UsernamePromptModal({ onComplete }: Props) {
         superpowers: "",
         profilePicture: avatar,
         coverImage: "",
+        evmAddress: null,
         socials: [],
       });
       // Invalidate so the rest of the app reflects the new username
@@ -120,16 +121,20 @@ export function UsernamePromptModal({ onComplete }: Props) {
       qc.invalidateQueries({ queryKey: ["myProfile"] });
       onComplete();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Unknown error";
+      const code =
+        err && typeof err === "object" && "profileError" in err
+          ? String((err as { profileError: unknown }).profileError)
+          : "";
+      const msg = err instanceof Error ? err.message : "Could not save profile";
       if (
-        msg.includes("usernameAlreadyTaken") ||
-        msg.toLowerCase().includes("taken")
+        code === "usernameAlreadyTaken" ||
+        msg.toLowerCase().includes("already taken")
       ) {
         setFieldError("Username already taken");
         setCheckState("taken");
       } else if (
-        msg.includes("usernameTooLong") ||
-        msg.toLowerCase().includes("too long")
+        code === "usernameTooLong" ||
+        msg.toLowerCase().includes("15 characters")
       ) {
         setFieldError("Username must be 15 characters or less");
       } else {

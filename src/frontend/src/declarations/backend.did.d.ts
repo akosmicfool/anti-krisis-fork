@@ -56,6 +56,7 @@ export interface BlockRecord {
   'minerGritSpent' : Array<[MinerId, bigint]>,
   'winnerOwner' : [] | [Principal],
 }
+export interface Cell { 'value' : Value, 'name' : string }
 export interface ChainFeeEntry { 'feeWei' : bigint, 'chain' : string }
 export interface ClaimRecord {
   'status' : ClaimStatus,
@@ -75,6 +76,12 @@ export type ClaimStatus = { 'verified' : null } |
   { 'pending' : null } |
   { 'pendingFee' : null } |
   { 'failed' : null };
+export interface HttpHeader { 'value' : string, 'name' : string }
+export interface HttpRequestResult {
+  'status' : bigint,
+  'body' : Uint8Array,
+  'headers' : Array<HttpHeader>,
+}
 export type MinerId = bigint;
 export type MinerStatus = { 'active' : null } |
   { 'exhausted' : null } |
@@ -160,16 +167,17 @@ export interface PublicProfile {
   'evmAddress' : [] | [string],
   'location' : string,
 }
+export interface Result { 'hasMore' : boolean, 'rows' : Array<Array<Cell>> }
 export interface SocialLink { 'url' : string, 'name' : string }
 export type Timestamp = bigint;
 export interface TransformationInput {
   'context' : Uint8Array,
-  'response' : http_request_result,
+  'response' : HttpRequestResult,
 }
 export interface TransformationOutput {
   'status' : bigint,
   'body' : Uint8Array,
-  'headers' : Array<http_header>,
+  'headers' : Array<HttpHeader>,
 }
 export interface Tribe {
   'id' : TribeId,
@@ -209,12 +217,12 @@ export interface TribeScoreEntry {
   'tribeName' : string,
 }
 export type UserId = Principal;
-export interface http_header { 'value' : string, 'name' : string }
-export interface http_request_result {
-  'status' : bigint,
-  'body' : Uint8Array,
-  'headers' : Array<http_header>,
-}
+export type Value = { 'int' : bigint } |
+  { 'nat' : bigint } |
+  { 'float' : number } |
+  { 'bool' : boolean } |
+  { 'null' : null } |
+  { 'text' : string };
 export interface _SERVICE {
   'addAdmin' : ActorMethod<[Principal], undefined>,
   'addToken' : ActorMethod<[AllowlistedToken], undefined>,
@@ -252,6 +260,7 @@ export interface _SERVICE {
     { 'ok' : Tribe } |
       { 'err' : TribeError }
   >,
+  'execute' : ActorMethod<[string], Result>,
   'getAbandonedMints' : ActorMethod<[], Array<MintRetryView>>,
   'getAdmins' : ActorMethod<[], Array<Principal>>,
   'getAkkBalance' : ActorMethod<[], bigint>,
@@ -338,24 +347,12 @@ export interface _SERVICE {
       'currentBlock' : bigint,
     }
   >,
-  'getSupplyVsBalanceAudit' : ActorMethod<
-    [],
-    {
-      'totalAkkMined' : bigint,
-      'discrepancy' : bigint,
-      'pendingMints' : bigint,
-      'sumOfAllBalances' : bigint,
-    }
-  >,
   'getTestScore' : ActorMethod<[], [] | [number]>,
   'getTokens' : ActorMethod<[], Array<AllowlistedToken>>,
   'getTopPlayers' : ActorMethod<[string], Array<PlayerScoreEntry>>,
   'getTopTribes' : ActorMethod<[string], Array<TribeScoreEntry>>,
   'getTotalAk69Score' : ActorMethod<[], number>,
   'getTotalAkkFromHistory' : ActorMethod<[], bigint>,
-  /**
-   * / Captures the canister's own principal into selfPrincipal using the low-level prim.
-   */
   'getTotalBlockCount' : ActorMethod<[], bigint>,
   'getTribe' : ActorMethod<[TribeId], [] | [Tribe]>,
   'getTribeAkkFromHistory' : ActorMethod<[TribeId], bigint>,
@@ -389,11 +386,6 @@ export interface _SERVICE {
       { 'err' : TribeError }
   >,
   'leaveTribe' : ActorMethod<[], { 'ok' : null } | { 'err' : TribeError }>,
-  'recalculateTotalAkkMined' : ActorMethod<
-    [],
-    { 'ok' : bigint } |
-      { 'err' : string }
-  >,
   'recheckClaimByHash' : ActorMethod<
     [string],
     { 'ok' : string } |
@@ -419,6 +411,7 @@ export interface _SERVICE {
     { 'ok' : Profile } |
       { 'err' : ProfileError }
   >,
+  'schema' : ActorMethod<[], string>,
   'searchTribes' : ActorMethod<[string], Array<Tribe>>,
   'setAkkLedgerCanisterId' : ActorMethod<
     [Principal],

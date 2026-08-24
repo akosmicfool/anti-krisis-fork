@@ -1,13 +1,11 @@
-type http_request_result = 
- record {
-   body: blob;
-   headers: vec http_header;
-   status: nat;
- };
-type http_header = 
- record {
-   name: text;
-   value: text;
+type Value = 
+ variant {
+   "bool": bool;
+   float: float64;
+   "int": int;
+   "nat": nat;
+   "null";
+   "text": text;
  };
 type UserId = principal;
 type TribeScoreEntry = 
@@ -56,19 +54,24 @@ type Tribe =
 type TransformationOutput = 
  record {
    body: blob;
-   headers: vec http_header;
+   headers: vec HttpHeader;
    status: nat;
  };
 type TransformationInput = 
  record {
    context: blob;
-   response: http_request_result;
+   response: HttpRequestResult;
  };
 type Timestamp = int;
 type SocialLink = 
  record {
    name: text;
    url: text;
+ };
+type Result = 
+ record {
+   hasMore: bool;
+   rows: vec vec Cell;
  };
 type PublicProfile = 
  record {
@@ -167,6 +170,17 @@ type MinerStatus =
    paused;
  };
 type MinerId = nat;
+type HttpRequestResult = 
+ record {
+   body: blob;
+   headers: vec HttpHeader;
+   status: nat;
+ };
+type HttpHeader = 
+ record {
+   name: text;
+   value: text;
+ };
 type ClaimStatus = 
  variant {
    failed;
@@ -193,6 +207,11 @@ type ChainFeeEntry =
  record {
    chain: text;
    feeWei: nat;
+ };
+type Cell = 
+ record {
+   name: text;
+   value: Value;
  };
 type BlockRecord = 
  record {
@@ -314,6 +333,7 @@ service : {
       err: TribeError;
       ok: Tribe;
     });
+  execute: (qJson: text) -> (Result) query;
   getAbandonedMints: () -> (vec MintRetryView);
   getAdmins: () -> (vec principal) query;
   getAkkBalance: () -> (nat);
@@ -401,20 +421,12 @@ service : {
       totalGritSpent: nat;
       totalMiners: nat;
     }) query;
-  getSupplyVsBalanceAudit: () ->
-   (record {
-      discrepancy: int;
-      pendingMints: nat;
-      sumOfAllBalances: nat;
-      totalAkkMined: nat;
-    }) query;
   getTestScore: () -> (opt float64) query;
   getTokens: () -> (vec AllowlistedToken) query;
   getTopPlayers: (timescale: text) -> (vec PlayerScoreEntry) query;
   getTopTribes: (timescale: text) -> (vec TribeScoreEntry) query;
   getTotalAk69Score: () -> (float64) query;
   getTotalAkkFromHistory: () -> (nat) query;
-  /// Captures the canister's own principal into selfPrincipal using the low-level prim.
   getTotalBlockCount: () -> (nat) query;
   getTribe: (tribeId: TribeId) -> (opt Tribe) query;
   getTribeAkkFromHistory: (tribeId: TribeId) -> (nat) query;
@@ -455,10 +467,6 @@ service : {
                        err: TribeError;
                        ok;
                      });
-  recalculateTotalAkkMined: () -> (variant {
-                                     err: text;
-                                     ok: nat;
-                                   });
   recheckClaimByHash: (txHash: text) -> (variant {
                                            err: text;
                                            ok: text;
@@ -488,6 +496,7 @@ service : {
       err: ProfileError;
       ok: Profile;
     });
+  schema: () -> (text) query;
   searchTribes: (searchQuery: text) -> (vec Tribe) query;
   setAkkLedgerCanisterId: (id: principal) -> (variant {
                                                 err: text;

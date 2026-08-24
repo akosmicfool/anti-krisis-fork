@@ -1,8 +1,13 @@
 import Map "mo:core/Map";
 import Principal "mo:core/Principal";
+import Text "mo:core/Text";
 import ProfileTypes "../types/profile";
 
 module {
+  func normUsername(u : Text) : Text {
+    u.trim(#char ' ').toLower();
+  };
+
   public type State = {
     profiles : Map.Map<Principal, ProfileTypes.Profile>;
   };
@@ -60,7 +65,7 @@ module {
     getTribe : (Principal) -> ?Text,
   ) : ?ProfileTypes.PublicProfile {
     for ((owner, profile) in state.profiles.entries()) {
-      if (profile.username == username) return ?(toPublic(profile, getTribe(owner)));
+      if (normUsername(profile.username) == normUsername(username)) return ?(toPublic(profile, getTribe(owner)));
     };
     null;
   };
@@ -69,7 +74,7 @@ module {
   /// Returns null if no profile with that username exists.
   public func getPrincipalByUsername(state : State, username : Text) : ?Principal {
     for ((principal, profile) in state.profiles.entries()) {
-      if (profile.username == username) return ?principal;
+      if (normUsername(profile.username) == normUsername(username)) return ?principal;
     };
     null;
   };
@@ -85,7 +90,7 @@ module {
   /// Returns true if no other profile currently holds this username.
   public func isUsernameAvailable(state : State, claimant : Principal, username : Text) : Bool {
     for ((p, profile) in state.profiles.entries()) {
-      if (profile.username == username and not Principal.equal(p, claimant)) {
+      if (normUsername(profile.username) == normUsername(username) and not Principal.equal(p, claimant)) {
         return false;
       };
     };
@@ -152,12 +157,14 @@ module {
     caller  : Principal,
     input   : ProfileTypes.ProfileInput,
   ) : { #ok : ProfileTypes.Profile; #err : ProfileTypes.ProfileError } {
-    switch (validate(input)) {
+    let cleanUsername = input.username.trim(#char ' ');
+    let cleaned : ProfileTypes.ProfileInput = { input with username = cleanUsername };
+    switch (validate(cleaned)) {
       case (?e) return #err(e);
       case null {};
     };
-    // Username uniqueness: reject if another principal owns this username.
-    if (not isUsernameAvailable(state, caller, input.username)) {
+    // Username uniqueness (case-insensitive): reject if another principal owns this username.
+    if (not isUsernameAvailable(state, caller, cleanUsername)) {
       return #err(#usernameAlreadyTaken);
     };
     // Preserve hasOgBadge, playerBadgeLevel, and miningStreak from any existing profile so saveProfile never resets them.
@@ -166,16 +173,16 @@ module {
       case null (false, 0, 0);
     };
     let profile : ProfileTypes.Profile = {
-      username         = input.username;
-      displayName      = input.displayName;
-      bio              = input.bio;
-      location         = input.location;
-      born             = input.born;
-      superpowers      = input.superpowers;
-      profilePicture   = input.profilePicture;
-      coverImage       = input.coverImage;
-      socials          = input.socials;
-      evmAddress       = input.evmAddress;
+      username         = cleanUsername;
+      displayName      = cleaned.displayName;
+      bio              = cleaned.bio;
+      location         = cleaned.location;
+      born             = cleaned.born;
+      superpowers      = cleaned.superpowers;
+      profilePicture   = cleaned.profilePicture;
+      coverImage       = cleaned.coverImage;
+      socials          = cleaned.socials;
+      evmAddress       = cleaned.evmAddress;
       hasOgBadge       = existingOgBadge;
       playerBadgeLevel = existingBadgeLevel;
       miningStreak     = existingStreak;

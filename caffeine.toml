@@ -1,11 +1,11 @@
 manifest_version = "0.1.0"
 
 [project]
-id = "my-app"
-name = "my-app"
+id = "019e2022-fb01-744c-b2b7-d8ed5b4d430d"
+name = "Anti Krisis (fork)"
 
 [workspace]
-include = ["src/**"]
+include = [ "src/**" ]
 
 [canisters.frontend]
-depends_on = ["backend"]
+depends_on = [ "backend" ]

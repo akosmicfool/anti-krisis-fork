@@ -31,8 +31,6 @@ import {
   useGetAbandonedMints,
   useGetMintRetryStats,
   useGetPendingMints,
-  useGetSupplyVsBalanceAudit,
-  useRecalculateTotalAkkMined,
   useRetryMint,
 } from "@/hooks/use-backend";
 import {
@@ -134,8 +132,8 @@ function CreditAbandonedMintsSection() {
           CREDIT ABANDONED MINTS
         </h2>
         <p className="text-muted-foreground text-sm mt-1">
-          Retroactively credit all abandoned mints to winners' internal
-          balances. Use this after fixing a ledger configuration issue.
+          Retroactively mint all abandoned rewards to winners on the AKK ledger.
+          Use this after fixing a ledger configuration issue.
         </p>
       </div>
 
@@ -285,144 +283,6 @@ function ScoreOverrideSection() {
           No test override active.
         </p>
       )}
-    </div>
-  );
-}
-
-// ─── SupplyAuditSection ──────────────────────────────────────────────────────
-function SupplyAuditSection() {
-  const { data: audit, refetch, isFetching } = useGetSupplyVsBalanceAudit();
-  const recalculate = useRecalculateTotalAkkMined();
-  const [recalcMsg, setRecalcMsg] = useState<string | null>(null);
-
-  const formatAkk = (e8s: bigint | undefined) =>
-    e8s !== undefined
-      ? (Number(e8s) / 1e8).toLocaleString(undefined, {
-          maximumFractionDigits: 4,
-        })
-      : "—";
-
-  const handleRecalculate = async () => {
-    try {
-      await recalculate.mutateAsync();
-      setRecalcMsg("Supply recalculated from block history.");
-      setTimeout(() => setRecalcMsg(null), 5000);
-    } catch {
-      setRecalcMsg("Recalculation failed.");
-      setTimeout(() => setRecalcMsg(null), 5000);
-    }
-  };
-
-  type SupplyTile = {
-    label: string;
-    value: string;
-    unit: string;
-    highlight?: "red" | "green";
-  };
-  const discrepancy = audit?.discrepancy ?? 0n;
-  const hasDiscrepancy = discrepancy !== 0n;
-
-  const tiles = [
-    {
-      label: "CURRENT SUPPLY",
-      value: formatAkk(audit?.totalAkkMined),
-      unit: "AKK",
-    },
-    {
-      label: "ACTUAL BALANCES",
-      value: formatAkk(audit?.sumOfAllBalances),
-      unit: "AKK",
-    },
-    {
-      label: "PENDING MINTS",
-      value: formatAkk(audit?.pendingMints),
-      unit: "AKK",
-    },
-    {
-      label: "DISCREPANCY",
-      value: audit
-        ? formatAkk(discrepancy < 0n ? -discrepancy : discrepancy)
-        : "—",
-      unit: "AKK",
-      highlight: hasDiscrepancy ? "red" : "green",
-    },
-  ] satisfies SupplyTile[];
-
-  return (
-    <div className="space-y-5" data-ocid="admin.supply_audit_section">
-      <div className="flex items-center justify-between">
-        <h3 className="font-['VT323'] text-white text-xl tracking-widest uppercase">
-          SUPPLY AUDIT
-        </h3>
-        <button
-          type="button"
-          onClick={() => refetch()}
-          disabled={isFetching}
-          data-ocid="admin.supply_audit_refresh_button"
-          className="font-['VT323'] text-green-400 text-base tracking-widest hover:text-green-300 transition-colors disabled:opacity-50"
-        >
-          {isFetching ? "[LOADING…]" : "[REFRESH] →"}
-        </button>
-      </div>
-
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        {tiles.map(({ label, value, unit, highlight }) => (
-          <div
-            key={label}
-            className="border border-green-900/40 bg-black/30 p-3 text-center"
-          >
-            <div className="font-['VT323'] text-green-500/70 text-xs tracking-widest uppercase">
-              {label}
-            </div>
-            <div
-              className={`font-['VT323'] text-2xl ${
-                highlight === "red"
-                  ? "text-red-400"
-                  : highlight === "green"
-                    ? "text-green-400"
-                    : "text-green-400"
-              }`}
-            >
-              {value}
-            </div>
-            <div className="font-['VT323'] text-green-700 text-xs tracking-widest">
-              {unit}
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {hasDiscrepancy && (
-        <p
-          className="font-['VT323'] text-red-400 text-sm tracking-widest"
-          data-ocid="admin.supply_audit_discrepancy_warning"
-        >
-          ⚠ Discrepancy detected. Use RECALCULATE SUPPLY to reset Current Supply
-          from block history.
-        </p>
-      )}
-
-      <div className="flex items-center gap-4">
-        <button
-          type="button"
-          onClick={handleRecalculate}
-          disabled={recalculate.isPending}
-          data-ocid="admin.supply_audit_recalculate_button"
-          className="font-['VT323'] text-base tracking-widest px-3 py-1.5 border border-primary text-primary bg-transparent hover:bg-primary/10 transition-colors disabled:opacity-50 uppercase"
-        >
-          {recalculate.isPending ? "[RECALCULATING…]" : "[RECALCULATE SUPPLY]"}
-        </button>
-        {recalcMsg && (
-          <span
-            className={`font-['VT323'] text-sm tracking-widest ${
-              recalcMsg.includes("failed") ? "text-red-400" : "text-green-400"
-            }`}
-            data-ocid="admin.supply_audit_success_state"
-          >
-            {recalcMsg}
-          </span>
-        )}
-      </div>
     </div>
   );
 }
@@ -3018,9 +2878,6 @@ export function AdminPage() {
         <TabsContent value="testing" className="mt-6 space-y-8">
           <ScoreOverrideSection />
           <div className="border-t border-green-900/30 pt-6">
-            <SupplyAuditSection />
-          </div>
-          <div className="border-t border-green-900/30 pt-6">
             <CreditAbandonedMintsSection />
           </div>
         </TabsContent>
@@ -3072,13 +2929,16 @@ function MintRetryQueuePanel() {
             label: "QUEUE DEPTH",
             value: stats ? Number(stats.queueDepth) : "—",
           },
-          { label: "RETRIED", value: stats ? Number(stats.totalRetried) : "—" },
           {
-            label: "SUCCEEDED",
+            label: "LIFETIME RETRIED",
+            value: stats ? Number(stats.totalRetried) : "—",
+          },
+          {
+            label: "LIFETIME SUCCEEDED",
             value: stats ? Number(stats.totalSucceeded) : "—",
           },
           {
-            label: "ABANDONED",
+            label: "LIFETIME ABANDONED",
             value: stats ? Number(stats.totalAbandoned) : "—",
           },
         ].map(({ label, value }) => (
@@ -3190,6 +3050,7 @@ function MintRetryQueuePanel() {
                       "ATTEMPTS",
                       "LAST ATTEMPT",
                       "ERROR",
+                      "",
                     ].map((h) => (
                       <th
                         key={h}
@@ -3223,6 +3084,15 @@ function MintRetryQueuePanel() {
                       </td>
                       <td className="px-3 py-2 text-red-400/70 max-w-32 truncate">
                         {entry.error}
+                      </td>
+                      <td className="px-3 py-2">
+                        <button
+                          type="button"
+                          onClick={() => retryMint.mutate(entry.blockId)}
+                          className="font-['VT323'] text-green-400 border border-green-700 px-2 py-0.5 text-sm hover:bg-green-900/30 tracking-widest"
+                        >
+                          [RETRY]
+                        </button>
                       </td>
                     </tr>
                   ))}

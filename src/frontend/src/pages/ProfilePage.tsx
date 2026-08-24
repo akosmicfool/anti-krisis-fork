@@ -58,6 +58,7 @@ interface FormState {
   superpowers: string;
   profilePicture: string;
   coverImage: string;
+  evmAddress: string;
   socials: SocialLink[];
 }
 
@@ -70,6 +71,7 @@ const EMPTY_FORM: FormState = {
   superpowers: "",
   profilePicture: "",
   coverImage: "",
+  evmAddress: "",
   socials: [],
 };
 
@@ -216,6 +218,7 @@ export function ProfilePage() {
         superpowers: profile.superpowers ?? "",
         profilePicture: profile.profilePicture ?? "",
         coverImage: profile.coverImage ?? "",
+        evmAddress: profile.evmAddress ?? "",
         socials: Array.isArray(profile.socials) ? profile.socials : [],
       });
     }
@@ -250,6 +253,7 @@ export function ProfilePage() {
         superpowers: profile.superpowers ?? "",
         profilePicture: profile.profilePicture ?? "",
         coverImage: profile.coverImage ?? "",
+        evmAddress: profile.evmAddress ?? "",
         socials: Array.isArray(profile.socials) ? profile.socials : [],
       });
     }
@@ -262,6 +266,7 @@ export function ProfilePage() {
       setUsernameError("Username is required");
       return;
     }
+    setUsernameError("");
     try {
       await saveProfile.mutateAsync({
         username: form.username.trim(),
@@ -272,6 +277,7 @@ export function ProfilePage() {
         superpowers: form.superpowers.trim(),
         profilePicture: form.profilePicture,
         coverImage: form.coverImage,
+        evmAddress: form.evmAddress.trim() ? form.evmAddress.trim() : null,
         socials: form.socials.filter((l) => l.name.trim() || l.url.trim()),
       });
       toast.success("Profile saved", {
@@ -279,9 +285,18 @@ export function ProfilePage() {
       });
       setEditMode(false);
     } catch (err) {
-      toast.error("Save failed", {
-        description: err instanceof Error ? err.message : "Unknown error",
-      });
+      const code =
+        err && typeof err === "object" && "profileError" in err
+          ? String((err as { profileError: unknown }).profileError)
+          : "";
+      const msg = err instanceof Error ? err.message : "Could not save profile";
+      if (
+        code === "usernameAlreadyTaken" ||
+        msg.toLowerCase().includes("already taken")
+      ) {
+        setUsernameError("Username already taken");
+      }
+      toast.error("Save failed", { description: msg });
     }
   }
 

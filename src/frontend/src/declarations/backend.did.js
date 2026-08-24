@@ -46,6 +46,19 @@ export const TribeError = IDL.Variant({
   'maxTribesReached' : IDL.Null,
   'newOwnerNoUsername' : IDL.Null,
 });
+export const Value = IDL.Variant({
+  'int' : IDL.Int,
+  'nat' : IDL.Nat,
+  'float' : IDL.Float64,
+  'bool' : IDL.Bool,
+  'null' : IDL.Null,
+  'text' : IDL.Text,
+});
+export const Cell = IDL.Record({ 'value' : Value, 'name' : IDL.Text });
+export const Result = IDL.Record({
+  'hasMore' : IDL.Bool,
+  'rows' : IDL.Vec(IDL.Vec(Cell)),
+});
 export const MintRetryView = IDL.Record({
   'owner' : IDL.Principal,
   'lastAttemptTime' : IDL.Int,
@@ -211,23 +224,20 @@ export const ProfileError = IDL.Variant({
   'displayNameTooLong' : IDL.Null,
   'usernameAlreadyTaken' : IDL.Null,
 });
-export const http_header = IDL.Record({
-  'value' : IDL.Text,
-  'name' : IDL.Text,
-});
-export const http_request_result = IDL.Record({
+export const HttpHeader = IDL.Record({ 'value' : IDL.Text, 'name' : IDL.Text });
+export const HttpRequestResult = IDL.Record({
   'status' : IDL.Nat,
   'body' : IDL.Vec(IDL.Nat8),
-  'headers' : IDL.Vec(http_header),
+  'headers' : IDL.Vec(HttpHeader),
 });
 export const TransformationInput = IDL.Record({
   'context' : IDL.Vec(IDL.Nat8),
-  'response' : http_request_result,
+  'response' : HttpRequestResult,
 });
 export const TransformationOutput = IDL.Record({
   'status' : IDL.Nat,
   'body' : IDL.Vec(IDL.Nat8),
-  'headers' : IDL.Vec(http_header),
+  'headers' : IDL.Vec(HttpHeader),
 });
 
 export const idlService = IDL.Service({
@@ -295,6 +305,7 @@ export const idlService = IDL.Service({
       [IDL.Variant({ 'ok' : Tribe, 'err' : TribeError })],
       [],
     ),
+  'execute' : IDL.Func([IDL.Text], [Result], ['query']),
   'getAbandonedMints' : IDL.Func([], [IDL.Vec(MintRetryView)], []),
   'getAdmins' : IDL.Func([], [IDL.Vec(IDL.Principal)], ['query']),
   'getAkkBalance' : IDL.Func([], [IDL.Nat], []),
@@ -431,18 +442,6 @@ export const idlService = IDL.Service({
       ],
       ['query'],
     ),
-  'getSupplyVsBalanceAudit' : IDL.Func(
-      [],
-      [
-        IDL.Record({
-          'totalAkkMined' : IDL.Nat,
-          'discrepancy' : IDL.Int,
-          'pendingMints' : IDL.Nat,
-          'sumOfAllBalances' : IDL.Nat,
-        }),
-      ],
-      ['query'],
-    ),
   'getTestScore' : IDL.Func([], [IDL.Opt(IDL.Float64)], ['query']),
   'getTokens' : IDL.Func([], [IDL.Vec(AllowlistedToken)], ['query']),
   'getTopPlayers' : IDL.Func(
@@ -515,11 +514,6 @@ export const idlService = IDL.Service({
       [IDL.Variant({ 'ok' : IDL.Null, 'err' : TribeError })],
       [],
     ),
-  'recalculateTotalAkkMined' : IDL.Func(
-      [],
-      [IDL.Variant({ 'ok' : IDL.Nat, 'err' : IDL.Text })],
-      [],
-    ),
   'recheckClaimByHash' : IDL.Func(
       [IDL.Text],
       [IDL.Variant({ 'ok' : IDL.Text, 'err' : IDL.Text })],
@@ -553,6 +547,7 @@ export const idlService = IDL.Service({
       [IDL.Variant({ 'ok' : Profile, 'err' : ProfileError })],
       [],
     ),
+  'schema' : IDL.Func([], [IDL.Text], ['query']),
   'searchTribes' : IDL.Func([IDL.Text], [IDL.Vec(Tribe)], ['query']),
   'setAkkLedgerCanisterId' : IDL.Func(
       [IDL.Principal],
@@ -658,6 +653,19 @@ export const idlFactory = ({ IDL }) => {
     'notOwner' : IDL.Null,
     'maxTribesReached' : IDL.Null,
     'newOwnerNoUsername' : IDL.Null,
+  });
+  const Value = IDL.Variant({
+    'int' : IDL.Int,
+    'nat' : IDL.Nat,
+    'float' : IDL.Float64,
+    'bool' : IDL.Bool,
+    'null' : IDL.Null,
+    'text' : IDL.Text,
+  });
+  const Cell = IDL.Record({ 'value' : Value, 'name' : IDL.Text });
+  const Result = IDL.Record({
+    'hasMore' : IDL.Bool,
+    'rows' : IDL.Vec(IDL.Vec(Cell)),
   });
   const MintRetryView = IDL.Record({
     'owner' : IDL.Principal,
@@ -818,20 +826,20 @@ export const idlFactory = ({ IDL }) => {
     'displayNameTooLong' : IDL.Null,
     'usernameAlreadyTaken' : IDL.Null,
   });
-  const http_header = IDL.Record({ 'value' : IDL.Text, 'name' : IDL.Text });
-  const http_request_result = IDL.Record({
+  const HttpHeader = IDL.Record({ 'value' : IDL.Text, 'name' : IDL.Text });
+  const HttpRequestResult = IDL.Record({
     'status' : IDL.Nat,
     'body' : IDL.Vec(IDL.Nat8),
-    'headers' : IDL.Vec(http_header),
+    'headers' : IDL.Vec(HttpHeader),
   });
   const TransformationInput = IDL.Record({
     'context' : IDL.Vec(IDL.Nat8),
-    'response' : http_request_result,
+    'response' : HttpRequestResult,
   });
   const TransformationOutput = IDL.Record({
     'status' : IDL.Nat,
     'body' : IDL.Vec(IDL.Nat8),
-    'headers' : IDL.Vec(http_header),
+    'headers' : IDL.Vec(HttpHeader),
   });
   
   return IDL.Service({
@@ -899,6 +907,7 @@ export const idlFactory = ({ IDL }) => {
         [IDL.Variant({ 'ok' : Tribe, 'err' : TribeError })],
         [],
       ),
+    'execute' : IDL.Func([IDL.Text], [Result], ['query']),
     'getAbandonedMints' : IDL.Func([], [IDL.Vec(MintRetryView)], []),
     'getAdmins' : IDL.Func([], [IDL.Vec(IDL.Principal)], ['query']),
     'getAkkBalance' : IDL.Func([], [IDL.Nat], []),
@@ -1039,18 +1048,6 @@ export const idlFactory = ({ IDL }) => {
         ],
         ['query'],
       ),
-    'getSupplyVsBalanceAudit' : IDL.Func(
-        [],
-        [
-          IDL.Record({
-            'totalAkkMined' : IDL.Nat,
-            'discrepancy' : IDL.Int,
-            'pendingMints' : IDL.Nat,
-            'sumOfAllBalances' : IDL.Nat,
-          }),
-        ],
-        ['query'],
-      ),
     'getTestScore' : IDL.Func([], [IDL.Opt(IDL.Float64)], ['query']),
     'getTokens' : IDL.Func([], [IDL.Vec(AllowlistedToken)], ['query']),
     'getTopPlayers' : IDL.Func(
@@ -1127,11 +1124,6 @@ export const idlFactory = ({ IDL }) => {
         [IDL.Variant({ 'ok' : IDL.Null, 'err' : TribeError })],
         [],
       ),
-    'recalculateTotalAkkMined' : IDL.Func(
-        [],
-        [IDL.Variant({ 'ok' : IDL.Nat, 'err' : IDL.Text })],
-        [],
-      ),
     'recheckClaimByHash' : IDL.Func(
         [IDL.Text],
         [IDL.Variant({ 'ok' : IDL.Text, 'err' : IDL.Text })],
@@ -1165,6 +1157,7 @@ export const idlFactory = ({ IDL }) => {
         [IDL.Variant({ 'ok' : Profile, 'err' : ProfileError })],
         [],
       ),
+    'schema' : IDL.Func([], [IDL.Text], ['query']),
     'searchTribes' : IDL.Func([IDL.Text], [IDL.Vec(Tribe)], ['query']),
     'setAkkLedgerCanisterId' : IDL.Func(
         [IDL.Principal],

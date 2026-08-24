@@ -13,7 +13,7 @@ main = "src/backend/main.mo"
 path = ".old/src/backend/dist/backend.most"
 
 [toolchain]
-moc = "1.10.1"
+moc = "1.11.1"
 lintoko = "0.7.0"
 
 [lint]
@@ -24,6 +24,8 @@ args = [ "--default-persistent-actors", "--actor-idl=src/backend/system-idl", "-
 
 [dependencies]
 core = "2.6.0"
-caffeineai-http-outcalls = "0.1.1"
+caffeineai-http-outcalls = "0.1.2"
 icrc1-mo = "0.2.1"
 array = "./src/backend/vendor/array"
+caffeineai-oql = "0.4.0"
+base = "0.16.0"

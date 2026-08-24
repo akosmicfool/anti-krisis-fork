@@ -100,6 +100,9 @@ module {
     /// ICRC-1: Query the minting account (the principal that can create tokens).
     icrc1_minting_account : query () -> async ?Account;
 
+    /// ICRC-1: Query the default transfer fee (in e8s).
+    icrc1_fee : query () -> async Nat;
+
     /// ICRC-2: Approve a spender to transfer up to `amount` from caller.
     icrc2_approve : (ApproveArg) -> async ApproveResult;
 
