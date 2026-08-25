@@ -193,6 +193,19 @@ module {
   let NULL_ADDRESS : Text = "0x0000000000000000000000000000000000000000";
   let DEAD_ADDRESS : Text = "0x000000000000000000000000000000000000dead";
 
+  // Klima Protocol AAM (Base mainnet) — the spender that pulls kVCM from the
+  // caller during retireCreditViaKlima. Used by the retirement claim verifier.
+  public let KVCM_AAM_ADDRESS : Text = "0x1c24239309398220883207681602bff4d10fbde1";
+
+  // kVCM token (Base mainnet) — the only retirement input token today.
+  public let KVCM_TOKEN_ADDRESS : Text = "0x00fbac94fec8d4089d3fe979f39454f48c71a65d";
+
+  /// True when (chain, tokenAddress) identifies a kVCM retirement claim rather
+  /// than a classic dead-address burn. Kept next to the verifier that serves it.
+  public func isRetirementClaim(chain : Text, tokenAddress : Text) : Bool {
+    chain.toLower() == "base" and normAddr(tokenAddress) == KVCM_TOKEN_ADDRESS;
+  };
+
   let TRANSFER_TOPIC0 : Text = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 
   /// Parse a hex string (with optional "0x" prefix) to Nat.
@@ -455,6 +468,201 @@ module {
         };
         #ok({ amountBurned = amount });
       };
+    };
+  };
+
+  /// Locate the next ERC-20 Transfer log object in `arr` at or after `searchFrom`.
+  /// Returns the emitting contract address, from/to topics and data hex, plus the
+  /// position of the NEXT Transfer topic so callers can resume scanning.
+  func findNextTransferLog(arr : [Char], searchFrom : Nat) : { #ok : { logAddress : Text; fromAddr : Text; toAddr : Text; dataHex : Text; nextFrom : Nat }; #err : Text } {
+    let jsonLen = arr.size();
+    var cursor = searchFrom;
+
+    label search loop {
+      switch (indexOfText(arr, cursor, TRANSFER_TOPIC0)) {
+        case null { return #err("No ERC-20 Transfer log found") };
+        case (?topicPos) {
+          // Walk backward from topicPos to find the opening '{' of this log object
+          var logObjStart : Nat = topicPos;
+          var depth : Int = 0;
+          var i : Int = topicPos.toInt() - 1;
+          var found = false;
+          label walkBack while (i >= 0) {
+            let c = arr[i.toNat()];
+            if (c == '}') { depth += 1 }
+            else if (c == '{') {
+              if (depth == 0) {
+                logObjStart := i.toNat();
+                found := true;
+                i := -1; // break
+              } else {
+                depth -= 1;
+              };
+            };
+            i -= 1;
+          };
+
+          if (not found) {
+            cursor := topicPos + TRANSFER_TOPIC0.size();
+          } else {
+            // Walk forward from topicPos to find the matching closing '}' of this log object
+            var logObjEnd : Nat = jsonLen;
+            var depth2 : Nat = 1;
+            var j = logObjStart + 1;
+            label walkFwd while (j < jsonLen) {
+              if (arr[j] == '{') { depth2 += 1 }
+              else if (arr[j] == '}') {
+                if (depth2 == 1) { logObjEnd := j + 1; j := jsonLen } // break
+                else { depth2 -= 1 };
+              };
+              j += 1;
+            };
+
+            let logArr = arr.sliceToArray(logObjStart.toInt(), logObjEnd.toInt());
+
+            // Emitting contract address (the token contract for ERC-20 Transfers)
+            let logAddress : Text = switch (extractStringField(logArr, 0, "address")) {
+              case null { "" };
+              case (?a) { normAddr(a) };
+            };
+
+            // Extract topic[0] (Transfer sig), topic[1] (from), topic[2] (to)
+            let topicsNeedle1 = "\"topics\":[";
+            let topicsNeedle2 = "\"topics\": [";
+            let tBodyStart : ?Nat = switch (indexOfText(logArr, 0, topicsNeedle1)) {
+              case (?p) { ?(p + topicsNeedle1.size()) };
+              case null {
+                switch (indexOfText(logArr, 0, topicsNeedle2)) {
+                  case (?p) { ?(p + topicsNeedle2.size()) };
+                  case null { null };
+                };
+              };
+            };
+
+            switch (tBodyStart) {
+              case null {
+                cursor := logObjEnd; // not a well-formed Transfer log — keep scanning
+              };
+              case (?tStart) {
+                switch (nextQuoted(logArr, tStart)) {
+                  case null {
+                    cursor := logObjEnd;
+                  };
+                  case (?(t0, after0)) {
+                    if (normAddr(t0) != normAddr(TRANSFER_TOPIC0)) {
+                      cursor := logObjEnd;
+                    } else {
+                      switch (nextQuoted(logArr, after0)) {
+                        case null {
+                          return #err("Transfer topics missing topic[1] (from address)");
+                        };
+                        case (?(t1, after1)) {
+                          switch (nextQuoted(logArr, after1)) {
+                            case null {
+                              return #err("Transfer topics missing topic[2] (to address)");
+                            };
+                            case (?(t2, _)) {
+                              switch (extractStringField(logArr, 0, "data")) {
+                                case null {
+                                  cursor := logObjEnd;
+                                };
+                                case (?dataHex) {
+                                  let fromAddr = topicToAddress(t1);
+                                  let toAddr = topicToAddress(t2);
+                                  // Position past this log so the caller can find the next one
+                                  var nextPos : Nat = logObjEnd;
+                                  switch (indexOfText(arr, logObjEnd, TRANSFER_TOPIC0)) {
+                                    case null {};
+                                    case (?np) { nextPos := np };
+                                  };
+                                  return #ok({ logAddress; fromAddr; toAddr; dataHex; nextFrom = nextPos });
+                                };
+                              };
+                            };
+                          };
+                        };
+                      };
+                    };
+                  };
+                };
+              };
+            };
+          };
+        };
+      };
+    };
+    // Unreachable — the loop above only exits via return — but required so the
+    // function body has the declared result type.
+    #err("No ERC-20 Transfer log found");
+  };
+
+  /// Verify a Klima-mediated kVCM retirement receipt.
+  ///
+  /// Proof model: retireCreditViaKlima is atomic. If the transaction succeeded,
+  /// every internal step happened — including the AAM pulling exactly the spent
+  /// kVCM out of the retiring user's wallet. So: status=1 + sum of all
+  /// Transfer(user → AAM) logs for the kVCM token IS a complete retirement proof.
+  /// The retirement itself is additionally attested by the AggregatorRetired
+  /// event emitted by the same transaction.
+  ///
+  /// Returns the total raw kVCM amount pulled from the user (18 decimals) as
+  /// `amountBurned`, sharing VerificationResult with the classic burn verifier
+  /// so claim-pipeline callers need no per-mode destructuring.
+  public func parseRetirementResponse(jsonResponse : Text) : VerificationResult {
+    let arr = jsonResponse.toArray();
+
+    if (jsonResponse.contains(#text "\"error\"")) {
+      return #err("PENDING");
+    };
+
+    if (fieldIsNull(arr, "result")) {
+      return #err("PENDING");
+    };
+
+    switch (extractStatusField(arr)) {
+      case null {
+        return #err("PENDING");
+      };
+      case (?status) {
+        if (status == "0x0") {
+          return #err("TX_FAILED");
+        } else if (status != "0x1") {
+          return #err("Transaction did not succeed (status=" # status # ")");
+        };
+      };
+    };
+
+    let normAam = normAddr(KVCM_AAM_ADDRESS);
+    let normKvcm = normAddr(KVCM_TOKEN_ADDRESS);
+    var total : Nat = 0;
+    var foundAny = false;
+    var cursor : Nat = 0;
+
+    label scan loop {
+      switch (findNextTransferLog(arr, cursor)) {
+        case (#err(_)) { break scan };
+        case (#ok({ logAddress; fromAddr; toAddr; dataHex; nextFrom })) {
+          cursor := nextFrom;
+          // Filter: emitted by the kVCM token contract, destination AAM,
+          // source ≠ AAM itself. This counts exactly what the retirement pulled
+          // OUT of user wallets (the caller, plus any fee-on-transfer deductions
+          // which surface as separate user→AAM transfers; aggregator-internal
+          // swap legs and AAM→pool movements are excluded).
+          if (logAddress == normKvcm and toAddr == normAam and fromAddr != normAam) {
+            let amount = hexToNat(dataHex);
+            if (amount > 0) {
+              total += amount;
+              foundAny := true;
+            };
+          };
+        };
+      };
+    };
+
+    if (not foundAny) {
+      #err("No kVCM transfer into the Klima AAM found in receipt")
+    } else {
+      #ok({ amountBurned = total })
     };
   };
 };

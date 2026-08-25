@@ -226,7 +226,11 @@ mixin (
             };
           } else {
             // Use parseRpcResponse to determine if the tx is pending or done
-            let probeResult = VerifyLib.parseRpcResponse(response, normToken, chain);
+            let probeResult = if (VerifyLib.isRetirementClaim(chain, normToken)) {
+              VerifyLib.parseRetirementResponse(response);
+            } else {
+              VerifyLib.parseRpcResponse(response, normToken, chain);
+            };
             switch (probeResult) {
               case (#err("PENDING")) {
                 // Not indexed yet — retry up to 5 times, cycling to next endpoint
@@ -256,7 +260,11 @@ mixin (
           return #ok;
         };
 
-        let verifyResult = VerifyLib.parseRpcResponse(jsonResponse, normToken, chain);
+        let verifyResult = if (VerifyLib.isRetirementClaim(chain, normToken)) {
+          VerifyLib.parseRetirementResponse(jsonResponse);
+        } else {
+          VerifyLib.parseRpcResponse(jsonResponse, normToken, chain);
+        };
         switch (verifyResult) {
           case (#err("PENDING")) {
             // Transaction not yet mined — leave as #pending; background timer will re-check
@@ -388,7 +396,11 @@ mixin (
 
     if (not gotResponse) { return }; // network error — try again next cycle
 
-    let result = VerifyLib.parseRpcResponse(response, record.tokenAddress, record.chain);
+    let result = if (VerifyLib.isRetirementClaim(record.chain, record.tokenAddress)) {
+      VerifyLib.parseRetirementResponse(response);
+    } else {
+      VerifyLib.parseRpcResponse(response, record.tokenAddress, record.chain);
+    };
     switch (result) {
       case (#err("PENDING")) {
         // Check max age: 35 minutes = 35 * 60 * 1_000_000_000 nanoseconds
