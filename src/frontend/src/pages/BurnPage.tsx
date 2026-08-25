@@ -45,10 +45,11 @@ import {
 } from "../hooks/use-backend";
 import { type PlatformFeeInfo, useWallet } from "../hooks/use-wallet";
 import {
-  KVCM_APPROVE_ABI,
-  KVCM_RETIRE_ABI,
   buildRetirementPlan,
   isKvcmRetirement,
+  KVCM_APPROVE_ABI,
+  KVCM_RETIRE_ABI,
+  waitForRetirementTx,
 } from "../lib/kvcm-retirement";
 import {
   CHAIN_LABELS,
@@ -617,7 +618,7 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
         // abstracted: credit selection + inverse quoting happen off-screen;
         // the user just signs approve → retire. Same downstream UX.
         const plan = await buildRetirementPlan(amount.trim());
-        hash = await wallet.sendContractTransaction({
+        const approveHash = await wallet.sendContractTransaction({
           contractAddress: plan.approve.address,
           abi: KVCM_APPROVE_ABI,
           functionName: plan.approve.functionName,
@@ -625,7 +626,13 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
           chainId: targetChainId,
         });
         setStepAndRef("confirming_on_chain");
-        await wallet.sendContractTransaction({
+        // The AAM pulls kVCM during the retire call, so the allowance must be
+        // live first — wait for the approval receipt before signing the retire.
+        await waitForRetirementTx(approveHash);
+        setStepAndRef("awaiting_confirm");
+        // The CLAIM must reference the RETIRE transaction — its receipt carries
+        // the kVCM Transfer(user → AAM) proof the backend verifier expects.
+        hash = await wallet.sendContractTransaction({
           contractAddress: plan.retire.address,
           abi: KVCM_RETIRE_ABI,
           functionName: plan.retire.functionName,

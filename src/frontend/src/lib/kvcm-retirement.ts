@@ -452,3 +452,19 @@ export async function buildRetirementPlan(
 export function formatTonnes(tonnesWei: bigint): string {
   return `${formatUnits(tonnesWei, 18)} tCO2e`;
 }
+
+/**
+ * Waits for a Base transaction's receipt (used between the approve and retire
+ * signatures so the allowance is live before the AAM pulls kVCM). Throws on
+ * revert or after ~2 minutes without inclusion.
+ */
+export async function waitForRetirementTx(hash: string): Promise<void> {
+  const client = publicClient();
+  const receipt = await client.waitForTransactionReceipt({
+    hash: hash as `0x${string}`,
+    timeout: 120_000,
+  });
+  if (receipt.status !== "success") {
+    throw new Error("Approval transaction failed on-chain. Please try again.");
+  }
+}
