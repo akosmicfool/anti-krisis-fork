@@ -45,10 +45,10 @@ import {
 } from "../hooks/use-backend";
 import { type PlatformFeeInfo, useWallet } from "../hooks/use-wallet";
 import {
-  buildRetirementPlan,
-  isKvcmRetirement,
   KVCM_APPROVE_ABI,
   KVCM_RETIRE_ABI,
+  buildRetirementPlan,
+  isKvcmRetirement,
   waitForRetirementTx,
 } from "../lib/kvcm-retirement";
 import {
