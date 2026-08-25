@@ -83,10 +83,14 @@ import ClaimStatusValue "types/ClaimStatusValue";
   // Once set through the admin panel it is persisted in actor state and survives upgrades automatically.
   let adminState : AllowlistLib.AdminState = { admins = List.empty(); var feeRecipient = ?"0x66Cc129C0f758B52d561F0bD2AC8ECf37f19C052"; var feePercent = 0.69; var gritIssuanceRate = 1_000_000_000_000; var bootstrapPrincipalSet = false; var isLaunched = false };
 
-  // Bootstrap admin from init arg — replace the management canister placeholder with your real
-  // Internet Identity principal before going live. When set, bootstrapAdmin() and
-  // resetAndClaimAdmin() are both disabled (no race condition possible).
-  let bootstrapAdminPrincipal : ?Principal = ?Principal.fromText("aaaaa-aa");
+  // Bootstrap admin — the `akk-deployer` CLI identity (origin-independent: its principal is
+  // fixed forever, unlike II principals which are derived from the site domain, so it survives
+  // any future domain move). On every fresh canister start with an empty admin list this
+  // identity is seeded as sole admin, and setting it (anything other than the "aaaaa-aa"
+  // placeholder) permanently disables the open admin-claim endpoints.
+  // SECURITY: never revert this to ?Principal.fromText("aaaaa-aa") — that re-opens
+  // anonymous admin takeover on the next deploy.
+  let bootstrapAdminPrincipal : ?Principal = ?Principal.fromText("wtghr-y4d6x-mncok-76fms-habs7-tmk5s-cn2xl-vfd26-hcz4q-tv7p3-hae");
 
   // On every actor start (fresh install or upgrade): if a real bootstrapAdminPrincipal was
   // provided (i.e. it differs from the management canister placeholder) and no admins exist
