@@ -441,19 +441,64 @@ export async function retireKvcm(
       "No eligible carbon credits are currently available for retirement. Please try again later.",
     );
   }
-  const credit = credits[randomIndex(credits.length)];
-
-  // 3. Reverse-quote the kVCM budget into tonnes (+ fallback search)
   const client = publicClient();
-  let quoted: { tonnes: bigint; kvcmCost: bigint };
-  try {
-    quoted = await inverseQuote(client, credit, kvcmWei);
-  } catch {
-    quoted = await forwardSearchQuote(client, credit, kvcmWei);
+
+  // Shuffle candidates so every qualifying credit stays in the random mix,
+  // then take the FIRST one whose backing pool can actually fund the swap.
+  // Klima pools vary in depth: some registered credits cannot source the
+  // quoted amount at execution time (the aggregator's view quotes revert
+  // with available<required), which would otherwise fail the burn after
+  // the user had already signed the approve transaction.
+  const candidates = [...credits];
+  for (let i = candidates.length - 1; i > 0; i--) {
+    const j = randomIndex(i + 1);
+    [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
   }
-  if (quoted.tonnes <= 0n || quoted.kvcmCost <= 0n) {
+
+  let credit: EligibleCredit | null = null;
+  let quoted: { tonnes: bigint; kvcmCost: bigint } | null = null;
+  for (const candidate of candidates) {
+    let q: { tonnes: bigint; kvcmCost: bigint };
+    try {
+      q = await inverseQuote(client, candidate, kvcmWei);
+    } catch {
+      try {
+        q = await forwardSearchQuote(client, candidate, kvcmWei);
+      } catch {
+        continue; // no usable quote entry point for this credit
+      }
+    }
+    if (q.tonnes <= 0n || q.kvcmCost <= 0n) continue;
+
+    // Liquidity probe: re-quote the same tonnes via the pure-view forward
+    // entry point. If the pool cannot fund the swap leg, this reverts and
+    // we simply move on to the next candidate — before any wallet prompt.
+    try {
+      await client.readContract({
+        address: KVCM_RETIREMENT.aggregator as `0x${string}`,
+        abi: QUOTE_FORWARD_ABI,
+        functionName: "quoteRetireCreditViaKlima",
+        args: [
+          candidate.creditToken,
+          0n,
+          q.tonnes,
+          KVCM_RETIREMENT.kvcm as `0x${string}`,
+          candidate.carbonClass,
+          0n,
+        ],
+      });
+    } catch {
+      continue; // illiquid credit — try the next one
+    }
+
+    credit = candidate;
+    quoted = q;
+    break;
+  }
+
+  if (!credit || !quoted) {
     throw new Error(
-      "Amount too small — it does not fund any measurable carbon retirement.",
+      "No eligible carbon credit can currently fund a burn of this size. Try a smaller amount or try again later.",
     );
   }
 
