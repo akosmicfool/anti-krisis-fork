@@ -27,6 +27,7 @@ import {
   http,
   createPublicClient,
   encodeFunctionData,
+  fallback,
   formatUnits,
   parseUnits,
 } from "viem";
@@ -70,6 +71,7 @@ interface SubgraphCreditsResponse {
       registeredCredits?: Array<{ creditAddress: string }>;
     }>;
   };
+  errors?: Array<{ message?: string }>;
 }
 
 async function fetchEligibleCredits(): Promise<EligibleCredit[]> {
@@ -83,6 +85,15 @@ async function fetchEligibleCredits(): Promise<EligibleCredit[]> {
   });
   if (!res.ok) throw new Error(`Subgraph unavailable (${res.status})`);
   const json = (await res.json()) as SubgraphCreditsResponse;
+
+  // Malformed/failed queries return HTTP 200 with errors + empty data.
+  // Fail loudly (mirroring the carbon-subgraph check below) instead of
+  // silently treating that as an empty eligible set.
+  if (json.errors && json.errors.length > 0) {
+    throw new Error(
+      `Protocol subgraph query failed: ${json.errors[0]?.message ?? "unknown error"}`,
+    );
+  }
 
   // Flatten class → credit pairs
   const pairs: Array<{
@@ -107,8 +118,7 @@ async function fetchEligibleCredits(): Promise<EligibleCredit[]> {
   // how large the registry grows.
   const addresses = [...new Set(pairs.map((p) => p.creditToken))];
   const CARBON_PAGE_SIZE = 500;
-  const CARBON_QUERY =
-    "query Credits($addrs: [Bytes!]!, $skip: Int!) { creditTokens(first: 500, skip: $skip, where: { tokenAddress_in: $addrs }) { tokenAddress rawRegistryId batchId tokenStandard } }";
+  const CARBON_QUERY = `query Credits($addrs: [Bytes!]!, $skip: Int!) { creditTokens(first: ${CARBON_PAGE_SIZE}, skip: $skip, where: { tokenAddress_in: $addrs }) { tokenAddress rawRegistryId batchId tokenStandard } }`;
   const classified: Array<{
     tokenAddress: string;
     rawRegistryId?: string | null;
@@ -245,9 +255,17 @@ const QUOTE_FORWARD_ABI = [
 ] as const;
 
 function publicClient() {
+  // Same fallback set as the backend's fee verifier — a single Base RPC
+  // (mainnet.base.org) rate-limits and stalls the quote step; viem's
+  // fallback() tries transports in order and skips failed ones.
   return createPublicClient({
     chain: base,
-    transport: http("https://mainnet.base.org"),
+    transport: fallback([
+      http("https://mainnet.base.org"),
+      http("https://base.llamarpc.com"),
+      http("https://1rpc.io/base"),
+      http("https://base.publicnode.com"),
+    ]),
   });
 }
 

@@ -13,7 +13,7 @@
 - **lint fix**: `pnpm fix`
 - **build**: `pnpm build`
 
-**Backend** (run from `src/backend/`):
+**Backend** (run from repo root — `mops.toml` lives there; running from `src/backend/` breaks the local `vendor/array` path resolution):
 
 - **install**: `mops install`
 - **typecheck**: `mops check --fix`
