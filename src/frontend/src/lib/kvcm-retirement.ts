@@ -502,8 +502,12 @@ export async function retireKvcm(
     );
   }
 
-  // 4. Slippage buffer on the quoted cost
-  const maxKvcmIn = quoted.kvcmCost + (quoted.kvcmCost * SLIPPAGE_BPS) / 10000n;
+  // 4. Spend cap: the retire route is EXACT-IN — it consumes the FULL
+  // entered kVCM amount. maxInputTokenIn must therefore cover the entire
+  // budget plus a small buffer. Capping it at the quoted tokenAmount
+  // under-funds the pull and the tx reverts (observed as ERC20Insufficient-
+  // Allowance 0xfb8f41b2 in the wallet after approve had succeeded).
+  const maxKvcmIn = kvcmWei + (kvcmWei * SLIPPAGE_BPS) / 10000n;
 
   // 5. TX A — approve the AAM to pull up to maxKvcmIn
   const approveData = encodeFunctionData({
