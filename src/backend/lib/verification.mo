@@ -195,10 +195,18 @@ module {
 
   let TRANSFER_TOPIC0 : Text = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 
-  // KlimaDAO Retirement Aggregator `CarbonRetired` event signature:
-  //   CarbonRetired(uint8,address,string,address,string,string,address,address,uint256)
-  // Emitted by retireCreditViaKlima when a carbon credit retirement succeeds on-chain.
-  let CARBON_RETIRED_TOPIC0 : Text = "0xfe5de47ce4dfc6726ac148d8360e76dc174cb29266cc2d4812babc2ec680d212";
+  // KlimaDAO Retirement Aggregator `AggregatorRetired` event signature:
+  //   AggregatorRetired(uint8,address,string,address,string,string,address,uint256,uint256,uint8,uint256)
+  // Emitted by retireCreditViaKlima when a carbon retirement succeeds on Base.
+  // Verified live on-chain: topic1/topic2 = retiringAddress/beneficiaryAddress,
+  // data carries retiringEntityString/beneficiaryString/retirementMessage,
+  // and the last uint256 word (cost) holds the retired credit-token amount.
+  let CARBON_RETIRED_TOPIC0 : Text = "0x6fc64daccb3e984a15ddc33e89be48bb68d451d2b125e3c84fe8aa218018ab9c";
+
+  // Klima Protocol Aggregation Approval Manager — the contract that pulls the
+  // user's kVCM during retireCreditViaKlima. The burn amount is the sum of
+  // kVCM Transfer logs whose destination is this address.
+  let AAM_ADDRESS : Text = "0x1c24239309398220883207681602bff4d10fbde1";
 
   /// Parse a hex string (with optional "0x" prefix) to Nat.
   func hexToNat(hex : Text) : Nat {
@@ -562,18 +570,130 @@ module {
         };
       };
     };
-    #err("No CarbonRetired retirement log found");
+    #err("No AggregatorRetired retirement log found");
+  };
+
+  /// Sum all ERC-20 Transfer logs of `tokenAddress` whose destination is the
+  /// Klima AAM (the contract that pulls the user's kVCM during retirement).
+  /// Returns #ok(sum) when at least one such transfer exists.
+  func sumAamTransfers(arr : [Char], tokenAddress : Text) : { #ok : Nat; #err : Text } {
+    let jsonLen = arr.size();
+    let normToken = normAddr(tokenAddress);
+    let normAam = normAddr(AAM_ADDRESS);
+
+    let logsNeedle1 = "\"logs\":[";
+    let logsNeedle2 = "\"logs\": [";
+    let logsStart : ?Nat = switch (indexOfText(arr, 0, logsNeedle1)) {
+      case (?pos) { ?(pos + logsNeedle1.size()) };
+      case null {
+        switch (indexOfText(arr, 0, logsNeedle2)) {
+          case (?pos) { ?(pos + logsNeedle2.size()) };
+          case null { null };
+        };
+      };
+    };
+    let logsBodyStart = switch (logsStart) { case null { 0 }; case (?s) { s }; };
+
+    var searchFrom : Nat = logsBodyStart;
+    var total : Nat = 0;
+
+    label search loop {
+      switch (indexOfText(arr, searchFrom, TRANSFER_TOPIC0)) {
+        case null { break search };
+        case (?topicPos) {
+          var logObjStart : Nat = topicPos;
+          var depth : Int = 0;
+          var i : Int = topicPos.toInt() - 1;
+          var found = false;
+          label walkBack while (i >= 0) {
+            let ch = arr[i.toNat()];
+            if (ch == '}') { depth += 1 }
+            else if (ch == '{') {
+              if (depth == 0) { logObjStart := i.toNat(); found := true; i := -1 }
+              else { depth -= 1 };
+            };
+            i -= 1;
+          };
+          if (not found) {
+            searchFrom := topicPos + TRANSFER_TOPIC0.size();
+          } else {
+            var logObjEnd : Nat = jsonLen;
+            var depth2 : Nat = 1;
+            var j = logObjStart + 1;
+            label walkFwd while (j < jsonLen) {
+              if (arr[j] == '{') { depth2 += 1 }
+              else if (arr[j] == '}') {
+                if (depth2 == 1) { logObjEnd := j + 1; j := jsonLen }
+                else { depth2 -= 1 };
+              };
+              j += 1;
+            };
+            let logArr = arr.sliceToArray(logObjStart.toInt(), logObjEnd.toInt());
+
+            let addrMatch = switch (extractStringField(logArr, 0, "address")) {
+              case null { false };
+              case (?addr) { normAddr(addr) == normToken };
+            };
+            if (addrMatch) {
+              let tNeedle1 = "\"topics\":[";
+              let tNeedle2 = "\"topics\": [";
+              let tStart : ?Nat = switch (indexOfText(logArr, 0, tNeedle1)) {
+                case (?p) { ?(p + tNeedle1.size()) };
+                case null {
+                  switch (indexOfText(logArr, 0, tNeedle2)) {
+                    case (?p) { ?(p + tNeedle2.size()) };
+                    case null { null };
+                  };
+                };
+              };
+              let toAddr : Text = switch (tStart) {
+                case null { "" };
+                case (?ts) {
+                  switch (nextQuoted(logArr, ts)) {
+                    case null { "" };
+                    case (?(_, after0)) {
+                      switch (nextQuoted(logArr, after0)) {
+                        case null { "" };
+                        case (?(_, after1)) {
+                          switch (nextQuoted(logArr, after1)) {
+                            case null { "" };
+                            case (?(t2, _)) { topicToAddress(t2) };
+                          };
+                        };
+                      };
+                    };
+                  };
+                };
+              };
+              if (normAddr(toAddr) == normAam) {
+                let amount = switch (extractStringField(logArr, 0, "data")) {
+                  case null { 0 };
+                  case (?d) { hexToNat(d) };
+                };
+                total += amount;
+              };
+            };
+            searchFrom := topicPos + TRANSFER_TOPIC0.size();
+          };
+        };
+      };
+    };
+
+    if (total > 0) { #ok(total) } else {
+      #err("No " # tokenAddress # " transfer to AAM found in retirement receipt")
+    };
   };
 
   /// Parse the JSON RPC response and verify a KlimaDAO Retirement Aggregator
   /// retirement receipt (retireCreditViaKlima) on the Base chain.
   /// A kVCM burn claim is confirmed only when the on-chain retirement succeeded:
-  /// the receipt must have status 0x1 AND contain a CarbonRetired event log with
-  /// a non-zero retiredAmount.
+  /// the receipt must have status 0x1 AND contain an AggregatorRetired event log.
+  /// The burned amount credited is the kVCM actually pulled from the user
+  /// (sum of expectedToken Transfer logs into the AAM).
   /// Returns #err("PENDING") when the transaction is not yet mined/indexed (retriable).
   /// Returns #err("TX_FAILED") when the receipt exists but status=0 (explicit on-chain failure).
   /// All other #err values are definitive verification failures.
-  public func parseRetirementResponse(jsonResponse : Text, _expectedToken : Text, _chain : Text) : VerificationResult {
+  public func parseRetirementResponse(jsonResponse : Text, expectedToken : Text, _chain : Text) : VerificationResult {
     let arr = jsonResponse.toArray();
 
     if (jsonResponse.contains(#text "\"error\"")) {
@@ -603,8 +723,13 @@ module {
 
     switch (findRetirementLog(arr)) {
       case (#err(msg)) { #err(msg) };
-      case (#ok(amount)) {
-        #ok({ amountBurned = amount });
+      case (#ok(_retiredAmount)) {
+        // The retirement event proves the burn happened on-chain; credit the
+        // user for the kVCM that was actually pulled from them.
+        switch (sumAamTransfers(arr, expectedToken)) {
+          case (#err(msg)) { #err(msg) };
+          case (#ok(amount)) { #ok({ amountBurned = amount }) };
+        };
       };
     };
   };
