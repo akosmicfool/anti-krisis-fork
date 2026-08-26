@@ -16,7 +16,7 @@ module {
       case ("arbitrum") { ?"https://arb1.arbitrum.io/rpc" };
       case ("polygon")  { ?"https://polygon-rpc.com" };
       case ("optimism") { ?"https://mainnet.optimism.io" };
-      case ("base")     { ?"https://mainnet.base.org" };
+      case ("base")     { ?"https://mainnet.base.org|https://base.llamarpc.com|https://1rpc.io/base|https://base.publicnode.com" };
       case ("celo")     { ?"https://forno.celo.org|https://rpc.ankr.com/celo|https://celo.drpc.org|https://celo.meowrpc.com" };
       case (_)          { null };
     };

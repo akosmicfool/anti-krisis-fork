@@ -64,20 +64,29 @@ mixin (
     let body = VerifyLib.buildRpcRequestBody(feeTxHash);
 
     var response : Text = "";
-    var gotResponse = false;
+    var gotValidResponse = false;
     var i = 0;
-    while (i < rpcUrlList.size() and not gotResponse) {
+    while (i < rpcUrlList.size() and not gotValidResponse) {
+      var candidate : Text = "";
       try {
-        response := await OutCall.httpPostRequest(
+        candidate := await OutCall.httpPostRequest(
           rpcUrlList[i],
           [{ name = "Content-Type"; value = "application/json" }],
           body,
           transformResponse
         );
-        gotResponse := true;
-      } catch (_) { i += 1 };
+        // A top-level JSON-RPC "error" (rate limit, overload, gateway) means
+        // THIS RPC failed — skip to the next fallback URL instead of treating
+        // it as a terminal PENDING. A legitimately-mined receipt never carries
+        // an "error" key; result:null is the only not-yet-mined signal.
+        if (not candidate.contains(#text "\"error\"")) {
+          response := candidate;
+          gotValidResponse := true;
+        };
+      } catch (_) {};
+      i += 1;
     };
-    if (not gotResponse) { return #err("PENDING") };
+    if (not gotValidResponse) { return #err("PENDING") };
 
     // We only care about tx status (success/fail/pending) — not log contents
     // Reuse parseRpcResponse with a dummy token address; the status check runs first
