@@ -99,42 +99,60 @@ async function fetchEligibleCredits(): Promise<EligibleCredit[]> {
   }
   if (pairs.length === 0) return [];
 
-  // Classify via the CARBON subgraph using a CONSTANT query — fetch every
-  // registered creditToken once and intersect with the protocol list here.
-  // (A string-interpolated where-in clause produced malformed GraphQL and the
-  // endpoint answered HTTP 200 + errors + empty data, which read as "no
-  // eligible credits" and failed every burn.)
-  const carbonRes = await fetch(CARBON_SUBGRAPH, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      query:
-        "{ creditTokens(first: 1000) { tokenAddress rawRegistryId batchId tokenStandard } }",
-    }),
-  });
-  if (!carbonRes.ok)
-    throw new Error(`Carbon subgraph unavailable (${carbonRes.status})`);
-  const carbonJson = (await carbonRes.json()) as {
-    errors?: Array<{ message?: string }>;
-    data?: {
-      creditTokens?: Array<{
-        tokenAddress: string;
-        rawRegistryId?: string | null;
-        batchId?: string | null;
-        tokenStandard?: string | null;
-      }>;
+  // Classify via the CARBON subgraph with a parameterized query: the address
+  // list travels as GraphQL *variables* (JSON), never interpolated into query
+  // text — an earlier string-built where-in clause produced malformed GraphQL,
+  // and the endpoint's HTTP-200+errors reply read as "no eligible credits".
+  // Pages are looped so newly registered credits are always included no matter
+  // how large the registry grows.
+  const addresses = [...new Set(pairs.map((p) => p.creditToken))];
+  const CARBON_PAGE_SIZE = 500;
+  const CARBON_QUERY =
+    "query Credits($addrs: [Bytes!]!, $skip: Int!) { creditTokens(first: 500, skip: $skip, where: { tokenAddress_in: $addrs }) { tokenAddress rawRegistryId batchId tokenStandard } }";
+  const classified: Array<{
+    tokenAddress: string;
+    rawRegistryId?: string | null;
+    batchId?: string | null;
+    tokenStandard?: string | null;
+  }> = [];
+  for (let skip = 0; ; skip += CARBON_PAGE_SIZE) {
+    const pageRes = await fetch(CARBON_SUBGRAPH, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: CARBON_QUERY,
+        variables: { addrs: addresses, skip },
+      }),
+    });
+    if (!pageRes.ok)
+      throw new Error(`Carbon subgraph unavailable (${pageRes.status})`);
+    const pageJson = (await pageRes.json()) as {
+      errors?: Array<{ message?: string }>;
+      data?: {
+        creditTokens?: Array<{
+          tokenAddress: string;
+          rawRegistryId?: string | null;
+          batchId?: string | null;
+          tokenStandard?: string | null;
+        }>;
+      };
     };
-  };
-  // A malformed/failed query comes back as HTTP 200 with errors + empty data.
-  // Surface it loudly instead of silently treating it as "no eligible credits".
-  if (carbonJson.errors && carbonJson.errors.length > 0) {
-    throw new Error(
-      `Carbon subgraph query failed: ${carbonJson.errors[0]?.message ?? "unknown error"}`,
-    );
+    // Malformed/failed queries return HTTP 200 with errors + empty data.
+    // Fail loudly instead of silently treating that as an empty eligible set.
+    if (pageJson.errors && pageJson.errors.length > 0) {
+      throw new Error(
+        `Carbon subgraph query failed: ${pageJson.errors[0]?.message ?? "unknown error"}`,
+      );
+    }
+    const page = pageJson.data?.creditTokens ?? [];
+    classified.push(...page);
+    if (page.length < CARBON_PAGE_SIZE) break;
+    if (skip > 10_000)
+      throw new Error("Carbon subgraph pagination did not terminate");
   }
 
   const eligible = new Map<string, EligibleCredit>();
-  for (const ct of carbonJson.data?.creditTokens ?? []) {
+  for (const ct of classified) {
     const addr = (ct.tokenAddress?.toLowerCase() ?? "") as `0x${string}` | "";
     if (!addr) continue;
     if ((ct.tokenStandard ?? "ERC20") !== "ERC20") continue; // ECO (1155) excluded
