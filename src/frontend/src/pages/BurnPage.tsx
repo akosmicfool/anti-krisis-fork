@@ -618,8 +618,6 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
         const retirement = await retireKvcm({
           amount: amount.trim(),
           beneficiaryAddress: wallet.address as `0x${string}`,
-          beneficiaryString: "RegNet Burn",
-          retirementMessage: "Retiring carbon credits via RegNet burn",
           sendContractTransaction: wallet.sendContractTransaction,
         });
         hash = retirement.retireHash;
