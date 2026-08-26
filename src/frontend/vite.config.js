@@ -17,7 +17,9 @@ export default defineConfig({
   build: {
     emptyOutDir: true,
     sourcemap: false,
-    minify: false,
+    // Minified output keeps each JS chunk well under Caffeine's per-file
+    // upload limit (unminified entry bundles reached ~4.6 MB).
+    minify: true,
   },
   css: {
     postcss: "./postcss.config.js",

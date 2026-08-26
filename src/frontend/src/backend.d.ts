@@ -261,13 +261,6 @@ export enum TribeError {
 export interface backendInterface {
     addAdmin(newAdmin: Principal): Promise<void>;
     addToken(token: AllowlistedToken): Promise<void>;
-    bootstrapAdmin(): Promise<{
-        __kind__: "ok";
-        ok: null;
-    } | {
-        __kind__: "err";
-        err: string;
-    }>;
     claimOgBadge(): Promise<{
         __kind__: "ok";
         ok: null;
@@ -463,13 +456,6 @@ export interface backendInterface {
     removeAdmin(toRemove: Principal): Promise<void>;
     removeToken(tokenAddress: string, chain: string): Promise<void>;
     resetAkkLedgerCanisterId(): Promise<{
-        __kind__: "ok";
-        ok: null;
-    } | {
-        __kind__: "err";
-        err: string;
-    }>;
-    resetAndClaimAdmin(): Promise<{
         __kind__: "ok";
         ok: null;
     } | {

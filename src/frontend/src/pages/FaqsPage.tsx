@@ -108,14 +108,14 @@ export const faqData: FaqCategory[] = [
             AK69 rewards both effort and outcomes with equal weight: your GRIT
             spent on mining and the $AKK you win. Each UTC day, your
             contribution on both legs is normalized against the whole network's
-            activity for that day, and the two halves are averaged and scaled
-            by 100 to form your Daily Score. Higher timescales are simply sums
-            of Daily Scores: weekly adds the last 7 days, monthly 30,
-            quarterly 90, yearly 365, and All-Time is the cumulative sum from
-            genesis — so consistent participation compounds. Days without
-            activity contribute 0. For tribes, each member's mining effort and
-            wins are credited to their tribe for exactly the period they were a
-            member (timestamp-accurate, even across mid-day switches).
+            activity for that day, and the two halves are averaged and scaled by
+            100 to form your Daily Score. Higher timescales are simply sums of
+            Daily Scores: weekly adds the last 7 days, monthly 30, quarterly 90,
+            yearly 365, and All-Time is the cumulative sum from genesis — so
+            consistent participation compounds. Days without activity contribute
+            0. For tribes, each member's mining effort and wins are credited to
+            their tribe for exactly the period they were a member
+            (timestamp-accurate, even across mid-day switches).
           </>
         ),
       },

@@ -17,7 +17,7 @@
     "base@0": "0.16.0",
     "test": "2.1.2",
     "account": "1.0.1",
-    "array": "/Users/guruvishwas/Documents/AK/AKOC/anti-krisis-caffeine/src/backend/vendor/array",
+    "array": "/Users/guruvishwas/Documents/Anti Krisis/AKOC/anti-krisis-fork/src/backend/vendor/array",
     "itertools": "0.1.2",
     "ovs-fixed": "0.2.2",
     "timer-tool": "0.2.1",
