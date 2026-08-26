@@ -115,6 +115,18 @@ export interface UseWalletReturn {
     chainId?: number;
   }) => Promise<string>;
   /**
+   * Generic contract-call helper for arbitrary EVM calls (to/data/value).
+   * Automatically switches the wallet to the target chain (defaults to Base)
+   * before sending, then returns the tx hash. Used for the kVCM retirement
+   * flow (approve AAM + retireCreditViaKlima) and any other raw contract call.
+   */
+  sendContractTransaction: (params: {
+    to: `0x${string}`;
+    data: `0x${string}`;
+    value?: bigint;
+    chainId?: number;
+  }) => Promise<string>;
+  /**
    * Burns ERC-20 tokens by calling transfer(deadAddress, amount) via
    * useWriteContract. Uses the canonical dead address (0x000...dEaD) which
    * is universally accepted — unlike the null address which many ERC-20s reject.
@@ -128,19 +140,6 @@ export interface UseWalletReturn {
     decimals: number,
     chainId?: number,
   ) => Promise<string>;
-  /**
-   * Sends an arbitrary contract write via useWriteContract with full ABI
-   * context so wallets can decode the call (used by the kVCM retirement flow
-   * for the approve and retireCreditViaKlima transactions).
-   * Automatically switches to the target chain if the wallet is on another one.
-   */
-  sendContractTransaction: (params: {
-    contractAddress: string;
-    abi: unknown;
-    functionName: string;
-    args?: readonly unknown[];
-    chainId?: number;
-  }) => Promise<string>;
   /**
    * Calculates and sends the platform fee as a native token transfer.
    * feeUsd: the USD value of (feeRate * 100)% of the burn.
@@ -275,6 +274,40 @@ export function useWallet(): UseWalletReturn {
       return hash;
     },
     [sendTransactionAsync],
+  );
+
+  /**
+   * Generic contract-call helper for arbitrary EVM calls (to/data/value).
+   * Switches the wallet to the target chain (defaults to Base) if needed,
+   * then sends the raw transaction and returns the tx hash. This is the
+   * primitive used by the kVCM retirement flow (approve AAM + retireCreditViaKlima).
+   */
+  const sendContractTransaction = useCallback(
+    async (params: {
+      to: `0x${string}`;
+      data: `0x${string}`;
+      value?: bigint;
+      chainId?: number;
+    }): Promise<string> => {
+      const targetChainId = params.chainId ?? BASE_CHAIN_ID;
+      if (walletChainId !== targetChainId) {
+        await switchChainAsync({
+          chainId: targetChainId as Parameters<
+            typeof switchChainAsync
+          >[0]["chainId"],
+        });
+      }
+      const hash = await sendTransactionAsync({
+        to: params.to,
+        data: params.data,
+        value: params.value ?? 0n,
+        chainId: targetChainId as Parameters<
+          typeof sendTransactionAsync
+        >[0]["chainId"],
+      });
+      return hash;
+    },
+    [walletChainId, switchChainAsync, sendTransactionAsync],
   );
 
   /**
@@ -432,46 +465,6 @@ export function useWallet(): UseWalletReturn {
     [writeContractAsync, walletChainId, switchChainAsync],
   );
 
-  /**
-   * Generic contract write with full ABI context so wallets can decode the
-   * call. Mirrors burnToken's chain-switching behavior.
-   */
-  const sendContractTransaction = useCallback(
-    async (params: {
-      contractAddress: string;
-      abi: unknown;
-      functionName: string;
-      args?: readonly unknown[];
-      chainId?: number;
-    }): Promise<string> => {
-      let checksummedAddress: `0x${string}`;
-      try {
-        checksummedAddress = getAddress(params.contractAddress);
-      } catch (_err) {
-        throw new Error(`Invalid contract address: ${params.contractAddress}`);
-      }
-      const targetChain = params.chainId ?? BASE_CHAIN_ID;
-      if (walletChainId !== targetChain) {
-        await switchChainAsync({
-          chainId: targetChain as Parameters<
-            typeof switchChainAsync
-          >[0]["chainId"],
-        });
-      }
-      const hash = await writeContractAsync({
-        address: checksummedAddress,
-        abi: params.abi as Parameters<typeof writeContractAsync>[0]["abi"],
-        functionName: params.functionName,
-        ...(params.args !== undefined ? { args: params.args } : {}),
-        chainId: targetChain as Parameters<
-          typeof writeContractAsync
-        >[0]["chainId"],
-      });
-      return hash;
-    },
-    [writeContractAsync, walletChainId, switchChainAsync],
-  );
-
   return {
     address: address ?? null,
     chainId: walletChainId ?? null,
@@ -489,8 +482,8 @@ export function useWallet(): UseWalletReturn {
     switchToBase,
     switchToChain,
     sendTransaction,
-    burnToken,
     sendContractTransaction,
+    burnToken,
     sendPlatformFee,
     getPlatformFeeInfo,
   };

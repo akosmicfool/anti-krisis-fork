@@ -307,6 +307,13 @@ export enum TribeError {
 export interface backendInterface {
     addAdmin(newAdmin: Principal): Promise<void>;
     addToken(token: AllowlistedToken): Promise<void>;
+    bootstrapAdmin(): Promise<{
+        __kind__: "ok";
+        ok: null;
+    } | {
+        __kind__: "err";
+        err: string;
+    }>;
     claimOgBadge(): Promise<{
         __kind__: "ok";
         ok: null;
@@ -508,6 +515,13 @@ export interface backendInterface {
         __kind__: "err";
         err: string;
     }>;
+    resetAndClaimAdmin(): Promise<{
+        __kind__: "ok";
+        ok: null;
+    } | {
+        __kind__: "err";
+        err: string;
+    }>;
     retryFeeClaim(txHash: string, feeTxHash: string): Promise<{
         __kind__: "ok";
         ok: bigint;
@@ -627,6 +641,26 @@ export class Backend implements backendInterface {
         } else {
             const result = await this.actor.addToken(arg0);
             return result;
+        }
+    }
+    async bootstrapAdmin(): Promise<{
+        __kind__: "ok";
+        ok: null;
+    } | {
+        __kind__: "err";
+        err: string;
+    }> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.bootstrapAdmin();
+                return from_candid_variant_n1(this._uploadFile, this._downloadFile, result);
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.bootstrapAdmin();
+            return from_candid_variant_n1(this._uploadFile, this._downloadFile, result);
         }
     }
     async claimOgBadge(): Promise<{
@@ -1789,6 +1823,26 @@ export class Backend implements backendInterface {
             }
         } else {
             const result = await this.actor.resetAkkLedgerCanisterId();
+            return from_candid_variant_n1(this._uploadFile, this._downloadFile, result);
+        }
+    }
+    async resetAndClaimAdmin(): Promise<{
+        __kind__: "ok";
+        ok: null;
+    } | {
+        __kind__: "err";
+        err: string;
+    }> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.resetAndClaimAdmin();
+                return from_candid_variant_n1(this._uploadFile, this._downloadFile, result);
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.resetAndClaimAdmin();
             return from_candid_variant_n1(this._uploadFile, this._downloadFile, result);
         }
     }

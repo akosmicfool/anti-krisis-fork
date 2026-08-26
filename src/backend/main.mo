@@ -23,9 +23,20 @@ import ScoringMixin "mixins/scoring-api";
 import TestingTypes "types/testing";
 import TestingMixin "mixins/testing-api";
 import AkkLedgerTypes "types/akk-ledger";
-import Migration "migration";
+
 import OQL "mo:caffeineai-oql";
 import Expose "mo:caffeineai-oql/Expose";
+import Entity "mo:caffeineai-oql/Entity";
+import MapEntity "mo:caffeineai-oql/MapEntity";
+import ListEntity "mo:caffeineai-oql/ListEntity";
+import NatValue "mo:caffeineai-oql/NatValue";
+import IntValue "mo:caffeineai-oql/IntValue";
+import TextValue "mo:caffeineai-oql/TextValue";
+import PrincipalValue "mo:caffeineai-oql/PrincipalValue";
+import BoolValue "mo:caffeineai-oql/BoolValue";
+import Nat64Value "mo:caffeineai-oql/Nat64Value";
+import FloatValue "mo:caffeineai-oql/FloatValue";
+import RecordValue "mo:caffeineai-oql/RecordValue";
 import MiningTypes "types/mining";
 import TribeTypes "types/tribe";
 import GritTypes "types/grit";
@@ -52,20 +63,20 @@ import ClaimStatusValue "types/ClaimStatusValue";
 
 
 
-(with migration = Migration.run) actor self {
+ actor self {
   // Stable canister self-principal for subaccount-based AKK custody.
   // Set once on first actor init; survives upgrades via orthogonal persistence.
-  var selfPrincipal : ?Principal = null;
+  var selfPrincipal : ?Principal;
 
   // Cached ledger actor -- non-stable (actors cannot be stable), re-derived on each actor
   // start and invalidated when setAkkLedgerCanisterId() changes the stored ID.
-  var cachedLedgerActor : ?AkkLedgerTypes.IcrcLedger = null;
+  var cachedLedgerActor : ?AkkLedgerTypes.IcrcLedger;
   // The Principal that cachedLedgerActor was built from. When it does not match
   // miningState.akkLedgerId, getLedgerActor() invalidates the cache and rebuilds
   // against the new ID. This catches ledger swaps where the ID changes from one
   // non-null value to another (setAkkLedgerCanisterId lives in the mining mixin
   // and has no reference to cachedLedgerActor, so it cannot clear the cache directly).
-  var cachedLedgerActorId : ?Principal = null;
+  var cachedLedgerActorId : ?Principal;
 
   // Wrapper kept for call-site compatibility; delegates to Utils.
   func principalToSubaccount(p : Principal) : Blob {
@@ -76,21 +87,17 @@ import ClaimStatusValue "types/ClaimStatusValue";
   // Seed version — increment to re-run seedDefaultTokens() on reset the fee recipient on next deploy.
   // Bump this to 3 so the old IMPT address (0xbafeb8...b4b0) is permanently removed from any
   // canister that previously ran seed version 1 or 2.
-  var seedVersion : Nat = 0;
+  var seedVersion : Nat;
 
   // Multi-admin state: admins list + fee config
   // feeRecipient is set to null — admin must configure the platform fee recipient wallet address via the admin panel.
   // Once set through the admin panel it is persisted in actor state and survives upgrades automatically.
-  let adminState : AllowlistLib.AdminState = { admins = List.empty(); var feeRecipient = ?"0x66Cc129C0f758B52d561F0bD2AC8ECf37f19C052"; var feePercent = 0.69; var gritIssuanceRate = 1_000_000_000_000; var bootstrapPrincipalSet = false; var isLaunched = false };
+  let adminState : AllowlistLib.AdminState;
 
-  // Bootstrap admin — the `akk-deployer` CLI identity (origin-independent: its principal is
-  // fixed forever, unlike II principals which are derived from the site domain, so it survives
-  // any future domain move). On every fresh canister start with an empty admin list this
-  // identity is seeded as sole admin, and setting it (anything other than the "aaaaa-aa"
-  // placeholder) permanently disables the open admin-claim endpoints.
-  // SECURITY: never revert this to ?Principal.fromText("aaaaa-aa") — that re-opens
-  // anonymous admin takeover on the next deploy.
-  let bootstrapAdminPrincipal : ?Principal = ?Principal.fromText("wtghr-y4d6x-mncok-76fms-habs7-tmk5s-cn2xl-vfd26-hcz4q-tv7p3-hae");
+  // Bootstrap admin from init arg — replace the management canister placeholder with your real
+  // Internet Identity principal before going live. When set, bootstrapAdmin() and
+  // resetAndClaimAdmin() are both disabled (no race condition possible).
+  let bootstrapAdminPrincipal : ?Principal;
 
   // On every actor start (fresh install or upgrade): if a real bootstrapAdminPrincipal was
   // provided (i.e. it differs from the management canister placeholder) and no admins exist
@@ -111,20 +118,10 @@ import ClaimStatusValue "types/ClaimStatusValue";
 
   // Gate state is separate so its fields do not affect stable-variable compatibility
   // of adminState when added after initial deployment.
-  let gateState : AllowlistLib.GateState = {
-    var gateEnabled       = false;
-    var gateStartTime     = 0;
-    var gateEndTime       = 0;
-    var launchTimeEnabled = false;
-    var launchTime        = 0;
-    var nftGateEnabled    = false;
-  };
+  let gateState : AllowlistLib.GateState;
 
   // Allowlist state: tokens + audit log
-  let allowlistState : AllowlistLib.State = {
-    tokens = List.empty();
-    auditLog = List.empty();
-  };
+  let allowlistState : AllowlistLib.State;
 
   // Seed helper — seeded once (seedVersion < 1) to populate the token allowlist on first deploy.
   // Increment seedVersion in stable vars above to re-run (e.g. to add new tokens on a redeployment).
@@ -230,14 +227,10 @@ import ClaimStatusValue "types/ClaimStatusValue";
   };
 
   // GRIT state: balances map + all-time earned tracker + claim records
-  let gritState : GritLib.State = {
-    balances    = Map.empty();
-    totalEarned = Map.empty();
-    claims      = List.empty();
-  };
+  let gritState : GritLib.State;
 
   // Price cache: token address (lowercase) → last known USD price
-  let priceCache : Map.Map<Text, Float> = Map.empty();
+  let priceCache : Map.Map<Text, Float>;
 
   // HTTP outcall transform for burn verification (required by the IC for deterministic responses)
   public query func transform(input : OutCall.TransformationInput) : async OutCall.TransformationOutput {
@@ -245,56 +238,22 @@ import ClaimStatusValue "types/ClaimStatusValue";
   };
 
   // Mining state
-  let miningState : MiningLib.State = {
-    var nextMinerId = 0;
-    miners = Map.empty();
-    akkBalances = Map.empty();
-    gritSpentByUser = Map.empty();
-    totalAkkWonByUser = Map.empty();
-    var blockNumber = 0;
-    var totalAkkMined = 0;
-    minerCreationFees = do {
-      let m = Map.empty<Text, Nat>();
-      m.add("base", 0);
-      m.add("celo", 0);
-      m.add("optimism", 0);
-      m
-    };
-    blockHistory = List.empty();
-    var lastBlockWasEmpty = true;
-    var akkLedgerId = null;
-    pendingMints = List.empty();
-    mintedBlockIds = List.empty();
-    abandonedMints = List.empty();
-    var totalMintRetried = 0;
-    var totalMintSucceeded = 0;
-    var totalMintAbandoned = 0;
-    var akkTransferFee = 10_000;
-  };
+  let miningState : MiningLib.State;
 
   // Mutable timer ID for the block timer — allows it to be cancelled and restarted
   // when mining resumes after a pause (so the 690s window starts from the first active spend).
-  let blockTimerState = { var timerId : ?Timer.TimerId = null };
+  let blockTimerState : { var timerId : ?Timer.TimerId };
 
   // Profile state: principal → profile record
-  let profileState : ProfileLib.State = {
-    profiles = Map.empty();
-  };
+  let profileState : ProfileLib.State;
 
   // Tribe state: all tribe data, membership, and contribution snapshots
-  let tribeState : TribeLib.State = {
-    tribes                = Map.empty();
-    memberTribeMap        = Map.empty();
-    tribeMembers          = Map.empty();
-    userOwnedTribes       = Map.empty();
-    contributionSnapshots = Map.empty();
-    membershipHistory     = List.empty();
-  };
+  let tribeState : TribeLib.State;
 
   // Scoring state: daily player/network snapshots for AK69 leaderboard
-  let scoringState : ScoringLib.State = ScoringLib.newState();
+  let scoringState : ScoringLib.State;
   // Testing state: admin test score overrides (keyed by Principal)
-  let testingState : TestingTypes.State = TestingTypes.newState();
+  let testingState : TestingTypes.State;
 
   include AllowlistMixin(allowlistState, adminState, gateState);
   include GritMixin(gritState, allowlistState, adminState, gateState, priceCache, tribeState);
@@ -601,11 +560,26 @@ import ClaimStatusValue "types/ClaimStatusValue";
   include Expose({
     entities = [
       // miners — owner-keyed via the `owner` field; manual mode because
-      // MinerRecord has `var` fields and a MinerStatus variant.
-      OQL.Entity.manual<MiningTypes.MinerRecord>(
+      // MinerRecord has `var` fields and a MinerStatus variant. The entity
+      // iterates the immutable MinerView mirror (var-free) so the OQL builder's
+      // `.payload` resolves against a shared row type.
+      OQL.Entity.manual<MiningTypes.MinerView>(
         "miner",
-        func() = miningState.miners.values(),
-        "MinerRecord",
+        func() = miningState.miners.values().map(func(m : MiningTypes.MinerRecord) : MiningTypes.MinerView {
+          {
+            id = m.id;
+            owner = m.owner;
+            name = m.name;
+            gritBalance = m.gritBalance;
+            miningRate = m.miningRate;
+            status = m.status;
+            createdAt = m.createdAt;
+            lastProcessedBlock = m.lastProcessedBlock;
+            blocksMined = m.blocksMined;
+            gritSpent = m.gritSpent;
+          };
+        }),
+        "MinerView",
         "id",
       )
         .payload("id", func(m) = m.id)

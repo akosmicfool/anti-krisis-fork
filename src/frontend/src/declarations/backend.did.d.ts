@@ -226,6 +226,7 @@ export type Value = { 'int' : bigint } |
 export interface _SERVICE {
   'addAdmin' : ActorMethod<[Principal], undefined>,
   'addToken' : ActorMethod<[AllowlistedToken], undefined>,
+  'bootstrapAdmin' : ActorMethod<[], { 'ok' : null } | { 'err' : string }>,
   'claimOgBadge' : ActorMethod<[], { 'ok' : null } | { 'err' : string }>,
   'clearAbandonedMints' : ActorMethod<
     [],
@@ -398,6 +399,7 @@ export interface _SERVICE {
     { 'ok' : null } |
       { 'err' : string }
   >,
+  'resetAndClaimAdmin' : ActorMethod<[], { 'ok' : null } | { 'err' : string }>,
   'retryFeeClaim' : ActorMethod<
     [string, string],
     { 'ok' : bigint } |

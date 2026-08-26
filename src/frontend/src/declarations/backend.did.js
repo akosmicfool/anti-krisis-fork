@@ -243,6 +243,11 @@ export const TransformationOutput = IDL.Record({
 export const idlService = IDL.Service({
   'addAdmin' : IDL.Func([IDL.Principal], [], []),
   'addToken' : IDL.Func([AllowlistedToken], [], []),
+  'bootstrapAdmin' : IDL.Func(
+      [],
+      [IDL.Variant({ 'ok' : IDL.Null, 'err' : IDL.Text })],
+      [],
+    ),
   'claimOgBadge' : IDL.Func(
       [],
       [IDL.Variant({ 'ok' : IDL.Null, 'err' : IDL.Text })],
@@ -518,6 +523,11 @@ export const idlService = IDL.Service({
   'removeAdmin' : IDL.Func([IDL.Principal], [], []),
   'removeToken' : IDL.Func([IDL.Text, IDL.Text], [], []),
   'resetAkkLedgerCanisterId' : IDL.Func(
+      [],
+      [IDL.Variant({ 'ok' : IDL.Null, 'err' : IDL.Text })],
+      [],
+    ),
+  'resetAndClaimAdmin' : IDL.Func(
       [],
       [IDL.Variant({ 'ok' : IDL.Null, 'err' : IDL.Text })],
       [],
@@ -835,6 +845,11 @@ export const idlFactory = ({ IDL }) => {
   return IDL.Service({
     'addAdmin' : IDL.Func([IDL.Principal], [], []),
     'addToken' : IDL.Func([AllowlistedToken], [], []),
+    'bootstrapAdmin' : IDL.Func(
+        [],
+        [IDL.Variant({ 'ok' : IDL.Null, 'err' : IDL.Text })],
+        [],
+      ),
     'claimOgBadge' : IDL.Func(
         [],
         [IDL.Variant({ 'ok' : IDL.Null, 'err' : IDL.Text })],
@@ -1118,6 +1133,11 @@ export const idlFactory = ({ IDL }) => {
     'removeAdmin' : IDL.Func([IDL.Principal], [], []),
     'removeToken' : IDL.Func([IDL.Text, IDL.Text], [], []),
     'resetAkkLedgerCanisterId' : IDL.Func(
+        [],
+        [IDL.Variant({ 'ok' : IDL.Null, 'err' : IDL.Text })],
+        [],
+      ),
+    'resetAndClaimAdmin' : IDL.Func(
         [],
         [IDL.Variant({ 'ok' : IDL.Null, 'err' : IDL.Text })],
         [],

@@ -24,6 +24,27 @@ mixin (
   priceCache : Map.Map<Text, Float>,
   tribeState : TribeLib.State,
 ) {
+  /// kVCM (KlimaDAO tokenized carbon) is retired on-chain via the KlimaDAO
+  /// Retirement Aggregator (retireCreditViaKlima), which emits a CarbonRetired
+  /// event rather than a plain ERC-20 transfer-to-dead-address. Its burn claims
+  /// must be verified against the retirement receipt instead of the standard
+  /// ERC-20 burn flow.
+  func KVCM_ADDRESS() : Text { "0x00fbac94fec8d4089d3fe979f39454f48c71a65d" };
+
+  func isKvcm(tokenAddress : Text) : Bool {
+    tokenAddress.toLower() == KVCM_ADDRESS()
+  };
+
+  /// Dispatch burn verification: kVCM burns are confirmed via the KlimaDAO
+  /// retirement receipt; all other tokens use the standard ERC-20 burn flow.
+  func verifyBurn(jsonResponse : Text, tokenAddress : Text, chain : Text) : VerifyLib.VerificationResult {
+    if (isKvcm(tokenAddress)) {
+      VerifyLib.parseRetirementResponse(jsonResponse, tokenAddress, chain)
+    } else {
+      VerifyLib.parseRpcResponse(jsonResponse, tokenAddress, chain)
+    }
+  };
+
   /// HTTP transform for burn-verification RPC responses.
   public query func transformResponse(input : OutCall.TransformationInput) : async OutCall.TransformationOutput {
     { input.response with headers = [] }
@@ -225,12 +246,8 @@ mixin (
               return #err("HTTP outcall failed");
             };
           } else {
-            // Use parseRpcResponse to determine if the tx is pending or done
-            let probeResult = if (VerifyLib.isRetirementClaim(chain, normToken)) {
-              VerifyLib.parseRetirementResponse(response);
-            } else {
-              VerifyLib.parseRpcResponse(response, normToken, chain);
-            };
+            // Use verifyBurn to determine if the tx is pending or done
+            let probeResult = verifyBurn(response, normToken, chain);
             switch (probeResult) {
               case (#err("PENDING")) {
                 // Not indexed yet — retry up to 5 times, cycling to next endpoint
@@ -260,11 +277,7 @@ mixin (
           return #ok;
         };
 
-        let verifyResult = if (VerifyLib.isRetirementClaim(chain, normToken)) {
-          VerifyLib.parseRetirementResponse(jsonResponse);
-        } else {
-          VerifyLib.parseRpcResponse(jsonResponse, normToken, chain);
-        };
+        let verifyResult = verifyBurn(jsonResponse, normToken, chain);
         switch (verifyResult) {
           case (#err("PENDING")) {
             // Transaction not yet mined — leave as #pending; background timer will re-check
@@ -396,11 +409,7 @@ mixin (
 
     if (not gotResponse) { return }; // network error — try again next cycle
 
-    let result = if (VerifyLib.isRetirementClaim(record.chain, record.tokenAddress)) {
-      VerifyLib.parseRetirementResponse(response);
-    } else {
-      VerifyLib.parseRpcResponse(response, record.tokenAddress, record.chain);
-    };
+    let result = verifyBurn(response, record.tokenAddress, record.chain);
     switch (result) {
       case (#err("PENDING")) {
         // Check max age: 35 minutes = 35 * 60 * 1_000_000_000 nanoseconds

@@ -197,6 +197,7 @@ export const mockBackend: backendInterface = {
   }),
   getFeeRecipient: async () => "0x000000000000000000000000000000000000dead",
   setFeeRecipient: async (_address: string) => undefined,
+  bootstrapAdmin: async () => ({ __kind__: "ok" as const, ok: null }),
   whoami: async () => Principal.fromText("aaaaa-aa"),
   createMiner: async (_name: string, _gritAmount: bigint, _rate: bigint) => ({
     __kind__: "ok" as const,
@@ -225,6 +226,7 @@ export const mockBackend: backendInterface = {
   getMyMiners: async (): Promise<MinerView[]> => [],
   getGritIssuanceRate: async () => BigInt(1_000_000_000),
   setGritIssuanceRate: async (_rate: bigint) => undefined,
+  resetAndClaimAdmin: async () => ({ __kind__: "ok" as const, ok: null }),
   recheckPendingClaims: async () => undefined,
   retryFeeClaim: async (
     _txHash: string,

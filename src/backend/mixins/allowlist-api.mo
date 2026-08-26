@@ -96,14 +96,33 @@ mixin (
     caller;
   };
 
-  // NOTE: The legacy open admin-claim endpoints `bootstrapAdmin()` and
-  // `resetAndClaimAdmin()` were REMOVED deliberately. They were only reachable
-  // while bootstrapPrincipalSet was false, and their entire purpose is now
-  // covered by the bootstrap-admin seeding in main.mo (real principal set at
-  // build time). Removing them closes the anonymous-takeover class permanently;
-  // do not reintroduce them.
+  /// One-time bootstrap: caller becomes admin when no admins exist yet AND no
+  /// bootstrapAdminPrincipal was set at canister init.
+  /// If bootstrapPrincipalSet == true, the init arg already claimed admin — this
+  /// function is disabled to close the race condition.
+  public shared ({ caller }) func bootstrapAdmin() : async { #ok; #err : Text } {
+    if (admin.bootstrapPrincipalSet) {
+      return #err("Admin was set at canister init — bootstrapAdmin() is disabled");
+    };
+    if (admin.admins.size() == 0) {
+      AllowlistLib.addAdmin(admin, caller);
+      #ok;
+    } else {
+      #err("Admin already bootstrapped");
+    };
+  };
 
-
+  /// Emergency reset: clears the entire admin list and re-adds the caller as sole admin.
+  /// SECURITY: only callable when bootstrapPrincipalSet == false (dev/early-stage mode).
+  /// Once a bootstrapAdminPrincipal has been configured at init this function is locked.
+  public shared ({ caller }) func resetAndClaimAdmin() : async { #ok; #err : Text } {
+    if (admin.bootstrapPrincipalSet) {
+      return #err("resetAndClaimAdmin() is disabled — admin was secured at canister init");
+    };
+    admin.admins.clear();
+    AllowlistLib.addAdmin(admin, caller);
+    #ok;
+  };
 
   /// Admin: set the GRIT issuance rate (GRIT minted per $1.00 of token burned).
   /// Default is 1_000_000_000_000 (1 trillion GRIT per $1.00).

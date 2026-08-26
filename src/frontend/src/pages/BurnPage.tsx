@@ -44,13 +44,7 @@ import {
   useRetryFeeClaim,
 } from "../hooks/use-backend";
 import { type PlatformFeeInfo, useWallet } from "../hooks/use-wallet";
-import {
-  KVCM_APPROVE_ABI,
-  KVCM_RETIRE_ABI,
-  buildRetirementPlan,
-  isKvcmRetirement,
-  waitForRetirementTx,
-} from "../lib/kvcm-retirement";
+import { KVCM_RETIREMENT, retireKvcm } from "../lib/kvcm-retirement";
 import {
   CHAIN_LABELS,
   ClaimStatus,
@@ -611,36 +605,25 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
 
       setStepAndRef("awaiting_confirm");
 
+      // Step 1: Burn the token.
+      // kVCM retires real carbon credits through the KlimaDAO Retirement
+      // Aggregator (approve AAM -> retireCreditViaKlima) instead of a plain
+      // ERC-20 transfer-to-dead-address. All other tokens keep the standard
+      // burn flow.
+      const isKvcm =
+        selectedToken.tokenAddress.toLowerCase() ===
+        KVCM_RETIREMENT.kvcm.toLowerCase();
       let hash: string;
-      if (isKvcmRetirement(selectedToken.tokenAddress)) {
-        // ── kVCM retirement path ────────────────────────────────────────
-        // Burns kVCM by retiring real carbon credits via Klima. Fully
-        // abstracted: credit selection + inverse quoting happen off-screen;
-        // the user just signs approve → retire. Same downstream UX.
-        const plan = await buildRetirementPlan(amount.trim());
-        const approveHash = await wallet.sendContractTransaction({
-          contractAddress: plan.approve.address,
-          abi: KVCM_APPROVE_ABI,
-          functionName: plan.approve.functionName,
-          args: plan.approve.args,
-          chainId: targetChainId,
+      if (isKvcm) {
+        const retirement = await retireKvcm({
+          amount: amount.trim(),
+          beneficiaryAddress: wallet.address as `0x${string}`,
+          beneficiaryString: "RegNet Burn",
+          retirementMessage: "Retiring carbon credits via RegNet burn",
+          sendContractTransaction: wallet.sendContractTransaction,
         });
-        setStepAndRef("confirming_on_chain");
-        // The AAM pulls kVCM during the retire call, so the allowance must be
-        // live first — wait for the approval receipt before signing the retire.
-        await waitForRetirementTx(approveHash);
-        setStepAndRef("awaiting_confirm");
-        // The CLAIM must reference the RETIRE transaction — its receipt carries
-        // the kVCM Transfer(user → AAM) proof the backend verifier expects.
-        hash = await wallet.sendContractTransaction({
-          contractAddress: plan.retire.address,
-          abi: KVCM_RETIRE_ABI,
-          functionName: plan.retire.functionName,
-          args: plan.retire.args,
-          chainId: targetChainId,
-        });
+        hash = retirement.retireHash;
       } else {
-        // Step 1: ERC-20 burn to dead address
         const AXLREGEN_ADDR = "0x2e6c05f1f7d1f4eb9a088bf12257f1647682b754";
         const effectiveDecimals =
           selectedToken.tokenAddress.toLowerCase() === AXLREGEN_ADDR

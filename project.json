@@ -1,16 +1,17 @@
 {
-  "overview": "Anti Krisis Protocol — a multi-capital Proof-of-Burn mining protocol on ICP.",
+  "overview": "Anti Krisis is a carbon-credit burn and GRIT mining platform where users burn tokens to retire real carbon credits and earn GRIT rewards.",
   "features": [
-    "Add ABOUT tab in header",
-    "About page with sub-tabs",
-    "TLDR content page"
+    "Burn tokens to retire real carbon credits",
+    "Retire kVCM carbon credits through the KlimaDAO aggregator",
+    "Earn GRIT rewards from burns",
+    "Track burn history and balances"
   ],
   "category": "productivity",
   "tags": [
-    "crypto",
-    "mining",
-    "protocol",
-    "about"
+    "carbon-credits",
+    "burn",
+    "climate",
+    "defi"
   ],
-  "last_updated": "2026-06-23T05:46:30.458Z"
+  "last_updated": "2026-08-26T06:06:30.881Z"
 }

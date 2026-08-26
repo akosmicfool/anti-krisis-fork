@@ -6,11 +6,15 @@ import {
   createRoute,
   createRouter,
 } from "@tanstack/react-router";
-import { Suspense, lazy } from "react";
+import { Suspense, lazy, useEffect } from "react";
 import { Layout } from "./components/Layout";
 import { VideoProvider } from "./context/VideoContext";
 import { useAuth } from "./hooks/use-auth";
-import { useIsAdmin } from "./hooks/use-backend";
+import {
+  useBootstrapAdmin,
+  useGetAdmin,
+  useIsAdmin,
+} from "./hooks/use-backend";
 // Lazy pages
 const AkorePage = lazy(() =>
   import("./pages/AkorePage").then((m) => ({ default: m.AkorePage })),
@@ -54,14 +58,27 @@ const AboutPage = lazy(() =>
 
 // ─── Root wrapper with Layout ─────────────────────────────────────────────────
 function RootComponent() {
-  const { principal } = useAuth();
+  const { principal, isAuthenticated } = useAuth();
   const { data: isAdmin = false } = useIsAdmin();
+  const { data: adminPrincipal } = useGetAdmin();
+  const bootstrapAdmin = useBootstrapAdmin();
 
-  // NOTE: The legacy auto-bootstrap effect (which called bootstrapAdmin()
-  // whenever the admin list was empty) was removed along with the backend
-  // endpoint. Admin is seeded at canister start from the hardcoded
-  // akk-deployer principal in main.mo; additional admins are added via the
-  // Admin panel (addAdmin). Do not reintroduce client-side admin claiming.
+  // Case 1 — admin list is empty (adminPrincipal is null or 'aaaaa-aa'): bootstrap
+  useEffect(() => {
+    if (!isAuthenticated || !principal) return;
+    if (
+      (adminPrincipal === null || adminPrincipal === "aaaaa-aa") &&
+      !bootstrapAdmin.isPending
+    ) {
+      bootstrapAdmin.mutate();
+    }
+  }, [
+    isAuthenticated,
+    principal,
+    adminPrincipal,
+    bootstrapAdmin.isPending,
+    bootstrapAdmin.mutate,
+  ]);
 
   return (
     <Layout isAdmin={isAdmin && !!principal}>
