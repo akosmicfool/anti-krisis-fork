@@ -1,36 +1,397 @@
 /**
- * kVCM retirement burn flow — KlimaDAO Retirement Aggregator on Base.
+ * kVCM carbon-retirement burn flow — KlimaDAO Retirement Aggregator on Base.
  *
- * Burning kVCM retires real carbon credits instead of a plain ERC-20
- * transfer-to-dead-address. The retirement is a two-step on-chain sequence:
+ * Burning kVCM retires real carbon credits instead of a plain transfer-to-dead.
+ * The user only picks kVCM and an amount; everything else is auto-filled here:
  *
- *   1. kVCM.approve(AAM, amount)  — approve the Klima Protocol Aggregation
- *      Approval Manager (AAM) to pull the kVCM being retired.
- *   2. retireCreditViaKlima(...)  — call the Retirement Aggregator, which
- *      burns the kVCM and retires the corresponding carbon credits.
+ *   1. Credit discovery  — PROTOCOL subgraph lists every carbon class and its
+ *      registered credits; CARBON subgraph classifies them. Eligible set:
+ *      rawRegistryId VCS→CMARK or UCR · batchId "0" (excludes Toucan Puro,
+ *      which needs real batchIds) · ERC-20 standard (excludes ECO ERC-1155).
+ *      Newly registered qualifying credits are picked up automatically.
+ *   2. Random pick       — crypto.getRandomValues over the eligible list.
+ *   3. Reverse quote     — quoteRetireCreditForInputTokenInViaKlima turns the
+ *      kVCM budget into tonnes directly; falls back to a ≤10-step binary
+ *      search over the forward quote when the inverse entry point is absent.
+ *   4. Slippage          — maxInputTokenIn = quoted cost + 2%.
+ *   5. TX A              — kVCM.approve(AAM, maxKvcmIn); waits for receipt.
+ *   6. TX B              — aggregator.retireCreditViaKlima(credit, …, kVCM…).
  *
- * Contract addresses (Base mainnet, chain 8453) are sourced from the official
- * KlimaDAO retirement-aggregator USAGE.md:
- *   - Retirement Aggregator : 0xda0a793d7c32ab80bcdab7f8c725c96db22464f4
- *   - Klima Protocol (AAM)  : 0x1C24239309398220883207681602BfF4D10fbde1
- *   - kVCM                  : 0x00fbac94fec8d4089d3fe979f39454f48c71a65d
+ * Klima Path-2 semantics (USAGE.md): creditToken = a REGISTERED CREDIT
+ * (never kVCM itself — that reverts with CarbonCreditNotRegisteredForClass),
+ * inputToken = kVCM, carbonClass = the class vault owning that credit.
+ *
+ * Addresses (Base mainnet, chain 8453) per KlimaDAO USAGE.md.
  */
-import { encodeFunctionData, getAddress, parseUnits } from "viem";
+import {
+  http,
+  createPublicClient,
+  encodeFunctionData,
+  fallback,
+  formatUnits,
+  parseUnits,
+} from "viem";
+import { base } from "viem/chains";
+
+// ─── Contract addresses ─────────────────────────────────────────────────────
 
 export const KVCM_RETIREMENT = {
   /** Retirement Aggregator diamond contract. */
   aggregator: "0xda0a793d7c32ab80bcdab7f8c725c96db22464f4",
   /** Klima Protocol Aggregation Approval Manager — the kVCM approval target. */
   aam: "0x1C24239309398220883207681602BfF4D10fbde1",
-  /** kVCM ERC-20 token contract. */
+  /** kVCM ERC-20 token contract (the PAYMENT token, not a credit). */
   kvcm: "0x00fbac94fec8d4089d3fe979f39454f48c71a65d",
-  /** Carbon class vault the retired credits belong to. */
-  carbonClass: "0xf4699531e0a5f6e9351a36de3753deaad329bf45",
   chainId: 8453,
   decimals: 18,
 } as const;
 
-/** ERC-20 approve ABI — used to approve the AAM to pull kVCM. */
+/** Slippage buffer on the quoted kVCM cost, in basis points (200 = 2%). */
+const SLIPPAGE_BPS = 200n;
+
+// ─── Subgraph endpoints (public Goldsky endpoints, rate limited) ────────────
+
+const PROTOCOL_SUBGRAPH =
+  "https://api.goldsky.com/api/public/project_cmgzise2h00195np2gbp35g3d/subgraphs/cm-base-protocol-production/latest/gn";
+const CARBON_SUBGRAPH =
+  "https://api.goldsky.com/api/public/project_cmgzise2h00195np2gbp35g3d/subgraphs/cm-base-carbon-production/latest/gn";
+
+// ─── Credit eligibility ─────────────────────────────────────────────────────
+
+interface EligibleCredit {
+  creditToken: `0x${string}`;
+  carbonClass: `0x${string}`;
+  bridge: "CMARK" | "UCR";
+}
+
+interface SubgraphCreditsResponse {
+  data?: {
+    carbonClasses?: Array<{
+      carbonClassId: string;
+      registeredCredits?: Array<{ creditAddress: string }>;
+    }>;
+  };
+  errors?: Array<{ message?: string }>;
+}
+
+async function fetchEligibleCredits(): Promise<EligibleCredit[]> {
+  const res = await fetch(PROTOCOL_SUBGRAPH, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      query:
+        "{ carbonClasses { carbonClassId registeredCredits { creditAddress } } }",
+    }),
+  });
+  if (!res.ok) throw new Error(`Subgraph unavailable (${res.status})`);
+  const json = (await res.json()) as SubgraphCreditsResponse;
+
+  // Malformed/failed queries return HTTP 200 with errors + empty data.
+  // Fail loudly (mirroring the carbon-subgraph check below) instead of
+  // silently treating that as an empty eligible set.
+  if (json.errors && json.errors.length > 0) {
+    throw new Error(
+      `Protocol subgraph query failed: ${json.errors[0]?.message ?? "unknown error"}`,
+    );
+  }
+
+  // Flatten class → credit pairs
+  const pairs: Array<{
+    creditToken: `0x${string}`;
+    carbonClass: `0x${string}`;
+  }> = [];
+  for (const cls of json.data?.carbonClasses ?? []) {
+    for (const credit of cls.registeredCredits ?? []) {
+      pairs.push({
+        creditToken: credit.creditAddress.toLowerCase() as `0x${string}`,
+        carbonClass: cls.carbonClassId.toLowerCase() as `0x${string}`,
+      });
+    }
+  }
+  if (pairs.length === 0) return [];
+
+  // Classify via the CARBON subgraph with a parameterized query: the address
+  // list travels as GraphQL *variables* (JSON), never interpolated into query
+  // text — an earlier string-built where-in clause produced malformed GraphQL,
+  // and the endpoint's HTTP-200+errors reply read as "no eligible credits".
+  // Pages are looped so newly registered credits are always included no matter
+  // how large the registry grows.
+  const addresses = [...new Set(pairs.map((p) => p.creditToken))];
+  const CARBON_PAGE_SIZE = 500;
+  const CARBON_QUERY = `query Credits($addrs: [Bytes!]!, $skip: Int!) { creditTokens(first: ${CARBON_PAGE_SIZE}, skip: $skip, where: { tokenAddress_in: $addrs }) { tokenAddress rawRegistryId batchId tokenStandard } }`;
+  const classified: Array<{
+    tokenAddress: string;
+    rawRegistryId?: string | null;
+    batchId?: string | null;
+    tokenStandard?: string | null;
+  }> = [];
+  for (let skip = 0; ; skip += CARBON_PAGE_SIZE) {
+    const pageRes = await fetch(CARBON_SUBGRAPH, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: CARBON_QUERY,
+        variables: { addrs: addresses, skip },
+      }),
+    });
+    if (!pageRes.ok)
+      throw new Error(`Carbon subgraph unavailable (${pageRes.status})`);
+    const pageJson = (await pageRes.json()) as {
+      errors?: Array<{ message?: string }>;
+      data?: {
+        creditTokens?: Array<{
+          tokenAddress: string;
+          rawRegistryId?: string | null;
+          batchId?: string | null;
+          tokenStandard?: string | null;
+        }>;
+      };
+    };
+    // Malformed/failed queries return HTTP 200 with errors + empty data.
+    // Fail loudly instead of silently treating that as an empty eligible set.
+    if (pageJson.errors && pageJson.errors.length > 0) {
+      throw new Error(
+        `Carbon subgraph query failed: ${pageJson.errors[0]?.message ?? "unknown error"}`,
+      );
+    }
+    const page = pageJson.data?.creditTokens ?? [];
+    classified.push(...page);
+    if (page.length < CARBON_PAGE_SIZE) break;
+    if (skip > 10_000)
+      throw new Error("Carbon subgraph pagination did not terminate");
+  }
+
+  const eligible = new Map<string, EligibleCredit>();
+  for (const ct of classified) {
+    const addr = (ct.tokenAddress?.toLowerCase() ?? "") as `0x${string}` | "";
+    if (!addr) continue;
+    if ((ct.tokenStandard ?? "ERC20") !== "ERC20") continue; // ECO (1155) excluded
+    if (ct.batchId !== undefined && ct.batchId !== null && ct.batchId !== "0")
+      continue; // Puro excluded
+    let bridge: EligibleCredit["bridge"] | null = null;
+    if (ct.rawRegistryId === "VCS") bridge = "CMARK";
+    else if (ct.rawRegistryId === "UCR") bridge = "UCR";
+    if (!bridge) continue;
+
+    const pair = pairs.find((p) => p.creditToken === addr);
+    if (pair) {
+      eligible.set(addr, {
+        creditToken: addr,
+        carbonClass: pair.carbonClass,
+        bridge,
+      });
+    }
+  }
+  return [...eligible.values()];
+}
+
+/** Module-level cache so retries don't re-hit the rate-limited subgraphs. */
+let creditsCache: { credits: EligibleCredit[]; fetchedAt: number } | null =
+  null;
+const CREDITS_CACHE_TTL_MS = 5 * 60 * 1000;
+
+async function getEligibleCredits(): Promise<EligibleCredit[]> {
+  if (
+    creditsCache &&
+    Date.now() - creditsCache.fetchedAt < CREDITS_CACHE_TTL_MS
+  ) {
+    return creditsCache.credits;
+  }
+  const credits = await fetchEligibleCredits();
+  if (credits.length > 0) {
+    creditsCache = { credits, fetchedAt: Date.now() };
+  }
+  return credits;
+}
+
+/** Cryptographically-seeded random index in [0, n). */
+function randomIndex(n: number): number {
+  const buf = new Uint32Array(1);
+  crypto.getRandomValues(buf);
+  return buf[0] % n;
+}
+
+// ─── Quoting ────────────────────────────────────────────────────────────────
+
+const QUOTE_INVERSE_ABI = [
+  {
+    name: "quoteRetireCreditForInputTokenInViaKlima",
+    type: "function",
+    stateMutability: "view",
+    inputs: [
+      { name: "creditToken", type: "address" },
+      { name: "tokenId", type: "uint256" },
+      { name: "inputTokenAmount", type: "uint256" },
+      { name: "inputTokenAddress", type: "address" },
+      { name: "carbonClass", type: "address" },
+      { name: "couponTonnes", type: "uint256" },
+    ],
+    outputs: [
+      { name: "tonnes", type: "uint256" },
+      { name: "tokenAmount", type: "uint256" },
+      { name: "retirementPrice", type: "uint256" },
+    ],
+  },
+] as const;
+
+const QUOTE_FORWARD_ABI = [
+  {
+    name: "quoteRetireCreditViaKlima",
+    type: "function",
+    stateMutability: "view",
+    inputs: [
+      { name: "creditToken", type: "address" },
+      { name: "tokenId", type: "uint256" },
+      { name: "amount", type: "uint256" },
+      { name: "inputToken", type: "address" },
+      { name: "carbonClass", type: "address" },
+      { name: "couponTonnes", type: "uint256" },
+    ],
+    outputs: [
+      { name: "tonnes", type: "uint256" },
+      { name: "tokenAmount", type: "uint256" },
+    ],
+  },
+] as const;
+
+function publicClient() {
+  // Same fallback set as the backend's fee verifier — a single Base RPC
+  // (mainnet.base.org) rate-limits and stalls the quote step; viem's
+  // fallback() tries transports in order and skips failed ones.
+  return createPublicClient({
+    chain: base,
+    transport: fallback([
+      http("https://mainnet.base.org"),
+      http("https://base.llamarpc.com"),
+      http("https://1rpc.io/base"),
+      http("https://base.publicnode.com"),
+    ]),
+  });
+}
+
+async function inverseQuote(
+  client: ReturnType<typeof publicClient>,
+  credit: EligibleCredit,
+  kvcmWei: bigint,
+): Promise<{ tonnes: bigint; kvcmCost: bigint }> {
+  const result = await client.readContract({
+    address: KVCM_RETIREMENT.aggregator as `0x${string}`,
+    abi: QUOTE_INVERSE_ABI,
+    functionName: "quoteRetireCreditForInputTokenInViaKlima",
+    args: [
+      credit.creditToken,
+      0n,
+      kvcmWei,
+      KVCM_RETIREMENT.kvcm as `0x${string}`,
+      credit.carbonClass,
+      0n,
+    ],
+  });
+  return { tonnes: result[0], kvcmCost: result[1] };
+}
+
+async function forwardSearchQuote(
+  client: ReturnType<typeof publicClient>,
+  credit: EligibleCredit,
+  kvcmWei: bigint,
+): Promise<{ tonnes: bigint; kvcmCost: bigint }> {
+  // Baseline: cost of 1 tonne → generous upper bound for the search
+  const baseline = await client.readContract({
+    address: KVCM_RETIREMENT.aggregator as `0x${string}`,
+    abi: QUOTE_FORWARD_ABI,
+    functionName: "quoteRetireCreditViaKlima",
+    args: [
+      credit.creditToken,
+      0n,
+      parseUnits("1", 18),
+      KVCM_RETIREMENT.kvcm as `0x${string}`,
+      credit.carbonClass,
+      0n,
+    ],
+  });
+  const oneTonneCost = baseline[1];
+  if (oneTonneCost <= 0n) throw new Error("Retirement quote unavailable");
+  let low = 0n;
+  let high = (kvcmWei / oneTonneCost) * 2n + 1n;
+  let bestTonnes = 0n;
+  let bestCost = 0n;
+  for (let i = 0; i < 10; i++) {
+    const mid = (low + high) / 2n;
+    if (mid === 0n) break;
+    const q = await client.readContract({
+      address: KVCM_RETIREMENT.aggregator as `0x${string}`,
+      abi: QUOTE_FORWARD_ABI,
+      functionName: "quoteRetireCreditViaKlima",
+      args: [
+        credit.creditToken,
+        0n,
+        mid,
+        KVCM_RETIREMENT.kvcm as `0x${string}`,
+        credit.carbonClass,
+        0n,
+      ],
+    });
+    const cost = q[1];
+    if (cost > 0n && cost <= kvcmWei) {
+      bestTonnes = mid;
+      bestCost = cost;
+      low = mid + 1n;
+    } else {
+      high = mid;
+    }
+  }
+  return { tonnes: bestTonnes, kvcmCost: bestCost };
+}
+
+// ─── Retirement execution ───────────────────────────────────────────────────
+
+/** Shape of the generic contract-call helper provided by useWallet. */
+export interface SendContractTransactionParams {
+  to: `0x${string}`;
+  data: `0x${string}`;
+  value?: bigint;
+  chainId?: number;
+}
+
+export type SendContractTransaction = (
+  params: SendContractTransactionParams,
+) => Promise<string>;
+
+export interface RetireKvcmParams {
+  /** kVCM amount to spend, as a decimal string (e.g. "1.5"). */
+  amount: string;
+  /** User's EVM address — becomes the retirement beneficiary. */
+  beneficiaryAddress: `0x${string}`;
+  /** Generic contract-call helper from useWallet. */
+  sendContractTransaction: SendContractTransaction;
+}
+
+export interface RetireKvcmResult {
+  /** Hash of the kVCM.approve(AAM, maxKvcmIn) transaction. */
+  approveHash: string;
+  /** Hash of the retireCreditViaKlima transaction (the actual burn). */
+  retireHash: string;
+  /** Tonnes (18-decimal) funded by this retirement. */
+  tonnes: bigint;
+  /** Max kVCM (18-decimal) the transaction may pull. */
+  maxKvcmIn: bigint;
+  /** Which registry family was retired ("CMARK" | "UCR"). */
+  bridge: string;
+}
+
+/** Auto-filled retirement metadata — permanent on-chain, never user-edited. */
+const RETIRE_DETAILS = {
+  retiringAddress: "0x0000000000000000000000000000000000000000" as const, // msg.sender
+  retiringEntityString: "",
+  beneficiaryAddress: "0x0000000000000000000000000000000000000000" as const, // retiringAddress
+  beneficiaryString: "Anti Krisis Protocol",
+  retirementMessage: "Mine $AKK",
+  beneficiaryLocation: "",
+  consumptionCountryCode: "",
+  consumptionPeriodStart: 0n,
+  consumptionPeriodEnd: 0n,
+};
+
 const ERC20_APPROVE_ABI = [
   {
     name: "approve",
@@ -44,21 +405,6 @@ const ERC20_APPROVE_ABI = [
   },
 ] as const;
 
-/**
- * retireCreditViaKlima ABI on the Retirement Aggregator.
- *
- *   retireCreditViaKlima(
- *     address creditToken,
- *     uint256 tokenId,        // 0 for ERC-20 credits
- *     uint256 batchId,        // 0 for non-Puro credits
- *     uint256 amount,         // tonnes to retire
- *     address inputToken,     // kVCM or USDC
- *     address carbonClass,    // class vault for the credit
- *     uint256 maxInputTokenIn,// max input tokens to spend (slippage)
- *     uint256 couponTonnes,   // 0 — no coupons currently issued
- *     RetireDetails details
- *   )
- */
 const RETIRE_CREDIT_VIA_KLIMA_ABI = [
   {
     name: "retireCreditViaKlima",
@@ -93,41 +439,9 @@ const RETIRE_CREDIT_VIA_KLIMA_ABI = [
   },
 ] as const;
 
-/** Shape of the generic contract-call helper provided by useWallet. */
-export interface SendContractTransactionParams {
-  to: `0x${string}`;
-  data: `0x${string}`;
-  value?: bigint;
-  chainId?: number;
-}
-
-export type SendContractTransaction = (
-  params: SendContractTransactionParams,
-) => Promise<string>;
-
-export interface RetireKvcmParams {
-  /** kVCM amount to retire, as a decimal string (e.g. "1.5"). */
-  amount: string;
-  /** EVM address that receives the retirement certificate. */
-  beneficiaryAddress: `0x${string}`;
-  /** Human-readable beneficiary name. */
-  beneficiaryString: string;
-  /** Free-text retirement message. */
-  retirementMessage: string;
-  /** Generic contract-call helper from useWallet. */
-  sendContractTransaction: SendContractTransaction;
-}
-
-export interface RetireKvcmResult {
-  /** Hash of the kVCM.approve(AAM) transaction. */
-  approveHash: string;
-  /** Hash of the retireCreditViaKlima transaction (the actual retirement). */
-  retireHash: string;
-}
-
 /**
- * Retires real carbon credits by burning kVCM through the KlimaDAO Retirement
- * Aggregator on Base. Returns both the approval and retirement tx hashes.
+ * Retires real carbon credits by spending kVCM through the KlimaDAO Retirement
+ * Aggregator on Base. Returns both transaction hashes plus the quote summary.
  */
 export async function retireKvcm(
   params: RetireKvcmParams,
@@ -136,56 +450,139 @@ export async function retireKvcm(
   if (!trimmed || Number.parseFloat(trimmed) <= 0) {
     throw new Error("Retirement amount must be greater than zero");
   }
+  const kvcmWei = parseUnits(trimmed, KVCM_RETIREMENT.decimals);
 
-  const rawAmount = parseUnits(trimmed, KVCM_RETIREMENT.decimals);
-  const kvcmAddress = getAddress(KVCM_RETIREMENT.kvcm);
-  const aamAddress = getAddress(KVCM_RETIREMENT.aam);
-  const aggregatorAddress = getAddress(KVCM_RETIREMENT.aggregator);
-  const carbonClassAddress = getAddress(KVCM_RETIREMENT.carbonClass);
+  // 1-2. Discover eligible credits and pick one at random
+  const credits = await getEligibleCredits();
+  if (credits.length === 0) {
+    throw new Error(
+      "No eligible carbon credits are currently available for retirement. Please try again later.",
+    );
+  }
+  const client = publicClient();
 
-  // Step 1 — approve the AAM to pull the kVCM being retired.
+  // Shuffle candidates so every qualifying credit stays in the random mix,
+  // then take the FIRST one whose backing pool can actually fund the swap.
+  // Klima pools vary in depth: some registered credits cannot source the
+  // quoted amount at execution time (the aggregator's view quotes revert
+  // with available<required), which would otherwise fail the burn after
+  // the user had already signed the approve transaction.
+  const candidates = [...credits];
+  for (let i = candidates.length - 1; i > 0; i--) {
+    const j = randomIndex(i + 1);
+    [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
+  }
+
+  let credit: EligibleCredit | null = null;
+  let quoted: { tonnes: bigint; kvcmCost: bigint } | null = null;
+  for (const candidate of candidates) {
+    let q: { tonnes: bigint; kvcmCost: bigint };
+    try {
+      q = await inverseQuote(client, candidate, kvcmWei);
+    } catch {
+      try {
+        q = await forwardSearchQuote(client, candidate, kvcmWei);
+      } catch {
+        continue; // no usable quote entry point for this credit
+      }
+    }
+    if (q.tonnes <= 0n || q.kvcmCost <= 0n) continue;
+
+    // Liquidity probe: re-quote the same tonnes via the pure-view forward
+    // entry point. If the pool cannot fund the swap leg, this reverts and
+    // we simply move on to the next candidate — before any wallet prompt.
+    try {
+      await client.readContract({
+        address: KVCM_RETIREMENT.aggregator as `0x${string}`,
+        abi: QUOTE_FORWARD_ABI,
+        functionName: "quoteRetireCreditViaKlima",
+        args: [
+          candidate.creditToken,
+          0n,
+          q.tonnes,
+          KVCM_RETIREMENT.kvcm as `0x${string}`,
+          candidate.carbonClass,
+          0n,
+        ],
+      });
+    } catch {
+      continue; // illiquid credit — try the next one
+    }
+
+    credit = candidate;
+    quoted = q;
+    break;
+  }
+
+  if (!credit || !quoted) {
+    throw new Error(
+      "No eligible carbon credit can currently fund a burn of this size. Try a smaller amount or try again later.",
+    );
+  }
+
+  // 4. Spend cap: the retire route is EXACT-IN — it consumes the FULL
+  // entered kVCM amount. maxInputTokenIn must therefore cover the entire
+  // budget plus a small buffer. Capping it at the quoted tokenAmount
+  // under-funds the pull and the tx reverts (observed as ERC20Insufficient-
+  // Allowance 0xfb8f41b2 in the wallet after approve had succeeded).
+  const maxKvcmIn = kvcmWei + (kvcmWei * SLIPPAGE_BPS) / 10000n;
+
+  // 5. TX A — approve the AAM to pull up to maxKvcmIn
   const approveData = encodeFunctionData({
     abi: ERC20_APPROVE_ABI,
     functionName: "approve",
-    args: [aamAddress, rawAmount],
+    args: [KVCM_RETIREMENT.aam as `0x${string}`, maxKvcmIn],
   });
   const approveHash = await params.sendContractTransaction({
-    to: kvcmAddress,
+    to: KVCM_RETIREMENT.kvcm as `0x${string}`,
     data: approveData,
     chainId: KVCM_RETIREMENT.chainId,
   });
 
-  // Step 2 — retire the carbon credits via the aggregator.
+  // The AAM pulls kVCM during the retire call — the allowance must be live first.
+  const receipt = await client.waitForTransactionReceipt({
+    hash: approveHash as `0x${string}`,
+    timeout: 120_000,
+  });
+  if (receipt.status !== "success") {
+    throw new Error("Approval transaction failed on-chain. Please try again.");
+  }
+
+  // 6. TX B — retire the picked credit, paying with kVCM
   const retireData = encodeFunctionData({
     abi: RETIRE_CREDIT_VIA_KLIMA_ABI,
     functionName: "retireCreditViaKlima",
     args: [
-      kvcmAddress, // creditToken
+      credit.creditToken, // creditToken — a REGISTERED credit, never kVCM
       0n, // tokenId — 0 for ERC-20 credits
-      0n, // batchId — 0 for non-Puro credits
-      rawAmount, // amount — tonnes to retire (kVCM is 1:1 with tonnes)
-      kvcmAddress, // inputToken — paying with kVCM
-      carbonClassAddress, // carbonClass
-      rawAmount, // maxInputTokenIn — slippage protection (exact amount)
-      0n, // couponTonnes — no coupons currently issued
+      0n, // batchId — 0 for CMARK/UCR
+      quoted.tonnes, // amount — tonnes from the quote, NOT the raw payment
+      KVCM_RETIREMENT.kvcm as `0x${string}`, // inputToken — paying with kVCM
+      credit.carbonClass, // carbonClass — vault owning the picked credit
+      maxKvcmIn, // slippage-protected spend cap
+      0n, // couponTonnes — none issued
       {
-        retiringAddress: "0x0000000000000000000000000000000000000000",
-        retiringEntityString: "",
+        ...RETIRE_DETAILS,
         beneficiaryAddress: params.beneficiaryAddress,
-        beneficiaryString: params.beneficiaryString,
-        retirementMessage: params.retirementMessage,
-        beneficiaryLocation: "",
-        consumptionCountryCode: "",
-        consumptionPeriodStart: 0n,
-        consumptionPeriodEnd: 0n,
       },
     ],
   });
   const retireHash = await params.sendContractTransaction({
-    to: aggregatorAddress,
+    to: KVCM_RETIREMENT.aggregator as `0x${string}`,
     data: retireData,
     chainId: KVCM_RETIREMENT.chainId,
   });
 
-  return { approveHash, retireHash };
+  return {
+    approveHash,
+    retireHash,
+    tonnes: quoted.tonnes,
+    maxKvcmIn,
+    bridge: credit.bridge,
+  };
+}
+
+/** Formats an 18-decimal tonnes value for status lines ("0.0421 tCO2e"). */
+export function formatTonnes(tonnesWei: bigint): string {
+  return `${formatUnits(tonnesWei, 18)} tCO2e`;
 }
