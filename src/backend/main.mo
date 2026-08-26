@@ -94,27 +94,26 @@ import ClaimStatusValue "types/ClaimStatusValue";
   // Once set through the admin panel it is persisted in actor state and survives upgrades automatically.
   let adminState : AllowlistLib.AdminState;
 
-  // Bootstrap admin from init arg — replace the management canister placeholder with your real
-  // Internet Identity principal before going live. When set, bootstrapAdmin() and
-  // resetAndClaimAdmin() are both disabled (no race condition possible).
+  // Bootstrap admin — the `akk-deployer` CLI identity (origin-independent: its principal is
+  // fixed forever, unlike II principals which are derived from the site domain, so it survives
+  // any future domain move). Kept as a flexible stable (never assigned) purely for
+  // upgrade compatibility with v249, which declared it.
   let bootstrapAdminPrincipal : ?Principal;
+  ignore bootstrapAdminPrincipal;
 
-  // On every actor start (fresh install or upgrade): if a real bootstrapAdminPrincipal was
-  // provided (i.e. it differs from the management canister placeholder) and no admins exist
-  // yet, add it as the first admin without any caller check.
-  switch (bootstrapAdminPrincipal) {
-    case null {};
-    case (?p) {
-      // "aaaaa-aa" is the management canister — treat it as the "not configured" sentinel.
-      // Only auto-bootstrap when the principal is not anonymous and not the management canister.
-      if (not p.isAnonymous() and p.toText() != "aaaaa-aa") {
-        if (adminState.admins.size() == 0) {
-          AllowlistLib.addAdmin(adminState, p);
-        };
-        adminState.bootstrapPrincipalSet := true;
-      };
-    };
+  // Seed the `akk-deployer` identity as sole admin on any fresh start with an empty
+  // admin list, and mark bootstrapPrincipalSet so the open bootstrapAdmin()/
+  // resetAndClaimAdmin() endpoints stay permanently disabled.
+  // SECURITY: never remove this seeding — doing so re-opens anonymous admin takeover
+  // on the next fresh deploy. Plain statements (no actor-scope bindings) because
+  // --enhanced-migration treats every initialized actor-scope declaration as stable (M0250).
+  if (adminState.admins.size() == 0) {
+    AllowlistLib.addAdmin(
+      adminState,
+      Principal.fromText("wtghr-y4d6x-mncok-76fms-habs7-tmk5s-cn2xl-vfd26-hcz4q-tv7p3-hae"),
+    );
   };
+  adminState.bootstrapPrincipalSet := true;
 
   // Gate state is separate so its fields do not affect stable-variable compatibility
   // of adminState when added after initial deployment.
