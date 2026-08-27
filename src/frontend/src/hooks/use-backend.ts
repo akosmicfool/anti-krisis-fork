@@ -310,48 +310,8 @@ export function useGetAdmin() {
   });
 }
 
-export function useBootstrapAdmin() {
-  const { actor } = useActorInstance();
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: async () => {
-      if (!actor) throw new Error("Not connected");
-      const result = await actor.bootstrapAdmin();
-      // #err means already claimed — treat as a no-op, not a failure
-      if (result.__kind__ === "err") return null;
-      return result;
-    },
-    onSuccess: (_data, _vars) => {
-      // Refresh admin status so the Admin Settings item appears immediately
-      qc.invalidateQueries({ queryKey: ["isAdmin"] });
-      qc.invalidateQueries({ queryKey: ["getAdmin"] });
-    },
-  });
-}
-
-export function useResetAndClaimAdmin() {
-  const { actor } = useActorInstance();
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: async () => {
-      if (!actor) throw new Error("Not connected");
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const result = (await (
-        actor as unknown as Record<
-          string,
-          (...a: unknown[]) => Promise<unknown>
-        >
-      ).resetAndClaimAdmin()) as { __kind__: string; err?: string };
-      if (result.__kind__ === "err") throw new Error(result.err);
-      return result;
-    },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["isAdmin"] });
-      qc.invalidateQueries({ queryKey: ["getAdmin"] });
-      qc.invalidateQueries({ queryKey: ["admins"] });
-    },
-  });
-}
+// AKK-1b: useBootstrapAdmin / useResetAndClaimAdmin removed together with their
+// backend endpoints. Admin identity is seeded at canister start from main.mo.
 
 export function useSetAdmin() {
   const { actor } = useActorInstance();

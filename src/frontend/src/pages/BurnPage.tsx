@@ -348,6 +348,7 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
   const retryFeeClaim = useRetryFeeClaim();
 
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const priceNoteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const claimedTxRef = useRef<string | null>(null);
 
   // Derive chains that have at least one token (for the chain filter dropdown)
@@ -507,6 +508,11 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
         clearInterval(pollingRef.current);
         pollingRef.current = null;
       }
+      // Claim settled (or timed out) — never flash the "price busy" note after.
+      if (priceNoteTimerRef.current) {
+        clearTimeout(priceNoteTimerRef.current);
+        priceNoteTimerRef.current = null;
+      }
       // Always do a final re-fetch so the claim list reflects the latest
       // backend state — catches the case where the backend already settled
       // the claim while we were polling with a stale in-memory copy.
@@ -520,6 +526,20 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
         );
       }
     }
+
+    // AKK-3 UX nicety (all allowlisted tokens, incl. kVCM retirement): if the
+    // claim isn't verified within ~20s — e.g. the price service is busy, so the
+    // backend leaves the claim pending and retries (fail-closed) — reassure the
+    // user instead of leaving them in silent limbo. Cleared on settle.
+    priceNoteTimerRef.current = setTimeout(() => {
+      priceNoteTimerRef.current = null;
+      // Functional update: keep a more specific already-shown note if present.
+      setPriceNote(
+        (prev) =>
+          prev ??
+          "Price service is busy — your burn is still being verified and your GRIT will be credited automatically. No action needed.",
+      );
+    }, 20_000);
 
     pollingRef.current = setInterval(async () => {
       // Check hard timeout first.
@@ -541,6 +561,8 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
         }, 1_500);
         setVerifiedGrit(match.gritMinted);
         setStepAndRef("verified");
+        // Claim settled successfully — retire the reassurance note.
+        setPriceNote(null);
         await stopPolling("settled");
       } else if (isPendingFee(match.status)) {
         // Burn verified but fee payment failed — prompt user to retry fee.
@@ -560,6 +582,10 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
       if (pollingRef.current) {
         clearInterval(pollingRef.current);
         pollingRef.current = null;
+      }
+      if (priceNoteTimerRef.current) {
+        clearTimeout(priceNoteTimerRef.current);
+        priceNoteTimerRef.current = null;
       }
     };
   }, [step, refetchHistory, qc, setStepAndRef]);
@@ -724,7 +750,7 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
         // Keep the step at pending_verification so the poller can still
         // detect a CONFIRMED result and credit GRIT.
         setPriceNote(
-          "Price data temporarily unavailable — GRIT will be credited using last known price once verified.",
+          "Price service is temporarily unavailable — your claim stays pending and GRIT will be credited automatically once pricing resumes. No action needed.",
         );
         setStepAndRef("pending_verification");
         return;
@@ -896,6 +922,10 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
     burnChainIdRef.current = 1;
     claimedTxRef.current = null;
     if (pollingRef.current) clearInterval(pollingRef.current);
+    if (priceNoteTimerRef.current) {
+      clearTimeout(priceNoteTimerRef.current);
+      priceNoteTimerRef.current = null;
+    }
   }
 
   function handleModalClose() {

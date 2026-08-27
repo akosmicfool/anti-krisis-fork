@@ -1,7 +1,7 @@
 {
   "version": 1,
   "buildCommand": "[\"pnpm build\"]",
-  "createdAt": "2026-08-26T14:49:55.566Z",
+  "createdAt": "2026-08-27T17:40:30.067Z",
   "files": {
     "caffeine.toml": "sha256:57fdf1f82cec57a828c9fe3cf2ef8a3e4dda5142bd986fcdae8498b4c1af8c35",
     "index.html": "sha256:85413c9c293c5d6907edb733f2a74f1d68c10d36ae752de22c7807b3c64cbe2e",
@@ -32,15 +32,15 @@
     "tsconfig.json": "sha256:f9fa1627ad83f19da25665adcf747813980f16e331c6a22f98d0ca2fb11b4160",
     "biome.json": "sha256:fdbabd3ff71640b8e7587ac300cbf02c3134a287fd3469d4d94f76aeefe54244",
     "postcss.config.js": "sha256:e32657baf631d7c5f4dc67b4b2ee0ec8e7d5b3c41860e09cddce7c0377cd80bc",
-    "src/mocks/backend.ts": "sha256:6c7c885e363769b4ecedec21754b48a448b27634cb17e7b214dc445e9494edf8",
-    "src/App.tsx": "sha256:0fa8f18456e871c6f41a8175ed260e73357fa0a3624c6a42b01e2f2fbc034a0a",
+    "src/mocks/backend.ts": "sha256:979f00a5626badd6cc27243515fb353c0040fc280bef735b1ae33a73e2262f03",
+    "src/App.tsx": "sha256:4c04c207cb2643125c0c718d88c935b331e835e273cde85dafccc9f5dad3d2b0",
     "src/main.tsx": "sha256:cc233bf12c28fb1244dd4db37f1a08fcc16c14d8bb38153de9304adafa69d635",
     "src/context/VideoContext.tsx": "sha256:385d822d1087b7bc1bc51fea5647cc544d7798a98e15cfcd43e0772426fb7cee",
     "src/utils/evm-rpc.ts": "sha256:2875c661cf5e9b77a1bc87d40582cf5bf7a27690ddb40df64a9c1d07b12cc1a1",
     "src/utils/dexscreener.ts": "sha256:e3dd0149906a9e7657fd0166bd339b9d6e774f8a9c854e5defe183ad0944a635",
     "src/index.css": "sha256:2180e17e87a52f4ef28671aef6063e89898ac5d2b69535aee23310ff0d27681a",
-    "src/declarations/backend.did.js": "sha256:e16002e23845fce3d6e74a5fca99ad6a22b27e40d83f633867a5e0bd7c3f0d2c",
-    "src/declarations/backend.did.d.ts": "sha256:d906c2996f2a1fbb0a3bdf21cb7db1f71d795912554ea3defb1a37768757a394",
+    "src/declarations/backend.did.js": "sha256:06a5891606a22d200d10170dd4a2f84e90290d0d32a6851f2690a0feaf1404fb",
+    "src/declarations/backend.did.d.ts": "sha256:b33384cb6c181d3807d7615b7f73291ab1d559b0fee7c7c245af04c85ab2359c",
     "src/types.ts": "sha256:43a412672644d6e50cba7d52a0cbd195ab7b204cac2c76deb2279271cb29f73f",
     "src/components/WalletButton.tsx": "sha256:7e625d814649f945b420060b5f64bdd49edd86ae202886b9ab287c6170376f6d",
     "src/components/VideoSection.tsx": "sha256:bbd028aac277b431bbfd4b80e0d5393f9d9d4795e5b72ed5cde522fbaf3a0829",
@@ -106,7 +106,7 @@
     "src/hooks/use-mobile.tsx": "sha256:8e1c882967bb5eb39776912d7084221da758ddc6a2f76bcf6b0778b685d6e861",
     "src/hooks/use-auth.ts": "sha256:6bb5863410475e06b2370ce39a3dd06e31cdd39f540d154a4fdd50b7b90b869a",
     "src/hooks/use-score.ts": "sha256:0deb4aebac7b9370eb497a75523952c51e3700311304a972edfbb477b822df3b",
-    "src/hooks/use-backend.ts": "sha256:2eecbb67663c8a80b1ce67c55293efe974dc80fcab6792abfe54a3802aa40d50",
+    "src/hooks/use-backend.ts": "sha256:c76efbf7402d465da1f3a9c9eece91ae2161353768e36e49d6a876d8cdf605af",
     "src/hooks/useNftOwnership.ts": "sha256:ffe21c1da646650e801228070093c19f20d3d1d4fc463700c141e1666e368c7f",
     "src/hooks/use-profile-setup.ts": "sha256:ad9b2a24b745879d55f93614197ff0425c3f956abbba41c4f1902517bd13e649",
     "src/hooks/useAboutTab.ts": "sha256:39cd16661105307386002650de720b5935c6d6336f0cbf537f28598e4e49db05",
@@ -115,7 +115,7 @@
     "src/lib/kvcm-retirement.ts": "sha256:55a3ec7c7097e161947b9756e3b2a1cc38ea995fe1091cf31c3ec48bbad61463",
     "src/lib/utils.ts": "sha256:abfa32a7fd986627488f82d263eb79a7970b16f6a95f15ca0d62c33e650e1503",
     "src/lib/akk-ledger.ts": "sha256:d9d74e06627ed73878ec58af46d2f0d76e7974ea3dcf9e4f74b8b6de2e3dd7a6",
-    "src/backend.ts": "sha256:b5e843146673db969c91017e4d645c63af4d59da79ad256452fc10dd7a47d1b7",
+    "src/backend.ts": "sha256:c2458f863b8c7c7f6f7aca012b91e0dda58f9b0b0d62ce9252a1e58f812e7ffc",
     "src/pages/FaqsPage.tsx": "sha256:dcb211afb3865a83cb3c4dac4e510d6296c072267daf9412af39ef24a805a1df",
     "src/pages/BurnHistoryPage.tsx": "sha256:8fa541e8d098733ad15b382c3945717c0d6a6ad056e72d54590039730ca831bc",
     "src/pages/PublicTribePage.tsx": "sha256:ef5a9a7ca173c6f982ee5e9a21703c5caec3a8eeaf06c140636f4263a314bc58",
@@ -123,7 +123,7 @@
     "src/pages/ProfilePage.tsx": "sha256:8e6b030016bdd0f112f5e04c7bc2710dd50de8ffa97805bb655169677ca9f15e",
     "src/pages/PublicProfilePage.tsx": "sha256:e50246bd9cc6933ab01f76fe5af4c489846e019bf0a44d3e70086d7b71bfdfee",
     "src/pages/AboutPage.tsx": "sha256:be504dfad8a3dd939edafe8b0b3095402770614d7038084d81cbf0331bcd2d24",
-    "src/pages/BurnPage.tsx": "sha256:68cddcdaeb96e5b6e4f6bb72003406e88d7cd5977b93bc855a3423e54c1e1ab5",
+    "src/pages/BurnPage.tsx": "sha256:7260c63a6610dc70d7ee8071a743403daf2b95aab5a854527f7630bfd74c2332",
     "src/pages/OverviewPage.tsx": "sha256:3fce036ae24a823314679874c10f3e126c57bf9101c92becbcc209946a416540",
     "src/pages/AkorePage.tsx": "sha256:4fffa875cc426dbe5aafd0c5410ddde13aa6cbf0b5c3ccd33a00c85ef164ce83",
     "src/pages/MiningPage.tsx": "sha256:2a2ac9b6ee42c851e523cca1e609d1135d8c26e814af7a42cf58621126e7622d",
@@ -132,6 +132,6 @@
     "src/pages/overview/BurnInfoSection.tsx": "sha256:2a66e6cf8c80f193e2bdb5dd10f1780378a28ac54b1c2c2eeb44096ecbd8a6c7",
     "src/pages/ScorePage.tsx": "sha256:011cd62593fd5a22719d47f4e43377b8d64f4e6f57782c869be3fda652d352a6",
     "src/pages/DashboardPage.tsx": "sha256:f17a2462dc427e3cd73438c5d8804a7584c2a0ff35eed6f0b46c3aaa5e70b8ed",
-    "src/backend.d.ts": "sha256:ad6169b9d18fc92e5664000de68c426544b877df8dc0cd08f766dc6dc01ccf9a"
+    "src/backend.d.ts": "sha256:1f4a9fa798de72247662ef74e9d4c308185f3864c97e7010f47d7cc8c74a2155"
   }
 }

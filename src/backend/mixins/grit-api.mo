@@ -129,8 +129,9 @@ mixin (
   /// User: submit a burn tx hash for GRIT issuance.
   /// Stores claim as #pending, triggers async HTTP outcall to verify burn,
   /// on success checks the fee tx; if fee is still pending/failed transitions to #pendingFee.
-  /// frontendPrice: live price (USD) fetched by the frontend at burn time. Used as fallback
-  /// when the backend oracle fetch fails, and as a cross-check source — deviations >6.9% are rejected.
+  /// frontendPrice: live price (USD) fetched by the frontend at burn time. AKK-3: NEVER used
+  /// to price the claim (attacker-controlled when the oracle fails — fail closed instead);
+  /// retained solely as a cross-check source — deviations >6.9% vs the oracle are rejected.
   public shared ({ caller }) func initiateClaim(
     txHash        : Text,
     feeTxHash     : Text,
@@ -317,9 +318,11 @@ mixin (
             let humanAmount : Float = rawAmountBurned.toFloat() / divisor.toFloat();
             Debug.print("[grit-api] humanAmount=" # debug_show(humanAmount) # " divisor=" # debug_show(divisor));
 
-            // Fetch real-time price from DexScreener (primary source for GRIT crediting).
+            // Fetch real-time price from DexScreener (sole source of truth for GRIT crediting).
             // Cross-check against frontendPrice: reject if deviation > 6.9%.
-            // If backend fetch fails, fall back to frontendPrice (Option C).
+            // AKK-3: on oracle failure we FAIL CLOSED — the claim stays #pending and the
+            // background timer retries the price fetch (aged out after 35 min if the
+            // oracle never recovers). The frontend-supplied price is never used to mint.
             let backendPriceResult = try {
               await PriceOracle.fetchTokenPrice(normToken, chain, priceCache, transformPriceResponse);
             } catch (_) {
@@ -339,15 +342,12 @@ mixin (
                 };
                 backendPrice
               };
-              case (#err(reason)) {
-                // Backend oracle fetch failed — fall back to frontendPrice if valid
-                if (frontendPrice > 0.0) {
-                  Debug.print("[grit-api] Backend oracle failed for " # normToken # ", using frontend-passed price " # debug_show(frontendPrice) # " as fallback. Reason: " # reason);
-                  frontendPrice
-                } else {
-                  GritLib.updateClaimStatus(gritState, txHash, #failed, 0, null);
-                  return #err("Price unavailable — backend oracle failed and no valid frontend price provided. Please try again later.");
-                }
+              case (#err(_reason)) {
+                // AKK-3: fail closed — never price a claim from caller-supplied data.
+                // The claim stays #pending; the background recheck timer retries the
+                // price fetch and credits GRIT when a real oracle price is reachable
+                // (claims still pending after 35 min age out as #failed).
+                return #ok;
               };
             };
 

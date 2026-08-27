@@ -6,15 +6,11 @@ import {
   createRoute,
   createRouter,
 } from "@tanstack/react-router";
-import { Suspense, lazy, useEffect } from "react";
+import { Suspense, lazy } from "react";
 import { Layout } from "./components/Layout";
 import { VideoProvider } from "./context/VideoContext";
 import { useAuth } from "./hooks/use-auth";
-import {
-  useBootstrapAdmin,
-  useGetAdmin,
-  useIsAdmin,
-} from "./hooks/use-backend";
+import { useIsAdmin } from "./hooks/use-backend";
 // Lazy pages
 const AkorePage = lazy(() =>
   import("./pages/AkorePage").then((m) => ({ default: m.AkorePage })),
@@ -60,25 +56,11 @@ const AboutPage = lazy(() =>
 function RootComponent() {
   const { principal, isAuthenticated } = useAuth();
   const { data: isAdmin = false } = useIsAdmin();
-  const { data: adminPrincipal } = useGetAdmin();
-  const bootstrapAdmin = useBootstrapAdmin();
 
-  // Case 1 — admin list is empty (adminPrincipal is null or 'aaaaa-aa'): bootstrap
-  useEffect(() => {
-    if (!isAuthenticated || !principal) return;
-    if (
-      (adminPrincipal === null || adminPrincipal === "aaaaa-aa") &&
-      !bootstrapAdmin.isPending
-    ) {
-      bootstrapAdmin.mutate();
-    }
-  }, [
-    isAuthenticated,
-    principal,
-    adminPrincipal,
-    bootstrapAdmin.isPending,
-    bootstrapAdmin.mutate,
-  ]);
+  // AKK-1b: legacy client-side admin auto-bootstrap removed together with the
+  // backend endpoints. Admin identity is seeded at canister start from main.mo
+  // (akk-deployer principal); additional admins are added via the Admin panel
+  // (addAdmin). Do not reintroduce client-side admin claiming.
 
   return (
     <Layout isAdmin={isAdmin && !!principal}>

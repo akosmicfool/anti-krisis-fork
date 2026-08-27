@@ -288,10 +288,6 @@ type Account =
 service : {
   addAdmin: (newAdmin: principal) -> ();
   addToken: (token: AllowlistedToken) -> ();
-  bootstrapAdmin: () -> (variant {
-                           err: text;
-                           ok;
-                         });
   claimOgBadge: () -> (variant {
                          err: text;
                          ok;
@@ -478,10 +474,6 @@ service : {
                                      err: text;
                                      ok;
                                    });
-  resetAndClaimAdmin: () -> (variant {
-                               err: text;
-                               ok;
-                             });
   retryFeeClaim: (txHash: text, feeTxHash: text) ->
    (variant {
       err: text;

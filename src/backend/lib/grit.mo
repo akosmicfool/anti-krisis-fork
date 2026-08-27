@@ -64,9 +64,19 @@ module {
   };
 
   /// Update an existing claim's status and (on #verified) credit GRIT to the claimant.
-  /// Update an existing claim's status and (on #verified) credit GRIT to the claimant.
-  /// Update an existing claim's status and (on #verified) credit GRIT to the claimant.
   /// onGritCredited is called with (user, newBalance) if GRIT is credited, to allow tribe stats sync.
+  ///
+  /// AKK-2 RACE GUARD (compare-and-set): callers typically compute `gritToCredit` across
+  /// one or more `await` boundaries (RPC verification, price oracle, fee-tx checks), so two
+  /// overlapping invocations for the same txHash can both arrive holding a stale snapshot
+  /// in which the claim still looks uncredited — previously BOTH credited the balance.
+  /// We treat the *currently stored* record as the single source of truth: only when its
+  /// authoritative status, read immediately before mutation (no await in between), is
+  /// still an awaiting state (#pending / #pendingFee) does this call take effect. A claim
+  /// already in a terminal state (#verified / #failed) is left unchanged and never
+  /// receives a second balance credit, making repeated and concurrent-equivalent calls
+  /// idempotent. It also prevents stale callers from downgrading a #verified claim to
+  /// another status while its balance stays credited.
   public func updateClaimStatus(
     state : State,
     txHash : Text,
@@ -74,32 +84,49 @@ module {
     gritToCredit : Nat,
     onGritCredited : ?((Principal, Nat) -> ()),
   ) {
-    state.claims.mapInPlace(func(r : Types.ClaimRecord) : Types.ClaimRecord {
-      if (r.txHash == txHash) {
-        { r with status; gritMinted = gritToCredit }
-      } else {
-        r
-      }
-    });
-    if (gritToCredit > 0) {
-      switch (state.claims.find(func(r : Types.ClaimRecord) : Bool { r.txHash == txHash })) {
-        case null {};
-        case (?updated) {
-          let prev = switch (state.balances.get(updated.claimant)) {
-            case null  { 0 };
-            case (?b)  { b };
-          };
-          let newBalance = prev + gritToCredit;
-          state.balances.add(updated.claimant, newBalance);
-          // Also accumulate into the all-time earned tracker (never decremented)
-          let prevEarned = switch (state.totalEarned.get(updated.claimant)) {
-            case null  { 0 };
-            case (?e)  { e };
-          };
-          state.totalEarned.add(updated.claimant, prevEarned + gritToCredit);
-          switch (onGritCredited) {
-            case null {};
-            case (?cb) cb(updated.claimant, newBalance);
+    // CAS step 1: re-read the authoritative record right before mutating. No await may
+    // occur between this find and the balance writes below (this function body has none),
+    // so find → write → credit is atomic with respect to all other messages.
+    switch (state.claims.find(func(r : Types.ClaimRecord) : Bool { r.txHash == txHash })) {
+      case null {}; // unknown claim — nothing to update
+      case (?authoritative) {
+        // CAS step 2: only claims still awaiting resolution may transition.
+        let mayTransition = switch (authoritative.status) {
+          case (#pending) true;
+          case (#pendingFee) true;
+          case (#verified) false;
+          case (#failed) false;
+        };
+        if (mayTransition) {
+          state.claims.mapInPlace(func(r : Types.ClaimRecord) : Types.ClaimRecord {
+            if (r.txHash == txHash) {
+              { r with status; gritMinted = gritToCredit }
+            } else {
+              r
+            }
+          });
+          if (gritToCredit > 0) {
+            switch (state.claims.find(func(r : Types.ClaimRecord) : Bool { r.txHash == txHash })) {
+              case null {};
+              case (?updated) {
+                let prev = switch (state.balances.get(updated.claimant)) {
+                  case null  { 0 };
+                  case (?b)  { b };
+                };
+                let newBalance = prev + gritToCredit;
+                state.balances.add(updated.claimant, newBalance);
+                // Also accumulate into the all-time earned tracker (never decremented)
+                let prevEarned = switch (state.totalEarned.get(updated.claimant)) {
+                  case null  { 0 };
+                  case (?e)  { e };
+                };
+                state.totalEarned.add(updated.claimant, prevEarned + gritToCredit);
+                switch (onGritCredited) {
+                  case null {};
+                  case (?cb) cb(updated.claimant, newBalance);
+                };
+              };
+            };
           };
         };
       };
@@ -107,14 +134,31 @@ module {
   };
 
   /// Transition a claim to #pendingFee, storing the fee tx hash for later retry.
+  /// AKK-2 sibling guard: same CAS rule as updateClaimStatus — terminal states
+  /// (#verified / #failed) must not be rewritten. Without this, a stale caller that
+  /// finished late could flip a verified (already credited) claim back to #pendingFee,
+  /// re-opening the double-credit door for a subsequent verify pass.
   public func updateClaimToPendingFee(state : State, txHash : Text, feeTxHash : Text) {
-    state.claims.mapInPlace(func(r : Types.ClaimRecord) : Types.ClaimRecord {
-      if (r.txHash == txHash) {
-        { r with status = #pendingFee; feeTxHash = ?feeTxHash }
-      } else {
-        r
-      }
-    });
+    switch (state.claims.find(func(r : Types.ClaimRecord) : Bool { r.txHash == txHash })) {
+      case null {};
+      case (?authoritative) {
+        let mayTransition = switch (authoritative.status) {
+          case (#pending) true;
+          case (#pendingFee) true;
+          case (#verified) false;
+          case (#failed) false;
+        };
+        if (mayTransition) {
+          state.claims.mapInPlace(func(r : Types.ClaimRecord) : Types.ClaimRecord {
+            if (r.txHash == txHash) {
+              { r with status = #pendingFee; feeTxHash = ?feeTxHash }
+            } else {
+              r
+            }
+          });
+        };
+      };
+    };
   };
 
   public func getBalance(state : State, user : Principal) : Nat {
