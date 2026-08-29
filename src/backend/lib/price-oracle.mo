@@ -37,7 +37,7 @@ module {
     };
 
     if (primaryJson != "") {
-      let price = parseDexScreenerPrice(primaryJson);
+      let price = parseDexScreenerPrice(primaryJson, normAddr);
       if (price > 0.0) {
         priceCache.add(normAddr, price);
         return #ok(price);
@@ -57,7 +57,7 @@ module {
       return #err("Price unavailable — network error. Please try again later.");
     };
 
-    let fallbackPrice = parseDexScreenerPrice(searchJson);
+    let fallbackPrice = parseDexScreenerPrice(searchJson, normAddr);
     if (fallbackPrice > 0.0) {
       priceCache.add(normAddr, fallbackPrice);
       #ok(fallbackPrice)
@@ -67,15 +67,20 @@ module {
     };
   };
 
-  /// Parse DexScreener API JSON to extract pairs[0].priceUsd.
-  /// Handles both `"priceUsd":"` and `"priceUsd": "` spacing variants.
-  /// Returns 0.0 when the field is absent, pairs is empty, or unparseable.
-  /// Parse DexScreener API JSON to extract the best priceUsd.
-  /// "Best" means: among all pairs with a non-zero priceUsd, pick the one
-  /// with the highest liquidity.usd — this matches the frontend pickBestPair logic.
-  /// Returns 0.0 when the field is absent, pairs is empty, or unparseable.
-  func parseDexScreenerPrice(json : Text) : Float {
-    // Guard: if pairs array is empty ([]) return 0 immediately
+  /// Parse DexScreener API JSON and return the USD price of `wantedAddr`,
+  /// taken from the pair with the HIGHEST LIQUIDITY among the pairs where the
+  /// queried token is the BASE token.
+  ///
+  /// DexScreener's pair-level priceUsd is the BASE token's price. A pair that
+  /// merely quotes AGAINST the wanted token prices some other token in terms
+  /// of it and says nothing about the wanted token's USD value. The previous
+  /// implementation scanned the whole document for any "priceUsd" and paired
+  /// it with whichever "usd" number sat within ±2000 chars — a $1.91-liquidity
+  /// dust pair quoting IN kVCM therefore priced kVCM at $0.9749 (real ~$0.014)
+  /// and over-credited a claim ~11x on 2026-08-28. Pair segmentation (segments
+  /// bounded by successive "baseToken" markers) plus base-token filtering
+  /// removes both failure modes deterministically.
+  func parseDexScreenerPrice(json : Text, wantedAddr : Text) : Float {
     if (containsText(json, "\"pairs\":[]") or containsText(json, "\"pairs\": []")) {
       return 0.0;
     };
@@ -83,146 +88,123 @@ module {
     let arr = json.toArray();
     let n = arr.size();
 
-    // We scan the entire JSON for all "priceUsd":"..." occurrences and the
-    // nearest "liquidity":{"usd":...} that precedes or follows each priceUsd
-    // within the same pair object.  To keep this simple and allocation-free we
-    // do two passes:
-    //   Pass 1 – collect all (position, priceUsd) hits.
-    //   Pass 2 – for each hit, scan backwards from that position for the
-    //            nearest "usd":  value (which is the liquidity.usd of that pair).
-    // Then return the priceUsd of the hit whose liquidity.usd is highest.
-
-    // ── Pass 1: find all priceUsd values ────────────────────────────────────
-    // We store up to 64 (position, price) pairs — more than enough for real responses.
-    let maxHits = 64;
-    let hitPositions : [var Nat]  = Array.tabulate(maxHits, func _ = 0).toVarArray();
-    let hitPrices    : [var Float] = Array.tabulate(maxHits, func _ = 0.0).toVarArray();
-    var hitCount     = 0;
-
-    let needle1 = "\"priceUsd\":\"";
-    let needle2 = "\"priceUsd\": \"";
-    let nArr1 = needle1.toArray();
-    let nArr2 = needle2.toArray();
-
-    var pos = 0;
-    while (pos < n and hitCount < maxHits) {
-      // Try needle1 first, then needle2
-      var matchOpt : ?{ at : Nat; needleLen : Nat } = null;
-      switch (indexOfChars(arr, pos, nArr1)) {
-        case (?found) { matchOpt := ?{ at = found; needleLen = nArr1.size() } };
-        case null {
-          switch (indexOfChars(arr, pos, nArr2)) {
-            case (?found) { matchOpt := ?{ at = found; needleLen = nArr2.size() } };
-            case null {};
-          };
-        };
-      };
-      switch (matchOpt) {
-        case null { pos := n }; // no more hits
-        case (?{ at; needleLen }) {
-          let valStart = at + needleLen;
-          var end = valStart;
-          while (end < n and arr[end] != '\"') { end += 1 };
-          if (end < n) {
-            let priceText = textFromSlice(arr, valStart, end);
-            switch (parseFloat(priceText)) {
-              case (?p) {
-                if (p > 0.0) {
-                  hitPositions[hitCount] := at;
-                  hitPrices[hitCount]    := p;
-                  hitCount += 1;
-                };
-              };
-              case null {};
-            };
-          };
-          pos := at + needleLen + 1; // advance past this hit
+    // Pass 1: positions of every "baseToken" marker — each begins a pair segment.
+    let marker = "\"baseToken\"";
+    let maxPairs = 64;
+    let segStarts : [var Nat] = Array.tabulate(maxPairs, func _ = 0).toVarArray();
+    var segCount = 0;
+    var scanPos = 0;
+    let mArr = marker.toArray();
+    label scanLoop while (scanPos < n and segCount < maxPairs) {
+      switch (indexOfChars(arr, scanPos, mArr)) {
+        case null { scanPos := n };
+        case (?at) {
+          segStarts[segCount] := at;
+          segCount += 1;
+          scanPos := at + mArr.size();
         };
       };
     };
+    if (segCount == 0) { return 0.0 };
 
-    if (hitCount == 0) { return 0.0 };
-    if (hitCount == 1) { return hitPrices[0] };
+    // Pass 2: per segment — base address, priceUsd, liquidity.usd.
+    let addrKey = "\"address\":\"";
+    let priceKey1 = "\"priceUsd\":\"";
+    let priceKey2 = "\"priceUsd\": \"";
+    let liqKey1 = "\"usd\":";
+    let liqKey2 = "\"usd\": ";
 
-    // ── Pass 2: find liquidity.usd nearest to each hit ──────────────────────
-    // We look for "\"usd\":" near each priceUsd position (within ±2000 chars)
-    // to get the liquidity value for that pair.
-    let liqNeedle1 = "\"usd\":";
-    let liqNeedle2 = "\"usd\": ";
-    let lArr1 = liqNeedle1.toArray();
-    let lArr2 = liqNeedle2.toArray();
-
-    var bestPrice    : Float = hitPrices[0];
+    var bestPrice : Float = 0.0;
     var bestLiquidity : Float = 0.0;
 
-    // Seed bestLiquidity from the first hit
-    bestLiquidity := findNearestUsd(arr, n, hitPositions[0], lArr1, lArr2);
+    var i = 0;
+    while (i < segCount) {
+      let segStart = segStarts[i];
+      let segEnd = if (i + 1 < segCount) segStarts[i + 1] else n;
 
-    var h = 1;
-    while (h < hitCount) {
-      let liq = findNearestUsd(arr, n, hitPositions[h], lArr1, lArr2);
-      if (liq > bestLiquidity) {
-        bestLiquidity := liq;
-        bestPrice     := hitPrices[h];
-      };
-      h += 1;
-    };
-
-    bestPrice;
-  };
-
-  /// Scan near `pos` (±2000 chars) in `arr` for the nearest "\"usd\":" value.
-  /// Returns 0.0 if not found. Used to read the liquidity.usd of a pair.
-  func findNearestUsd(arr : [Char], n : Nat, pos : Nat, lArr1 : [Char], lArr2 : [Char]) : Float {
-    let window : Nat = 2000;
-    let scanStart : Nat = if (pos > window) Int.abs(pos.toInt() - window.toInt()) else 0;
-    let scanEnd   : Nat = if (pos + window < n) pos + window else n;
-    // Narrow arr slice is simulated by passing scanStart as the start offset
-    // and only searching up to scanEnd
-    let tryNeedle = func(needle : [Char]) : ?Float {
-      let nLen = needle.size();
-      let hLen = arr.size();
-      if (nLen == 0 or hLen < nLen) { return null };
-      var i = scanStart;
-      var found : ?Float = null;
-      label outer while (i + nLen <= scanEnd) {
-        var j = 0;
-        var ok = true;
-        label inner while (j < nLen) {
-          if (arr[i + j] != needle[j]) {
-            ok := false;
-            j := nLen;
-          } else { j += 1 };
-        };
-        if (ok) {
-          let valStart = i + nLen;
-          // skip optional whitespace after colon
-          var k = valStart;
-          while (k < scanEnd and (arr[k] == ' ' or arr[k] == '\t')) { k += 1 };
-          var end = k;
-          // number ends at comma, }, ], or whitespace
-          while (end < scanEnd and arr[end] != ',' and arr[end] != '}' and arr[end] != ']' and arr[end] != ' ' and arr[end] != '\n' and arr[end] != '\t') {
-            end += 1;
+      // Base token address (first "address":" inside the segment header)
+      var segAddr = "";
+      switch (indexOfChars(arr, segStart, addrKey.toArray())) {
+        case (?p) {
+          if (p < segEnd) {
+            let valStart = p + addrKey.size();
+            var e = valStart;
+            while (e < segEnd and arr[e] != '\"') { e += 1 };
+            if (e < segEnd) { segAddr := textFromSlice(arr, valStart, e) };
           };
-          let numText = textFromSlice(arr, k, end);
-          switch (parseFloat(numText)) {
-            case (?f) { found := ?f; i := scanEnd }; // stop at first hit
+        };
+        case null {};
+      };
+
+      if (segAddr.size() > 0 and segAddr.toLower() == wantedAddr.toLower()) {
+        // priceUsd within this pair's segment only
+        var priceEnd : Nat = 0;
+        var foundPrice = false;
+        switch (indexOfChars(arr, segStart, priceKey1.toArray())) {
+          case (?p) {
+            if (p < segEnd) { priceEnd := p + priceKey1.size(); foundPrice := true };
+          };
+          case null {};
+        };
+        if (not foundPrice) {
+          switch (indexOfChars(arr, segStart, priceKey2.toArray())) {
+            case (?p) {
+              if (p < segEnd) { priceEnd := p + priceKey2.size(); foundPrice := true };
+            };
             case null {};
           };
         };
-        if (found == null) { i += 1 };
-      };
-      found;
-    };
-    switch (tryNeedle(lArr1)) {
-      case (?f) { f };
-      case null {
-        switch (tryNeedle(lArr2)) {
-          case (?f) { f };
-          case null { 0.0 };
+        var priceText = "";
+        if (foundPrice) {
+          var e2 = priceEnd;
+          while (e2 < segEnd and arr[e2] != '\"') { e2 += 1 };
+          if (e2 < segEnd) { priceText := textFromSlice(arr, priceEnd, e2) };
+        };
+
+        // liquidity.usd: FIRST "usd": inside the pair segment (volume/txns
+        // carry no "usd" label in the DexScreener pair shape).
+        var liqEnd : Nat = 0;
+        var foundLiq = false;
+        switch (indexOfChars(arr, segStart, liqKey1.toArray())) {
+          case (?p) {
+            if (p < segEnd) { liqEnd := p + liqKey1.size(); foundLiq := true };
+          };
+          case null {};
+        };
+        if (not foundLiq) {
+          switch (indexOfChars(arr, segStart, liqKey2.toArray())) {
+            case (?p) {
+              if (p < segEnd) { liqEnd := p + liqKey2.size(); foundLiq := true };
+            };
+            case null {};
+          };
+        };
+        var liqText = "";
+        if (foundLiq) {
+          var e3 = liqEnd;
+          while (e3 < segEnd and arr[e3] != ',' and arr[e3] != '}' and arr[e3] != ' ' and arr[e3] != ']') { e3 += 1 };
+          liqText := textFromSlice(arr, liqEnd, e3);
+        };
+
+        switch (parseFloat(priceText)) {
+          case (?p) {
+            if (p > 0.0) {
+              let liq = switch (parseFloat(liqText)) {
+                case (?l) { if (l < 0.0) { 0.0 } else { l } };
+                case null { 0.0 };
+              };
+              if (liq > bestLiquidity) {
+                bestLiquidity := liq;
+                bestPrice := p;
+              };
+            };
+          };
+          case null {};
         };
       };
+      i += 1;
     };
+    bestPrice;
   };
 
   /// Simple substring containment check.

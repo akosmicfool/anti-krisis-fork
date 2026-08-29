@@ -17,12 +17,14 @@ import {
   useGetFeeRecipient,
   useGetGritIssuanceRate,
   useGetTokens,
+  useInitiateClaim,
   useMyBalance,
   useMyClaimHistory,
   useRecheckClaim,
   useRetryFeeClaim,
 } from "../hooks/use-backend";
 import { useWallet } from "../hooks/use-wallet";
+import { buildFeeBindingData } from "../lib/fee-binding";
 import {
   type AllowlistedToken,
   CHAIN_LABELS,
@@ -42,10 +44,11 @@ const EXPLORER_BASE: Record<string, string> = {
   polygon: "https://polygonscan.com/tx",
   optimism: "https://optimistic.etherscan.io/tx",
   base: "https://basescan.org/tx",
+  celo: "https://celoscan.io/tx", // was missing — Celo txs linked to Etherscan
 };
 
 function explorerUrl(chain: string, txHash: string) {
-  const base = EXPLORER_BASE[chain] ?? "https://etherscan.io/tx";
+  const base = EXPLORER_BASE[chain] ?? "https://basescan.org/tx";
   return `${base}/${txHash}`;
 }
 
@@ -220,6 +223,8 @@ function ClaimRow({
   onRecheckAttempt: (txHash: string) => void;
   tick: number;
 }) {
+  // AKK-4: the claimant's own principal goes into the replacement fee tx payload
+  const { principal } = useAuth();
   const date = new Date(Number(claim.timestamp / BigInt(1_000_000)));
   const dateStr = date.toLocaleDateString("en-US", {
     month: "short",
@@ -251,16 +256,17 @@ function ClaimRow({
   const { data: feeRecipient } = useGetFeeRecipient();
   const retryFeeClaim = useRetryFeeClaim();
   const recheckClaim = useRecheckClaim();
+  const initiateClaim = useInitiateClaim();
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState("");
   const [retrySuccess, setRetrySuccess] = useState(false);
   const [rechecking, setRechecking] = useState(false);
   const [recheckMsg, setRecheckMsg] = useState("");
+  const [claimRetrying, setClaimRetrying] = useState(false);
+  const [claimRetryMsg, setClaimRetryMsg] = useState("");
   const feeRate = feePercent != null ? feePercent / 100 : 0.0069;
   const claimIsPendingFee = isPendingFee(claim.status);
-  const claimNeedsRecheck =
-    claim.status === ClaimStatus.pending ||
-    getClaimStatus(claim.status).color === "failed";
+  const claimNeedsRecheck = claim.status === ClaimStatus.pending;
 
   // Cooldown state for this claim
   const attemptState = recheckAttempts[claim.txHash];
@@ -312,6 +318,8 @@ function ClaimRow({
         chainId,
         feeRecipient,
         feeRate,
+        // AKK-4: replacement fee tx binds to this claim's burn + this user
+        buildFeeBindingData(principal ?? "", claim.txHash),
       );
       await retryFeeClaim.mutateAsync({
         txHash: claim.txHash,
@@ -320,6 +328,79 @@ function ClaimRow({
       setRetrySuccess(true);
     } catch (err) {
       setRetryError(err instanceof Error ? err.message : "Fee retry failed.");
+    } finally {
+      setRetrying(false);
+    }
+  }
+
+  // A #failed claim (e.g. transient price-deviation rejection) credited
+  // nothing but used to be a dead end — the duplicate guard bricked the
+  // burn's txHash forever. The backend now resurrects failed records in
+  // place when the ORIGINAL claimant re-submits; we reuse the ALREADY-BOUND
+  // fee tx so no new payment is taken. frontendPrice is 0: pure oracle
+  // pricing, no cross-check source to disagree with.
+  async function handleRetryClaim() {
+    if (!wallet.isConnected) return;
+    setClaimRetrying(true);
+    setClaimRetryMsg("");
+    try {
+      await initiateClaim.mutateAsync({
+        txHash: claim.txHash,
+        feeTxHash: claim.feeTxHash ?? "",
+        tokenAddress: claim.tokenAddress,
+        chain: claim.chain,
+        frontendPrice: 0,
+      });
+      setClaimRetryMsg("✓ Re-submitted — pending re-check");
+    } catch (err) {
+      // Surface the REAL backend rejection — a failed ✕-retry that silently
+      // reported success hid the actual cause from the user.
+      setClaimRetryMsg(
+        err instanceof Error ? `✕ ${err.message}` : "✕ Retry failed.",
+      );
+    } finally {
+      setClaimRetrying(false);
+    }
+  }
+
+  // Pay Fee: for a claim whose burn verified but has NO fee yet (the modal's
+  // slow-burn background path submits claims with feeTxHash ""), the user
+  // pays the platform fee HERE and hands the new hash to retryFeeClaim —
+  // which stores it, verifies binding, and credits GRIT. Empty-string hashes
+  // count as "no fee" (the backend stores ?"" through the pendingFee
+  // transition). Same flow as Retry Fee; a failed fee tx never loses the
+  // burn (retry again any time).
+  const claimNeedsFee =
+    (claimIsPendingFee || claim.status === ClaimStatus.pending) &&
+    (claim.feeTxHash ?? "").trim() === "";
+  async function handlePayFee() {
+    if (!feeRecipient || !wallet.isConnected) return;
+    setRetrying(true);
+    setRetryError("");
+    try {
+      const chainId =
+        claim.chain === "celo"
+          ? 42220
+          : claim.chain === "optimism"
+            ? 10
+            : claim.chain === "base"
+              ? 8453
+              : 1;
+      const newFeeHash = await wallet.sendPlatformFee(
+        Number(claim.amountBurned),
+        chainId,
+        feeRecipient,
+        feeRate,
+        // Binding is to this claim's burn + this user, same as any fee tx
+        buildFeeBindingData(principal ?? "", claim.txHash),
+      );
+      await retryFeeClaim.mutateAsync({
+        txHash: claim.txHash,
+        feeTxHash: newFeeHash,
+      });
+      setRetrySuccess(true);
+    } catch (err) {
+      setRetryError(err instanceof Error ? err.message : "Fee payment failed.");
     } finally {
       setRetrying(false);
     }
@@ -356,6 +437,27 @@ function ClaimRow({
       <td className="px-3 py-3">
         <div className="flex flex-col gap-1.5">
           <StatusBadge claim={claim} />
+          {claimNeedsFee && !retrySuccess && (
+            <>
+              <button
+                type="button"
+                onClick={handlePayFee}
+                disabled={retrying || !wallet.isConnected}
+                className="inline-flex items-center gap-1 px-2 py-1 border border-amber-500/50 bg-amber-500/10 text-amber-300 font-mono text-[10px] uppercase tracking-widest hover:bg-amber-500/20 transition-colors disabled:opacity-50"
+                data-ocid={`dashboard.claims.pay_fee_button.${pos}`}
+              >
+                {retrying ? "Sending…" : "Pay Fee"}
+              </button>
+              {retryError && (
+                <p
+                  className="font-mono text-[10px] text-red-400"
+                  data-ocid={`dashboard.claims.pay_fee_error.${pos}`}
+                >
+                  {retryError}
+                </p>
+              )}
+            </>
+          )}
           {claimIsPendingFee && !retrySuccess && (
             <>
               <button
@@ -384,6 +486,27 @@ function ClaimRow({
             >
               Fee paid ✓
             </span>
+          )}
+          {getClaimStatus(claim.status).color === "failed" && (
+            <>
+              <button
+                type="button"
+                onClick={() => void handleRetryClaim()}
+                disabled={claimRetrying || !wallet.isConnected}
+                className="inline-flex items-center gap-1 px-2 py-1 border border-sky-500/50 bg-sky-500/10 text-sky-300 font-mono text-[10px] uppercase tracking-widest hover:bg-sky-500/20 transition-colors disabled:opacity-50"
+                data-ocid={`dashboard.claims.retry_claim_button.${pos}`}
+              >
+                {claimRetrying ? "Submitting…" : "Retry Claim"}
+              </button>
+              {claimRetryMsg && (
+                <p
+                  className="font-mono text-[10px] text-muted-foreground"
+                  data-ocid={`dashboard.claims.retry_claim_msg.${pos}`}
+                >
+                  {claimRetryMsg}
+                </p>
+              )}
+            </>
           )}
           {claimNeedsRecheck && (
             <>

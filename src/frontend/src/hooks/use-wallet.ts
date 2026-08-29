@@ -153,6 +153,8 @@ export interface UseWalletReturn {
     chainId: number,
     recipientAddress: string,
     feeRate?: number,
+    /** AKK-4: binding calldata (claimant principal + burn tx hash). Required. */
+    bindingData?: string,
   ) => Promise<string>;
   /**
    * Fetches the native token price and returns fee info so the UI can
@@ -288,6 +290,7 @@ export function useWallet(): UseWalletReturn {
       data: `0x${string}`;
       value?: bigint;
       chainId?: number;
+      gas?: bigint;
     }): Promise<string> => {
       const targetChainId = params.chainId ?? BASE_CHAIN_ID;
       if (walletChainId !== targetChainId) {
@@ -301,6 +304,9 @@ export function useWallet(): UseWalletReturn {
         to: params.to,
         data: params.data,
         value: params.value ?? 0n,
+        // Explicit cap when the caller provides one (kVCM retirement route).
+        // Omitted otherwise so normal txs keep wallet-estimated gas.
+        ...(params.gas !== undefined ? { gas: params.gas } : {}),
         chainId: targetChainId as Parameters<
           typeof sendTransactionAsync
         >[0]["chainId"],
@@ -349,6 +355,7 @@ export function useWallet(): UseWalletReturn {
       chainId: number,
       recipientAddress: string,
       feeRate: number = DEFAULT_PLATFORM_FEE_RATE,
+      bindingData?: string,
     ): Promise<string> => {
       if (!recipientAddress || !recipientAddress.startsWith("0x")) {
         throw new Error(
@@ -374,7 +381,9 @@ export function useWallet(): UseWalletReturn {
 
       const hash = await sendTransactionAsync({
         to: recipientAddress as `0x${string}`,
-        data: "0x" as `0x${string}`,
+        // AKK-4: calldata binds this fee payment to (claimant, burn tx) —
+        // verified on-chain by the backend before GRIT is credited.
+        data: (bindingData ?? "0x") as `0x${string}`,
         value: feeWei,
         chainId: chainId as Parameters<
           typeof sendTransactionAsync

@@ -54,7 +54,7 @@ const AboutPage = lazy(() =>
 
 // ─── Root wrapper with Layout ─────────────────────────────────────────────────
 function RootComponent() {
-  const { principal, isAuthenticated } = useAuth();
+  const { principal } = useAuth();
   const { data: isAdmin = false } = useIsAdmin();
 
   // AKK-1b: legacy client-side admin auto-bootstrap removed together with the

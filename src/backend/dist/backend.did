@@ -348,6 +348,8 @@ service : {
       lastBlockTime: int;
       nextBlockIn: nat;
     }) query;
+  getFeeCollectorAddress: () -> (text) query;
+  getFeePaidCheckEnabled: () -> (bool) query;
   getFeePercent: () -> (float64) query;
   getFeeRecipient: () -> (opt text) query;
   getGritIssuanceRate: () -> (nat) query;
@@ -498,6 +500,8 @@ service : {
                                       err: text;
                                       ok;
                                     });
+  setFeeCollectorAddress: (address: text) -> ();
+  setFeePaidCheckEnabled: (enabled: bool) -> ();
   setFeePercent: (percent: float64) -> ();
   setFeeRecipient: (address: text) -> ();
   setGritIssuanceRate: (rate: nat) -> ();

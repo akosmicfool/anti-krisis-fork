@@ -2,12 +2,14 @@ import Runtime "mo:core/Runtime";
 import Principal "mo:core/Principal";
 import AllowlistLib "../lib/allowlist";
 import AllowlistTypes "../types/allowlist";
+import FeeConfig "../lib/fee-config";
 import Time "mo:core/Time";
 
 mixin (
   allowlistState : AllowlistLib.State,
   admin : AllowlistLib.AdminState,
-  gate : AllowlistLib.GateState
+  gate : AllowlistLib.GateState,
+  feeState : FeeConfig.FeeState,
 ) {
   /// Admin: add a token to the allowlist.
   public shared ({ caller }) func addToken(token : AllowlistTypes.AllowlistedToken) : async () {
@@ -73,6 +75,36 @@ mixin (
   /// Anyone: get the current fee recipient wallet address.
   public query func getFeeRecipient() : async ?Text {
     admin.feeRecipient;
+  };
+
+  /// Admin: set the EVM address of the FeeCollector contract (Option B).
+  /// Set this to the SAME address as feeRecipient once the collector is
+  /// deployed on every allowlisted chain.
+  public shared ({ caller }) func setFeeCollectorAddress(address : Text) : async () {
+    if (not AllowlistLib.isAdmin(admin, caller)) {
+      Runtime.trap("Unauthorized: caller is not admin");
+    };
+    feeState.collectorAddress := address;
+  };
+
+  /// Anyone: get the configured FeeCollector contract address ("" = unset).
+  public query func getFeeCollectorAddress() : async Text {
+    feeState.collectorAddress;
+  };
+
+  /// Admin: arm/disarm the FeePaid-event-from-collector check.
+  /// Arm ONLY after the collector is deployed on every allowlisted chain AND
+  /// feeRecipient == collectorAddress — arming early fails every claim.
+  public shared ({ caller }) func setFeePaidCheckEnabled(enabled : Bool) : async () {
+    if (not AllowlistLib.isAdmin(admin, caller)) {
+      Runtime.trap("Unauthorized: caller is not admin");
+    };
+    feeState.requireFeePaidEvent := enabled;
+  };
+
+  /// Anyone: get the FeePaid-check toggle state.
+  public query func getFeePaidCheckEnabled() : async Bool {
+    feeState.requireFeePaidEvent;
   };
 
   /// Admin: set the platform fee percentage (e.g. 0.69 means 0.69%).

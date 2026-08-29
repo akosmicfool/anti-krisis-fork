@@ -1,5 +1,8 @@
 import Text "mo:core/Text";
+import Char "mo:core/Char";
 import Array "mo:core/Array";
+import Nat8 "mo:core/Nat8";
+import OutCall "mo:caffeineai-http-outcalls/outcall";
 
 module {
   public type VerificationResult = {
@@ -16,7 +19,7 @@ module {
       case ("arbitrum") { ?"https://arb1.arbitrum.io/rpc" };
       case ("polygon")  { ?"https://polygon-rpc.com" };
       case ("optimism") { ?"https://mainnet.optimism.io" };
-      case ("base")     { ?"https://mainnet.base.org|https://base.llamarpc.com|https://1rpc.io/base|https://base.publicnode.com" };
+      case ("base")     { ?"https://mainnet.base.org|https://1rpc.io/base|https://base.publicnode.com" };
       case ("celo")     { ?"https://forno.celo.org|https://rpc.ankr.com/celo|https://celo.drpc.org|https://celo.meowrpc.com" };
       case (_)          { null };
     };
@@ -32,6 +35,20 @@ module {
       else "0x" # lower
     } else { "0x" # lower };
     "{\"jsonrpc\":\"2.0\",\"method\":\"eth_getTransactionReceipt\",\"params\":[\"" # normalised # "\"],\"id\":1}";
+  };
+
+  /// Build the JSON-RPC POST body for eth_getTransactionByHash (AKK-4).
+  /// Unlike the receipt, this returns the TRANSACTION object itself, including
+  /// the `from` (sender), `to` and `input` (calldata) fields — everything the
+  /// fee-binding check needs.
+  public func buildTxByHashRequestBody(txHash : Text) : Text {
+    let lower = txHash.toLower();
+    let normalised = if (lower.size() >= 2) {
+      let arr = lower.toArray();
+      if (arr[0] == '0' and arr[1] == 'x') lower
+      else "0x" # lower
+    } else { "0x" # lower };
+    "{\"jsonrpc\":\"2.0\",\"method\":\"eth_getTransactionByHash\",\"params\":[\"" # normalised # "\"],\"id\":1}";
   };
 
   // ── Char-array helpers ────────────────────────────────────────────────────
@@ -248,6 +265,80 @@ module {
     } else {
       "0x" # sliceChars(arr, hexStart, len)
     };
+  };
+
+  // ── AKK-4 / AKK-8 fee-binding payload ────────────────────────────────────
+  //
+  // The frontend attaches calldata to the platform-fee transaction:
+  //   data = 0x || byte(len) || principal-text bytes || 32-byte burn tx hash
+  // (principal-text = canonical lowercase `Principal.toText()` form, ASCII).
+  // The backend decodes this from eth_getTransactionByHash `input` and enforces
+  // the fee → burn → claimant binding. Textual comparison avoids trapping
+  // Principal.fromText — canonical toText forms compare byte-exactly.
+
+  /// Parse the fee-binding payload from a transaction `input` hex string.
+  /// Returns null when the calldata is absent/empty (unbound fee tx).
+  public func parseFeeBinding(inputHex : Text) : ?{ principalText : Text; burnHash : Text } {
+    // Strip optional 0x prefix, lowercase
+    let lower = inputHex.toLower();
+    let hex = if (lower.size() >= 2 and lower.toArray()[0] == '0' and lower.toArray()[1] == 'x') {
+      sliceChars(lower.toArray(), 2, lower.size())
+    } else { lower };
+    if (hex.size() < 2) { return null }; // empty calldata
+    let bytes = hexToBytes(hex);
+    if (bytes.size() < 1 + 5 + 32) { return null }; // too short to hold any payload
+    let len : Nat = bytes[0].toNat();
+    if (len < 5 or len > 63) { return null }; // implausible principal length
+    if (bytes.size() != 1 + len + 32) { return null }; // exact layout required
+    // Principal text = ASCII bytes 1..len
+    var principalText = "";
+    var i = 1;
+    while (i <= len) {
+      principalText #= Text.fromChar(Char.fromNat32(bytes[i].toNat32()));
+      i += 1;
+    };
+    // Burn hash = last 32 bytes as lowercase hex
+    var burnHash = "";
+    i := 1 + len;
+    while (i < bytes.size()) {
+      burnHash #= byteToHex(bytes[i]);
+      i += 1;
+    };
+    ?{ principalText; burnHash }
+  };
+
+  /// Decode a lowercase hex string (no 0x prefix) into bytes. Invalid input
+  /// returns an empty array (payload layout checks then reject it).
+  func hexToBytes(hex : Text) : [Nat8] {
+    let arr = hex.toArray();
+    if (arr.size() % 2 != 0) { return [] };
+    let out = Array.tabulate(arr.size() / 2, func(idx : Nat) : Nat8 {
+      let hi = hexDigitVal(arr[idx * 2]);
+      let lo = hexDigitVal(arr[idx * 2 + 1]);
+      if (hi == 0xFF or lo == 0xFF) { 0xFF } else { hi * 16 + lo };
+    });
+    // Reject if any nibble was invalid (0xFF marker)
+    var ok = true;
+    for (b in out.values()) {
+      if (b == 0xFF) { ok := false };
+    };
+    if (ok) out else [];
+  };
+
+  func hexDigitVal(c : Char) : Nat8 {
+    switch (c) {
+      case '0' 0; case '1' 1; case '2' 2; case '3' 3; case '4' 4;
+      case '5' 5; case '6' 6; case '7' 7; case '8' 8; case '9' 9;
+      case 'a' 10; case 'b' 11; case 'c' 12; case 'd' 13; case 'e' 14; case 'f' 15;
+      case _ 0xFF;
+    };
+  };
+
+  func byteToHex(b : Nat8) : Text {
+    let hexChars = "0123456789abcdef";
+    let hi = Nat8.toNat(b / 16);
+    let lo = Nat8.toNat(b % 16);
+    Text.fromChar(hexChars.toArray()[hi]) # Text.fromChar(hexChars.toArray()[lo]);
   };
 
   /// Extract the next quoted string from `arr` starting at `from`.
@@ -469,6 +560,281 @@ module {
         #ok({ amountBurned = amount });
       };
     };
+  };
+
+  // ── AKK-4 / AKK-8 fee-binding verification ───────────────────────────────
+  //
+  // The platform-fee tx doubles as the claim binding: its calldata carries
+  // (claimant principal text, burn tx hash), its sender must equal the burn
+  // tx sender, and its recipient must equal the configured fee wallet. All
+  // three facts come from eth_getTransactionByHash over public RPC — no
+  // trust in the claimant beyond their own wallet signatures.
+
+  public type TxByHash = {
+    from : Text; // lowercase sender address
+    to : Text; // lowercase recipient address
+    input : Text; // raw calldata hex ("" when absent)
+  };
+  public type TxByHashResult = { #ok : TxByHash; #err : Text };
+
+  /// Fetch a transaction object by hash across the chain's RPC fallbacks.
+  /// Returns #err("PENDING") when the tx is unknown (not yet indexed by any
+  /// fallback) or every endpoint errored; #err(definitive) only for structural
+  /// problems in an otherwise-successful response.
+  public func fetchTxByHash(
+    txHash : Text,
+    chain : Text,
+    transformFn : shared query OutCall.TransformationInput -> async OutCall.TransformationOutput,
+  ) : async TxByHashResult {
+    let rpcUrlOpt = rpcUrlForChain(chain);
+    let rpcUrlsRaw = switch (rpcUrlOpt) { case null { return #err("Unsupported chain: " # chain) }; case (?u) { u } };
+    let rpcUrlList = rpcUrlsRaw.split(#char '|').toArray();
+    let body = buildTxByHashRequestBody(txHash);
+
+    var response : Text = "";
+    var gotValidResponse = false;
+    var i = 0;
+    while (i < rpcUrlList.size() and not gotValidResponse) {
+      try {
+        let candidate = await OutCall.httpPostRequest(
+          rpcUrlList[i],
+          [{ name = "Content-Type"; value = "application/json" }],
+          body,
+          transformFn,
+        );
+        if (not candidate.contains(#text "\"error\"")) {
+          // A result:null here means THIS node hasn't indexed the tx yet —
+          // try the next fallback before concluding PENDING.
+          if (not fieldIsNull(candidate.toArray(), "result")) {
+            // JSON-RPC shape guard: an HTTP-200 NON-JSON error page (e.g. a
+            // dead endpoint's "error code: 521" or a Cloudflare 504 HTML
+            // page) contains neither "error": nor "result":null — without
+            // this check it used to be accepted as a valid response and the
+            // missing `from` field then produced a DEFINITIVE
+            // "BINDING_FAIL: tx missing `from`" that killed healthy claims
+            // (observed 2026-08-28: llamarpc outage murdered claim
+            // 0xe615f0cb… while every on-chain fact was correct). A response
+            // without any JSON-RPC marker is a dead endpoint, not data.
+            if (candidate.contains(#text "\"jsonrpc\"") or candidate.contains(#text "\"result\"")) {
+              response := candidate;
+              gotValidResponse := true;
+            };
+          };
+        };
+      } catch (_) {};
+      i += 1;
+    };
+    if (not gotValidResponse) { return #err("PENDING") };
+
+    let arr = response.toArray();
+    if (fieldIsNull(arr, "result")) {
+      // Unknown hash at this node — treat like not-yet-indexed so callers retry
+      return #err("PENDING");
+    };
+
+    let fromAddr = switch (extractStringField(arr, 0, "from")) {
+      case null { return #err("tx missing `from` field") };
+      case (?f) { normAddr(f) };
+    };
+    let toAddr = switch (extractStringField(arr, 0, "to")) {
+      case null { return #err("tx missing `to` field") };
+      case (?t) { normAddr(t) };
+    };
+    let inputData = switch (extractStringField(arr, 0, "input")) {
+      case null {
+        // Legacy/spec-variant nodes name the calldata field `data` (some Celo /
+        // Optimism infra returns only `data`) — fall back before giving up.
+        switch (extractStringField(arr, 0, "data")) {
+          case null { "" };
+          case (?d) { d };
+        };
+      };
+      case (?d) { d };
+    };
+    // Anomalous-empty guard: a tx response that carried a result but yielded
+    // NO calldata is untrustworthy — platform-fee txs ALWAYS carry the
+    // 96-byte binding payload, so empty input here means the endpoint served
+    // a truncated/partial object. Returning it as #ok produced the
+    // definitive "BINDING_FAIL: fee tx carries no binding payload" on
+    // healthy claims (observed on Celo 2026-08-29, claim 0xe7b3ff…: all
+    // on-chain facts perfect, fee FeePaid from collector, binding decoded
+    // byte-perfect from a direct probe — while the backend's fetch saw no
+    // input). Signal PENDING instead so the caller retries the next
+    // endpoint / cycle. (Plain value transfers legitimately have empty
+    // input, but this fetcher is only used for fee/burn txs, which always
+    // carry calldata or are plain dead-address transfers — the burn-side
+    // parse treats empty as fatal too. Retrying is always safe.)
+    if (inputData.size() < 2) {
+      return #err("PENDING");
+    };
+    return #ok({ from = fromAddr; to = toAddr; input = inputData });
+  };
+
+  /// Verify the fee tx binds the burn to the claimant (AKK-4 + AKK-8).
+  /// Checks, in order:
+  ///   1. fee tx status == success (via the standard receipt parse)
+  ///   2. fee tx `to` == configured fee recipient
+  ///   3. fee tx sender == burn tx sender           (same wallet)
+  ///   4. fee tx calldata == (claimant principal, burn tx hash)
+  /// Any mismatch is a definitive failure; only genuine PENDING states retry.
+  public func verifyFeeBinding(feeTx : TxByHash, burnTx : TxByHash, expectedTo : Text, expectedPrincipalText : Text, expectedBurnHash : Text) : { #ok; #err : Text } {
+    // 2. recipient must be the configured fee wallet
+    if (feeTx.to != normAddr(expectedTo)) {
+      return #err("BINDING_FAIL: fee tx recipient is not the configured fee wallet");
+    };
+    // 3. same wallet must have sent the burn
+    if (feeTx.from != burnTx.from) {
+      return #err("BINDING_FAIL: fee tx sender differs from burn tx sender");
+    };
+    // 4. calldata must name this claimant and this exact burn
+    switch (parseFeeBinding(feeTx.input)) {
+      case null { return #err("BINDING_FAIL: fee tx carries no binding payload") };
+      case (?binding) {
+        if (binding.principalText != expectedPrincipalText) {
+          return #err("BINDING_FAIL: fee tx principal does not match the claimant");
+        };
+        if (binding.burnHash != (if (expectedBurnHash.size() >= 2 and expectedBurnHash.toArray()[0] == '0' and expectedBurnHash.toArray()[1] == 'x') {
+          sliceChars(expectedBurnHash.toArray(), 2, expectedBurnHash.size())
+        } else { expectedBurnHash }).toLower()) {
+          return #err("BINDING_FAIL: fee tx names a different burn transaction");
+        };
+      };
+    };
+    #ok;
+  };
+
+  // ── AKK-4 Option B: FeePaid event from the FeeCollector contract ──────────
+  //
+  // The FeeCollector contract emits, for every payment it accepts:
+  //   event FeePaid(address indexed payer, bytes binding, uint256 value);
+  // topic0 = keccak256("FeePaid(address,bytes,uint256)")
+  // VERIFIED AGAINST LIVE CHAIN DATA 2026-08-28: the real receipt from the
+  // deployed collector carries topic0 0x6306705606f6bb80eb21422af69622d33b086a
+  // 84411f822776f54f64b5daa027 — this constant now equals it byte-for-byte.
+  // (Original commit shipped keccak("FeePaid(address,address,bytes,uint256)")
+  // — a phantom 4-param signature — which the parser could never match.)
+  let FEEPAID_TOPIC0 : Text = "0x6306705606f6bb80eb21422af69622d33b086a84411f822776f54f64b5daa027";
+
+  /// Check whether the fee-tx receipt JSON contains a `FeePaid` log emitted BY
+  /// the collector contract (`collector` address field) with topic[1] (payer)
+  /// equal to `expectedPayer`. Both addresses compare case-insensitively.
+  /// Absent/ambiguous receipts simply return false — the caller decides
+  /// whether that is definitive (check armed) or ignorable (check off).
+  public func feePaidLogPresent(jsonResponse : Text, collector : Text, expectedPayer : Text) : Bool {
+    let arr = jsonResponse.toArray();
+    let normCollector = normAddr(collector);
+    let normPayer = normAddr(expectedPayer);
+
+    let logsNeedle1 = "\"logs\":[";
+    let logsNeedle2 = "\"logs\": [";
+    let logsBodyStart : Nat = switch (indexOfText(arr, 0, logsNeedle1)) {
+      case (?pos) { pos + logsNeedle1.size() };
+      case null {
+        switch (indexOfText(arr, 0, logsNeedle2)) {
+          case (?pos) { pos + logsNeedle2.size() };
+          case null { 0 };
+        };
+      };
+    };
+
+    var searchFrom : Nat = logsBodyStart;
+    label search loop {
+      switch (indexOfText(arr, searchFrom, FEEPAID_TOPIC0)) {
+        case null { break search };
+        case (?topicPos) {
+          // Walk backward from topicPos to find the opening '{' of this log object
+          var logObjStart : Nat = topicPos;
+          var depth : Int = 0;
+          var i : Int = topicPos.toInt() - 1;
+          var found = false;
+          label walkBack while (i >= 0) {
+            let c = arr[i.toNat()];
+            if (c == '}') { depth += 1 }
+            else if (c == '{') {
+              if (depth == 0) {
+                logObjStart := i.toNat();
+                found := true;
+                i := -1; // break
+              } else {
+                depth -= 1;
+              };
+            };
+            i -= 1;
+          };
+
+          if (not found) {
+            searchFrom := topicPos + FEEPAID_TOPIC0.size();
+          } else {
+            // Walk forward to the matching closing '}' of this log object
+            var logObjEnd : Nat = arr.size();
+            var depth2 : Nat = 1;
+            var j = logObjStart + 1;
+            label walkFwd while (j < arr.size()) {
+              if (arr[j] == '{') { depth2 += 1 }
+              else if (arr[j] == '}') {
+                if (depth2 == 1) { logObjEnd := j + 1; j := arr.size() } // break
+                else { depth2 -= 1 };
+              };
+              j += 1;
+            };
+
+            let logArr = arr.sliceToArray(logObjStart.toInt(), logObjEnd.toInt());
+
+            // The emitting contract must be the collector itself
+            let emitterOk = switch (extractStringField(logArr, 0, "address")) {
+              case null { false };
+              case (?a) { normAddr(a) == normCollector };
+            };
+            if (emitterOk) {
+              // topics array: [0] = FeePaid sig, [1] = payer (indexed address)
+              let tNeedle1 = "\"topics\":[";
+              let tNeedle2 = "\"topics\": [";
+              let tStart : ?Nat = switch (indexOfText(logArr, 0, tNeedle1)) {
+                case (?p) { ?(p + tNeedle1.size()) };
+                case null {
+                  switch (indexOfText(logArr, 0, tNeedle2)) {
+                    case (?p) { ?(p + tNeedle2.size()) };
+                    case null { null };
+                  };
+                };
+              };
+              switch (tStart) {
+                case null {
+                  searchFrom := topicPos + FEEPAID_TOPIC0.size();
+                };
+                case (?ts) {
+                  switch (nextQuoted(logArr, ts)) {
+                    case null {
+                      searchFrom := topicPos + FEEPAID_TOPIC0.size();
+                    };
+                    case (?(t0, after0)) {
+                      if (normAddr(t0) != normAddr(FEEPAID_TOPIC0)) {
+                        searchFrom := topicPos + FEEPAID_TOPIC0.size();
+                      } else {
+                        switch (nextQuoted(logArr, after0)) {
+                          case null {
+                            searchFrom := topicPos + FEEPAID_TOPIC0.size();
+                          };
+                          case (?(t1, _)) {
+                            if (topicToAddress(t1) == normPayer) {
+                              return true;
+                            };
+                            searchFrom := topicPos + FEEPAID_TOPIC0.size();
+                          };
+                        };
+                      };
+                    };
+                  };
+                };
+              };
+            } else {
+              searchFrom := topicPos + FEEPAID_TOPIC0.size();
+            };
+          };
+        };
+      };
+    };
+    false;
   };
 
   type RetirementLogResult = { #ok : Nat; #err : Text };

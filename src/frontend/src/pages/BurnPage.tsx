@@ -44,7 +44,12 @@ import {
   useRetryFeeClaim,
 } from "../hooks/use-backend";
 import { type PlatformFeeInfo, useWallet } from "../hooks/use-wallet";
-import { KVCM_RETIREMENT, retireKvcm } from "../lib/kvcm-retirement";
+import { buildFeeBindingData } from "../lib/fee-binding";
+import {
+  KVCM_RETIREMENT,
+  retireKvcm,
+  waitBurnReceipt,
+} from "../lib/kvcm-retirement";
 import {
   CHAIN_LABELS,
   ClaimStatus,
@@ -307,7 +312,12 @@ function TokenBalanceDisplay({
 
 // ─── Main page ────────────────────────────────────────────────────────────────
 export function BurnPage({ embedded = false }: { embedded?: boolean }) {
-  const { isAuthenticated, isLoading: authLoading, login } = useAuth();
+  const {
+    isAuthenticated,
+    isLoading: authLoading,
+    login,
+    principal,
+  } = useAuth();
   const wallet = useWallet();
   const { data: tokens, isLoading: tokensLoading } = useGetTokens();
   const { data: claimHistory, refetch: refetchHistory } = useMyClaimHistory();
@@ -332,6 +342,19 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
     stepRef.current = s;
   }, []);
   const [txHash, setTxHash] = useState<string | null>(null);
+  // When the claim first entered #pendingFee during this run. pendingFee
+  // means "burn verified, fee not yet credited" — usually the fee tx is
+  // simply still confirming and the backend's recheck loop credits it
+  // within ~15s. Only a stall beyond PENDING_FEE_GRACE_MS (or a definitive
+  // on-chain revert) warrants the retry UI — flipping earlier showed
+  // "Fee payment needs a retry" for fees that went through moments later.
+  const pendingFeeSinceRef = useRef<number | null>(null);
+  const PENDING_FEE_GRACE_MS = 90_000;
+  // Which modal step a terminal failure belongs to (1=burn, 2=fee, 3=GRIT).
+  // getModalStep() maps "failed" to 3 unconditionally, so failure sites must
+  // set this explicitly — otherwise a burn-phase failure renders steps 1-2
+  // as ✓ Done with the ✕ on the wrong step.
+  const [failStep, setFailStep] = useState<1 | 2 | 3>(1);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [_confirmCountdown, setConfirmCountdown] = useState<number>(0);
   const [verifiedGrit, setVerifiedGrit] = useState<bigint | null>(null);
@@ -349,6 +372,9 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
 
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const priceNoteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Ref mirror of feeTxHash: the state variable is stale inside async closures,
+  // but the AKK-4 catch-mask must know whether the fee tx was ever broadcast.
+  const feeTxHashRef = useRef<string | null>(null);
   const claimedTxRef = useRef<string | null>(null);
 
   // Derive chains that have at least one token (for the chain filter dropdown)
@@ -565,10 +591,30 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
         setPriceNote(null);
         await stopPolling("settled");
       } else if (isPendingFee(match.status)) {
-        // Burn verified but fee payment failed — prompt user to retry fee.
-        setStepAndRef("pending_fee");
-        await stopPolling("settled");
+        // Burn verified, fee not yet credited — NOT automatically a failure.
+        // The dominant cause is the fee tx still confirming; the backend
+        // recheck credits it within ~15s. Stay in the step-2 waiting state
+        // and keep polling; escalate to the retry UI only after the grace
+        // window (a healthy fee would have settled by then).
+        if (pendingFeeSinceRef.current === null) {
+          pendingFeeSinceRef.current = Date.now();
+        }
+        const stalled =
+          Date.now() - (pendingFeeSinceRef.current ?? Date.now()) >
+          PENDING_FEE_GRACE_MS;
+        if (stalled) {
+          setStepAndRef("pending_fee");
+          await stopPolling("settled");
+        } else {
+          setStepAndRef("awaiting_fee_confirm");
+          setPriceNote(
+            (prev) =>
+              prev ??
+              "Platform fee is still confirming on-chain — this can take a minute. Your GRIT will be credited automatically once it settles.",
+          );
+        }
       } else if (match.status === ClaimStatus.failed) {
+        setFailStep(3);
         setStepAndRef("failed");
         setErrorMsg(
           "Verification failed — transaction could not be confirmed on-chain.",
@@ -611,6 +657,16 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
     const parsedAmt = Number.parseFloat(amount);
     if (Number.isNaN(parsedAmt) || parsedAmt <= 0) return;
 
+    // Guard: the AKK-4 fee-binding payload needs the claimant's ICP principal.
+    // Require it up front so no burn tx is signed when the claim could never
+    // be credited afterwards.
+    if (!principal) {
+      setErrorMsg(
+        "Please sign in with your Internet Identity before burning — your principal is required to bind the platform fee to your claim.",
+      );
+      return;
+    }
+
     // Guard: fee recipient must be configured before a burn can proceed
     if (!feeRecipient || !feeRecipient.startsWith("0x")) {
       setErrorMsg(
@@ -622,6 +678,7 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
     setErrorMsg(null);
     setFeeInfo(null);
     setFeeTxHash(null);
+    feeTxHashRef.current = null;
     setStepAndRef("burning");
     setModalOpen(true);
 
@@ -641,10 +698,17 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
         KVCM_RETIREMENT.kvcm.toLowerCase();
       let hash: string;
       if (isKvcm) {
+        // MetaMask renders its own canned approval-dialog text ("someone
+        // else permission to spend…"); show the accurate permission
+        // statement in-app first — the approve + retire pair IS a burn of
+        // kVCM via the KlimaDAO Retirement Aggregator.
+        setPriceNote("Burning kVCM natively via Klima Protocol...");
         const retirement = await retireKvcm({
           amount: amount.trim(),
           beneficiaryAddress: wallet.address as `0x${string}`,
           sendContractTransaction: wallet.sendContractTransaction,
+          // Tier selection: which Klima credit depths can absorb this size.
+          burnValueUsd: parsedAmt * (livePrice ?? 0),
         });
         hash = retirement.retireHash;
       } else {
@@ -680,6 +744,52 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
       });
       setConfirmCountdown(0);
 
+      // Burn-receipt gate (replaces the old dropped-verdict): a receipt
+      // proves MINING and gives the outcome. Three ways out:
+      //   reverted → "Burn Failed" terminal (no fee — a fee for a reverted
+      //     burn would be money for nothing).
+      //   slow/unsettled after 90s → submit the claim WITHOUT a fee and
+      //     hand off to Burn History (Pay Fee button finishes it there).
+      //     Declaring a slow tx "dropped" risks a double burn when it
+      //     eventually mines; letting the user pay a fee for a tx still in
+      //     their wallet's relay queue is worse.
+      setPriceNote(
+        "Confirming burn on-chain… (can take up to ~90 seconds — no fee is charged until the burn settles)",
+      );
+      const burnOutcome = await waitBurnReceipt(targetChainId, hash);
+      if (burnOutcome.settled && !burnOutcome.success) {
+        setFailStep(1);
+        setStepAndRef("failed");
+        setErrorMsg(
+          "Burn Failed — the transaction failed on-chain. Try again with a fresh burn.",
+        );
+        return;
+      }
+      if (!burnOutcome.settled) {
+        // Slow but not dead: submit claim, defer the fee to Burn History.
+        setStepAndRef("pending_verification");
+        setPriceNote(
+          "Burn verification is taking longer than expected… continuing in background. Monitor Burn History to finish your claim (Pay Fee will appear once the burn settles).",
+        );
+        // Register the burn for the modal poller BEFORE submitting — the
+        // poller effect keys off claimedTxRef and would never start otherwise.
+        claimedTxRef.current = hash;
+        try {
+          await initiateClaim.mutateAsync({
+            txHash: hash,
+            feeTxHash: "",
+            tokenAddress: selectedToken.tokenAddress,
+            chain: selectedToken.chain,
+            frontendPrice: 0,
+          });
+        } catch {
+          // Claim submission raced the burn settlement — Burn History's
+          // Re-check Tx picks it up as soon as the burn mines.
+        }
+        return;
+      }
+      setPriceNote(null);
+
       // Step 2: Calculate and send platform fee (0.69% of burn USD value)
       setStepAndRef("paying_fee");
       const burnValueUsd = parsedAmt * (livePrice ?? 0);
@@ -693,13 +803,18 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
       setFeeInfo(feeData);
 
       setStepAndRef("awaiting_fee_confirm");
+      // AKK-4: fee tx carries (claimant principal, this burn's hash) as calldata —
+      // the backend verifies the binding on-chain before crediting GRIT.
+      const feeBinding = buildFeeBindingData(principal ?? "", hash);
       const feeHash = await wallet.sendPlatformFee(
         burnValueUsd,
         targetChainId,
         feeRecipient ?? "",
         feeRate,
+        feeBinding,
       );
       setFeeTxHash(feeHash);
+      feeTxHashRef.current = feeHash;
 
       // Step 3: Submit claim to ICP
       setStepAndRef("submitting_claim");
@@ -774,9 +889,14 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
         setUserRejected(true);
       }
 
+      // AKK-4 fix: the "fee still pending" mask is only legitimate when a fee
+      // tx was actually BROADCAST (feeTxHashRef set). Errors thrown before the
+      // wallet popup opens — missing principal, price-fetch failure, config
+      // errors — must surface as real errors, not a fake "pending on-chain".
       const feeStillPending =
         (stepRef.current === "paying_fee" ||
           stepRef.current === "awaiting_fee_confirm") &&
+        feeTxHashRef.current !== null &&
         !isUserRejection &&
         err instanceof Error &&
         !err.message.toLowerCase().includes("reverted") &&
@@ -789,22 +909,54 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
         // The backend already knows the burn hash; it will settle once the
         // fee is confirmed on-chain.
         setPriceNote(
-          "Platform fee is still pending on-chain — this may take a few minutes on Ethereum. Your GRIT will be credited once confirmed.",
+          "Platform fee is still pending on-chain — this can take a few minutes. Your GRIT will be credited once confirmed.",
         );
         setStepAndRef("awaiting_fee_confirm");
         return;
       }
 
-      // Backend returned FEE_PENDING — the fee tx is still in-flight on-chain.
-      // Do NOT show the amber retry UI yet. Stay in awaiting_fee_confirm and
-      // start a polling loop that watches for actual on-chain resolution.
-      // Only when the backend confirms a fee failure do we show the retry UI.
-      const isFeeStillPendingBackend =
-        err instanceof Error && err.message.includes("FEE_PENDING");
-      if (isFeeStillPendingBackend) {
-        setStepAndRef("awaiting_fee_confirm");
+      // No fee tx was ever broadcast — the error happened BEFORE the wallet
+      // popup. Attribute it to the phase that was actually running: the
+      // Klima route selection throws during the BURN phase (route sim /
+      // quote failures), everything else here is fee setup. (A burn-phase
+      // error used to be prefixed "Fee step failed…" — the screenshot bug.)
+      if (feeTxHashRef.current === null && !isUserRejection) {
+        const burnPhase =
+          stepRef.current === "burning" ||
+          stepRef.current === "awaiting_confirm" ||
+          stepRef.current === "confirming_on_chain";
+        setFailStep(burnPhase ? 1 : 2);
+        setStepAndRef("failed");
+        setErrorMsg(
+          err instanceof Error
+            ? `${burnPhase ? "Burn step" : "Fee step"} failed before the transaction was sent: ${err.message}`
+            : burnPhase
+              ? "Burn step failed before the transaction was sent."
+              : "Fee step failed before the transaction was sent.",
+        );
+        return;
+      }
+
+      // Backend returned FEE_PENDING (fee still in-flight) or
+      // STILL_PROCESSING (GRIT credit finalizing — e.g. the oracle re-price
+      // path). Neither is a failure: enter a polling loop that watches for
+      // actual settlement and shows a processing state, NOT terminal fail.
+      // Only a definitive backend failure flips the modal to failed.
+      const isStillProcessingBackend =
+        err instanceof Error &&
+        (err.message.includes("FEE_PENDING") ||
+          err.message.includes("STILL_PROCESSING"));
+      if (isStillProcessingBackend) {
+        const processingGrit = (err as Error).message.includes(
+          "STILL_PROCESSING",
+        );
+        setStepAndRef(
+          processingGrit ? "pending_verification" : "awaiting_fee_confirm",
+        );
         setPriceNote(
-          "Platform fee is still confirming on-chain — awaiting confirmation. Your GRIT will be credited once the fee settles.",
+          processingGrit
+            ? "Processing GRIT credit — this usually takes under a minute. You can close this window safely."
+            : "Still awaiting confirmation… monitor Burn History for status.",
         );
         // Start a polling loop to detect when the fee settles on-chain.
         // Poll every 10 seconds, max 35 minutes (210 attempts).
@@ -820,6 +972,7 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
               clearInterval(feePollRef.current);
               feePollRef.current = null;
             }
+            setFailStep(2);
             setStepAndRef("failed");
             setErrorMsg(
               "Fee confirmation timed out. The platform fee did not settle within 35 minutes.",
@@ -844,21 +997,33 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
             }, 1_500);
             setVerifiedGrit(match.gritMinted);
             setStepAndRef("verified");
+            setPriceNote(null);
           } else if (isPendingFee(match.status)) {
-            // Backend has confirmed the fee definitively failed — show retry.
-            if (feePollRef.current) {
-              clearInterval(feePollRef.current);
-              feePollRef.current = null;
+            // pendingFee ≠ failure. The fee is usually just confirming;
+            // escalate to the retry UI only after the grace window.
+            if (pendingFeeSinceRef.current === null) {
+              pendingFeeSinceRef.current = Date.now();
             }
-            setStepAndRef("pending_fee");
-            setPriceNote(
-              "Platform fee failed on-chain — please retry the fee payment.",
-            );
+            const stalled =
+              Date.now() - (pendingFeeSinceRef.current ?? Date.now()) >
+              PENDING_FEE_GRACE_MS;
+            if (stalled) {
+              if (feePollRef.current) {
+                clearInterval(feePollRef.current);
+                feePollRef.current = null;
+              }
+              setStepAndRef("pending_fee");
+              setPriceNote(
+                "The platform fee hasn't settled within the expected window — if it was actually paid, Burn History → Retry Fee will resolve it without a new payment.",
+              );
+            }
+            // else: keep polling — fee may still land.
           } else if (match.status === ClaimStatus.failed) {
             if (feePollRef.current) {
               clearInterval(feePollRef.current);
               feePollRef.current = null;
             }
+            setFailStep(3);
             setStepAndRef("failed");
             setErrorMsg(
               "Verification failed — transaction could not be confirmed on-chain.",
@@ -898,6 +1063,19 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
         }
       }
       setErrorMsg(msg);
+      // Attribute the failure to the phase handleBurn was actually in when
+      // the error fired — getModalStep maps "failed" to 3 unconditionally,
+      // so without this a burn-phase failure renders steps 1-2 as ✓ Done.
+      const phase = stepRef.current;
+      setFailStep(
+        phase === "paying_fee" ||
+          phase === "awaiting_fee_confirm" ||
+          phase === "pending_fee"
+          ? 2
+          : phase === "submitting_claim" || phase === "pending_verification"
+            ? 3
+            : 1,
+      );
       setStepAndRef("failed");
     }
   }
@@ -908,6 +1086,7 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
     setTxHash(null);
     setErrorMsg(null);
     setAmount("");
+    pendingFeeSinceRef.current = null; // fresh grace window for the next burn
     // Keep selectedToken and selectedChain intact so the user can immediately
     // enter a new amount after a burn completes without re-selecting the token.
     setConfirmCountdown(0);
@@ -965,6 +1144,8 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
         burnChainIdRef.current,
         feeRecipient,
         feeRate,
+        // AKK-4: the replacement fee tx must carry the same binding
+        buildFeeBindingData(principal ?? "", txHash),
       );
       setFeeTxHash(newFeeHash);
       await retryFeeClaim.mutateAsync({ txHash, feeTxHash: newFeeHash });
@@ -1527,6 +1708,7 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
         errorMsg={errorMsg}
         priceNote={priceNote}
         userRejected={userRejected}
+        failStep={failStep}
         onClose={handleModalClose}
         onContinueInBackground={handleContinueInBackground}
         formatGrit={(v) => formatGrit(v)}

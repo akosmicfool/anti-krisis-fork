@@ -9,6 +9,7 @@ import Utils "lib/utils";
 import Time "mo:core/Time";
 import AllowlistLib "lib/allowlist";
 import GritLib "lib/grit";
+import FeeConfig "lib/fee-config";
 import AllowlistMixin "mixins/allowlist-api";
 import GritMixin "mixins/grit-api";
 import MiningLib "lib/mining";
@@ -254,8 +255,14 @@ import ClaimStatusValue "types/ClaimStatusValue";
   // Testing state: admin test score overrides (keyed by Principal)
   let testingState : TestingTypes.State;
 
-  include AllowlistMixin(allowlistState, adminState, gateState);
-  include GritMixin(gritState, allowlistState, adminState, gateState, priceCache, tribeState);
+  // Fee-verification config (AKK-4 Option B): FeeCollector contract address +
+  // FeePaid-event check toggle. Declared AFTER testingState so it sits at the
+  // END of the stable layout — appended stable fields preserve the byte layout
+  // of every earlier field, which is what the enhanced-migration chain relies on.
+  let feeState : FeeConfig.FeeState;
+
+  include AllowlistMixin(allowlistState, adminState, gateState, feeState);
+  include GritMixin(gritState, allowlistState, adminState, gateState, priceCache, tribeState, feeState);
   include MiningMixin(miningState, gritState, adminState, allowlistState, gateState, func() : ?Principal { selfPrincipal });
   include ProfileMixin(profileState, scoringState, gritState, miningState, tribeState);
   include TribeMixin(tribeState, profileState, gritState, miningState);

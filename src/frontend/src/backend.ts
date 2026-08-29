@@ -388,6 +388,8 @@ export interface backendInterface {
         lastBlockTime: bigint;
         isMiningActive: boolean;
     }>;
+    getFeeCollectorAddress(): Promise<string>;
+    getFeePaidCheckEnabled(): Promise<boolean>;
     getFeePercent(): Promise<number>;
     getFeeRecipient(): Promise<string | null>;
     getGritIssuanceRate(): Promise<bigint>;
@@ -545,6 +547,8 @@ export interface backendInterface {
         __kind__: "err";
         err: string;
     }>;
+    setFeeCollectorAddress(address: string): Promise<void>;
+    setFeePaidCheckEnabled(enabled: boolean): Promise<void>;
     setFeePercent(percent: number): Promise<void>;
     setFeeRecipient(address: string): Promise<void>;
     setGritIssuanceRate(rate: bigint): Promise<void>;
@@ -993,6 +997,34 @@ export class Backend implements backendInterface {
             }
         } else {
             const result = await this.actor.getCurrentBlockInfo();
+            return result;
+        }
+    }
+    async getFeeCollectorAddress(): Promise<string> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.getFeeCollectorAddress();
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.getFeeCollectorAddress();
+            return result;
+        }
+    }
+    async getFeePaidCheckEnabled(): Promise<boolean> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.getFeePaidCheckEnabled();
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.getFeePaidCheckEnabled();
             return result;
         }
     }
@@ -1918,6 +1950,34 @@ export class Backend implements backendInterface {
         } else {
             const result = await this.actor.setAkkTransferFee(arg0);
             return from_candid_variant_n1(this._uploadFile, this._downloadFile, result);
+        }
+    }
+    async setFeeCollectorAddress(arg0: string): Promise<void> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.setFeeCollectorAddress(arg0);
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.setFeeCollectorAddress(arg0);
+            return result;
+        }
+    }
+    async setFeePaidCheckEnabled(arg0: boolean): Promise<void> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.setFeePaidCheckEnabled(arg0);
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.setFeePaidCheckEnabled(arg0);
+            return result;
         }
     }
     async setFeePercent(arg0: number): Promise<void> {

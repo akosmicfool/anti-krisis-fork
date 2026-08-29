@@ -6,6 +6,7 @@ import GritLib "../lib/grit";
 import AllowlistLib "../lib/allowlist";
 import GritTypes "../types/grit";
 import VerifyLib "../lib/verification";
+import FeeConfig "../lib/fee-config";
 import PriceOracle "../lib/price-oracle";
 import Float "mo:core/Float";
 import Debug "mo:core/Debug";
@@ -23,6 +24,7 @@ mixin (
   gate : AllowlistLib.GateState,
   priceCache : Map.Map<Text, Float>,
   tribeState : TribeLib.State,
+  fee : FeeConfig.FeeState,
 ) {
   /// kVCM (KlimaDAO tokenized carbon) is retired on-chain via the KlimaDAO
   /// Retirement Aggregator (retireCreditViaKlima), which emits a CarbonRetired
@@ -55,9 +57,11 @@ mixin (
     PriceOracle.transformPriceResponse(input);
   };
 
-  /// Internal helper: verify a fee tx hash on-chain (just confirms tx succeeded, no log parsing).
-  /// Returns #ok for confirmed success, #err("PENDING") for not-yet-mined, #err("TX_FAILED") for revert.
-  func verifyFeeTx(feeTxHash : Text, chain : Text) : async { #ok; #err : Text } {
+  /// Internal helper: verify a fee tx hash on-chain and return the receipt JSON.
+  /// Returns #ok(receiptJson) for confirmed success, #err("PENDING") for
+  /// not-yet-mined, #err("TX_FAILED") for revert. The receipt is needed by
+  /// verifyFeeBinding for the FeeCollector `FeePaid` event check (Option B).
+  func verifyFeeTxWithReceipt(feeTxHash : Text, chain : Text) : async { #ok : Text; #err : Text } {
     let rpcUrlOpt = VerifyLib.rpcUrlForChain(chain);
     let rpcUrlsRaw = switch (rpcUrlOpt) { case null { return #err("Unsupported chain") }; case (?u) { u } };
     let rpcUrlList : [Text] = rpcUrlsRaw.split(#char '|').toArray();
@@ -88,7 +92,9 @@ mixin (
     };
     if (not gotValidResponse) { return #err("PENDING") };
 
-    // We only care about tx status (success/fail/pending) — not log contents
+    // We only care about tx status (success/fail/pending) — not log contents.
+    // The receipt is RETURNED so callers can additionally inspect logs
+    // (FeeCollector FeePaid event) without a second outcall.
     // Reuse parseRpcResponse with a dummy token address; the status check runs first
     // and returns before log parsing for confirmed/failed txs.
     // For a native transfer there are no ERC-20 logs, so parseRpcResponse will return
@@ -108,7 +114,7 @@ mixin (
     switch (probeResult) {
       case (#err("PENDING"))   { #err("PENDING") };
       case (#err("TX_FAILED")) { #err("TX_FAILED") };
-      case (#ok(_))            { #ok };
+      case (#ok(_))            { #ok(response) };
       // Any other error after the status check means the tx succeeded (native transfer has no ERC-20 logs)
       case (#err(_))           {
         // Re-examine raw status to confirm it was actually 0x1
@@ -118,12 +124,75 @@ mixin (
             response.contains(#text "\"status\": 1") or
             response.contains(#text "\"status\":true") or
             response.contains(#text "\"status\": true")) {
-          #ok
+          #ok(response)
         } else {
           #err("PENDING")
         }
       };
     };
+  };
+
+  /// AKK-4 + AKK-8: verify the platform-fee tx exists, succeeded, AND binds the
+  /// burn to the claimant. Binding rules (all from public chain data):
+  ///   - fee tx status == success                      (receipt check)
+  ///   - fee tx recipient == configured fee wallet     (anti fee-wallet spoofing)
+  ///   - fee tx sender == burn tx sender               (same wallet did both)
+  ///   - fee tx calldata == (claimant principal, burn tx hash)
+  ///     → one fee tx can satisfy exactly one claim by exactly one user
+  ///       (single-use: the payload names that specific burn tx hash)
+  ///   - Option B (when armed via admin panel): the fee receipt must carry a
+  ///     `FeePaid` event emitted BY the FeeCollector contract with the fee
+  ///     sender as payer — defeats address-squatting on chains where the
+  ///     collector is not yet deployed.
+  func verifyFeeBinding(feeTxHash : Text, burnTxHash : Text, chain : Text, claimant : Principal) : async { #ok; #err : Text } {
+    // 1. status check + receipt fetch (single outcall — the receipt is reused
+    //    for the FeePaid event check when the collector gate is armed)
+    let statusResult = await verifyFeeTxWithReceipt(feeTxHash, chain);
+    let feeReceipt = switch (statusResult) {
+      case (#err(e)) { return #err(e) };
+      case (#ok(r)) { r };
+    };
+    // 2-4. fetch both txs and run the binding comparison
+    let feeTxResult = await VerifyLib.fetchTxByHash(feeTxHash, chain, transformResponse);
+    let feeTx = switch (feeTxResult) {
+      case (#err("PENDING")) { return #err("PENDING") };
+      case (#err(e)) { return #err(e) };
+      case (#ok(tx)) { tx };
+    };
+    let burnTxResult = await VerifyLib.fetchTxByHash(burnTxHash, chain, transformResponse);
+    let burnTx = switch (burnTxResult) {
+      case (#err("PENDING")) { return #err("PENDING") };
+      case (#err(e)) { return #err("BINDING_FAIL: cannot fetch burn tx: " # e) };
+      case (#ok(tx)) { tx };
+    };
+    let expectedRecipient = switch (admin.feeRecipient) {
+      case null { return #err("BINDING_FAIL: fee recipient not configured") };
+      case (?r) { r };
+    };
+    let bindingResult = VerifyLib.verifyFeeBinding(feeTx, burnTx, expectedRecipient, claimant.toText(), burnTxHash);
+    switch (bindingResult) {
+      case (#err(e)) { return #err(e) };
+      case (#ok) {};
+    };
+    // 5. Option B: FeePaid event from the FeeCollector contract.
+    //    Armed only when the admin enabled the check AND configured the
+    //    collector address — both set from the admin panel AFTER the collector
+    //    is deployed and feeRecipient points at it. PENDING is the correct
+    //    retriable outcome when the event is missing: on a collector-deployed
+    //    chain a successful fee tx to the collector ALWAYS carries it, so a
+    //    missing event means an RPC served a stale/partial receipt (or the
+    //    tx went to a squatter address, which binding check 2 would have
+    //    caught) — either way, retry or fail, never credit.
+    if (fee.requireFeePaidEvent) {
+      let collector = fee.collectorAddress;
+      if (collector.size() == 0) {
+        return #err("BINDING_FAIL: FeePaid check armed but collector address not configured");
+      };
+      if (not VerifyLib.feePaidLogPresent(feeReceipt, collector, feeTx.from)) {
+        return #err("PENDING");
+      };
+    };
+    #ok
   };
 
   /// User: submit a burn tx hash for GRIT issuance.
@@ -168,9 +237,17 @@ mixin (
       return #err("NFT_GATE_BLOCKED");
     };
 
-    // Duplicate guard
+    // Duplicate guard — with retry semantics:
+    // A #failed record credited nothing and previously bricked the burn's
+    // txHash forever (users re-burned real value after a transient pricing
+    // failure). The original claimant may resurrect it with a fresh fee tx;
+    // any other duplicate stays rejected (AKK-2 protection intact).
+    var resurrected = false;
     if (GritLib.isDuplicateClaim(gritState, txHash)) {
-      return #err("already claimed");
+      if (not GritLib.resurrectFailedClaim(gritState, txHash, caller, feeTxHash, Time.now())) {
+        return #err("already claimed");
+      };
+      resurrected := true;
     };
 
     // Verify the token is on the allowlist
@@ -186,22 +263,27 @@ mixin (
       case (?t) { t };
     };
 
-    // Store pending claim
-    let pendingRecord : GritTypes.ClaimRecord = {
-      txHash;
-      feeTxHash     = ?feeTxHash;
-      tokenAddress  = normToken;
-      chain;
-      tokenSymbol   = tokenInfo.symbol;
-      tokenDecimals = tokenInfo.decimals;
-      amountBurned  = 0.0;
-      usdValue      = 0.0;
-      gritMinted    = 0;
-      status        = #pending;
-      timestamp     = Time.now();
-      claimant      = caller;
+    // Store pending claim — SKIPPED when an existing #failed record was just
+    // resurrected in place above: appending would duplicate the txHash (the
+    // background recheck would verify it twice and burn stats would
+    // double-count it). The resurrected record is already #pending.
+    if (not resurrected) {
+      let pendingRecord : GritTypes.ClaimRecord = {
+        txHash;
+        feeTxHash     = ?feeTxHash;
+        tokenAddress  = normToken;
+        chain;
+        tokenSymbol   = tokenInfo.symbol;
+        tokenDecimals = tokenInfo.decimals;
+        amountBurned  = 0.0;
+        usdValue      = 0.0;
+        gritMinted    = 0;
+        status        = #pending;
+        timestamp     = Time.now();
+        claimant      = caller;
+      };
+      GritLib.storePendingClaim(gritState, pendingRecord);
     };
-    GritLib.storePendingClaim(gritState, pendingRecord);
 
     // Trigger async verification
     let rpcUrlOpt = VerifyLib.rpcUrlForChain(chain);
@@ -336,8 +418,19 @@ mixin (
                   let absDiff = if (diff >= 0.0) diff else -diff;
                   let deviation = absDiff / backendPrice;
                   if (deviation > 0.069) {
-                    GritLib.updateClaimStatus(gritState, txHash, #failed, 0, null);
-                    return #err("Price deviation too high — please retry your claim. If this persists, the token price may be volatile.");
+                    // NOT terminal (was: #failed, which bricked the burn's
+                    // txHash and demanded a real re-burn). Leave the claim
+                    // #pending so the background recheck re-prices with a
+                    // settled oracle price and credits when both sources
+                    // agree. AKK-3's fail-closed posture is unchanged: the
+                    // frontend price is never used to mint, and no credit
+                    // happens while prices disagree. Bounded by the 35-min
+                    // pending age-out. STILL_PROCESSING is a stable contract
+                    // token — the frontend keeps the modal in a processing
+                    // state (step 3 spinner) and polls until settlement,
+                    // instead of showing a terminal failure for a claim
+                    // that is about to credit.
+                    return #err("STILL_PROCESSING: GRIT credit is being finalized — no action needed.");
                   };
                 };
                 backendPrice
@@ -357,18 +450,38 @@ mixin (
               if (r.txHash == txHash) { { r with amountBurned = humanAmount; usdValue = usdValueAtVerification } } else { r }
             });
 
-            // Now verify the fee transaction before crediting GRIT
-            let feeResult = await verifyFeeTx(feeTxHash, chain);
+            // Now verify the fee transaction AND its binding before crediting GRIT
+            let feeResult = await verifyFeeBinding(feeTxHash, txHash, chain, caller);
             switch (feeResult) {
               case (#err("TX_FAILED")) {
                 // Fee tx reverted on-chain — ask user to retry fee payment
                 GritLib.updateClaimToPendingFee(gritState, txHash, feeTxHash);
                 return #err("FEE_PENDING");
               };
-              case (#err(_)) {
+              case (#err("PENDING")) {
                 // Fee not yet confirmed — transition to #pendingFee so user can retry
                 GritLib.updateClaimToPendingFee(gritState, txHash, feeTxHash);
                 return #err("FEE_PENDING");
+              };
+              case (#err(bindingMsg)) {
+                // AKK-4 binding failure at initial claim. Same transient-vs-
+                // structural rule as the recheck paths: RPC artifacts
+                // (missing fields, empty/unparseable responses) are NOT
+                // terminal — transition to #pendingFee is wrong here too;
+                // keep the claim #pending so the background recheck and the
+                // user's Retry Claim can re-verify. Only structural
+                // mismatches fail the claim outright.
+                let isTransient =
+                  bindingMsg.contains(#text "missing")
+                  or bindingMsg.contains(#text "cannot fetch")
+                  or bindingMsg.contains(#text "not found")
+                  or bindingMsg.contains(#text "carries no binding payload");
+                if (isTransient) {
+                  Debug.print("[grit-api] initiateClaim transient binding error (kept pending): " # bindingMsg);
+                  return #ok;
+                };
+                GritLib.updateClaimStatus(gritState, txHash, #failed, 0, null);
+                return #err(bindingMsg);
               };
               case (#ok) {
                 // Fee confirmed — credit GRIT and mark verified
@@ -421,12 +534,11 @@ mixin (
     let result = verifyBurn(response, record.tokenAddress, record.chain);
     switch (result) {
       case (#err("PENDING")) {
-        // Check max age: 35 minutes = 35 * 60 * 1_000_000_000 nanoseconds
-        let maxAge : Int = 35 * 60 * 1_000_000_000;
-        if (Time.now() - record.timestamp > maxAge) {
-          GritLib.updateClaimStatus(gritState, record.txHash, #failed, 0, null);
-        };
-        // else leave as #pending — try again next cycle
+        // Transient (RPC noise, not-yet-indexed tx). NEVER age out to
+        // #failed: the user's manual Retry Claim path re-runs this exact
+        // verification on demand, and per the no-expiry policy claims stay
+        // in history forever. Leaving #pending keeps the free background
+        // recheck going as long as the claim exists.
       };
       case (#err("TX_FAILED")) {
         GritLib.updateClaimStatus(gritState, record.txHash, #failed, 0, null);
@@ -434,12 +546,9 @@ mixin (
       case (#err(_)) {
         // Any other error (malformed response, unrecognised status, etc.) is
         // treated as transient — leave the claim as #pending so the next
-        // timer cycle will retry. However, if the claim is very old (>35 min)
-        // we give up to prevent it from being stuck forever.
-        let maxAge : Int = 35 * 60 * 1_000_000_000;
-        if (Time.now() - record.timestamp > maxAge) {
-          GritLib.updateClaimStatus(gritState, record.txHash, #failed, 0, null);
-        };
+        // timer cycle will retry. NO age-out: per the no-expiry policy the
+        // claim stays #pending (background rechecks continue) and the user
+        // can always force a fresh verification via Retry Claim.
       };
       case (#ok({ amountBurned = rawAmountBurned })) {
         let tokenOpt = AllowlistLib.findToken(allowlistState, record.tokenAddress, record.chain);
@@ -471,33 +580,46 @@ mixin (
           if (r.txHash == record.txHash) { { r with amountBurned = humanAmount; usdValue = usdValueRecheckBurn } } else { r }
         });
 
-        // FIX 2: verify fee tx before crediting GRIT
+        // AKK-4: verify fee tx binding before crediting GRIT. The legacy
+        // empty-hash bypass (credit without any fee tx) is removed — fail closed.
         let feeTxHash = switch (record.feeTxHash) {
           case null { "" };
           case (?h) { h };
         };
         if (feeTxHash == "") {
-          // No fee tx hash — credit GRIT directly
-          GritLib.updateClaimStatus(gritState, record.txHash, #verified, gritAmount, null);
+          // No fee tx hash — cannot be bound to any wallet. Definitive failure.
+          GritLib.updateClaimStatus(gritState, record.txHash, #failed, 0, null);
         } else {
-          let feeResult = await verifyFeeTx(feeTxHash, record.chain);
+          let feeResult = await verifyFeeBinding(feeTxHash, record.txHash, record.chain, record.claimant);
           switch (feeResult) {
             case (#err("TX_FAILED")) {
               // Fee tx definitively failed — ask user to retry
               GritLib.updateClaimToPendingFee(gritState, record.txHash, feeTxHash);
             };
-            case (#err(errMsg)) {
-              if (errMsg.contains(#text "PENDING")) {
-                // Fee still pending — transition to #pendingFee
-                GritLib.updateClaimToPendingFee(gritState, record.txHash, feeTxHash);
+            case (#err("PENDING")) {
+              // Fee still pending — transition to #pendingFee
+              GritLib.updateClaimToPendingFee(gritState, record.txHash, feeTxHash);
+            };
+            case (#err(bindingMsg)) {
+              // Binding failure during recheckClaim. Same transient-vs-
+              // structural rule as recheckFeeClaim: RPC artifacts (missing
+              // fields, unparseable/empty responses) must NOT terminally
+              // fail a claim whose on-chain data is healthy — leave #pending
+              // so the next cycle retries.
+              let isTransient =
+                bindingMsg.contains(#text "missing")
+                or bindingMsg.contains(#text "cannot fetch")
+                or bindingMsg.contains(#text "not found")
+                or bindingMsg.contains(#text "carries no binding payload");
+              if (isTransient) {
+                Debug.print("[grit-api] recheckClaim transient binding error (kept pending): " # bindingMsg);
               } else {
-                // Transient RPC error — transition to #pendingFee so background
-                // recheckFeeClaim will keep retrying
-                GritLib.updateClaimToPendingFee(gritState, record.txHash, feeTxHash);
+                GritLib.updateClaimStatus(gritState, record.txHash, #failed, 0, null);
+                Debug.print("[grit-api] recheckClaim binding fail: " # bindingMsg);
               };
             };
             case (#ok) {
-              // Both burn and fee confirmed — credit GRIT
+              // Both burn and fee confirmed AND bound — credit GRIT
               GritLib.updateClaimStatus(gritState, record.txHash, #verified, gritAmount, null);
             };
           };
@@ -518,9 +640,35 @@ mixin (
       case (?h) { h };
     };
 
-    let feeResult = await verifyFeeTx(feeTxHash, record.chain);
+    let feeResult = await verifyFeeBinding(feeTxHash, record.txHash, record.chain, record.claimant);
     switch (feeResult) {
-      case (#err(_)) { return }; // pending or transient error — try again next cycle
+      case (#err("PENDING")) { return }; // pending — try again next cycle
+      case (#err("TX_FAILED")) { return }; // definitively failed — user must retry fee
+      case (#err(bindingMsg)) {
+        // AKK-4 binding failure on a #pendingFee claim. IMPORTANT (root-cause
+        // finding 2026-08-28): healthy claims were being failed here by
+        // TRANSIENT RPC responses — a dead/erratic endpoint yields a
+        // response with no `from` field, producing
+        // "BINDING_FAIL: tx missing `from`" which this branch treated as
+        // definitive. Guard: only *structural* binding failures (recipient
+        // mismatch, sender mismatch, calldata mismatch) are terminal;
+        // anything mentioning a missing field, an unparseable response, or
+        // an empty/absent calldata payload ("carries no binding payload" —
+        // fetchTxByHash now signals PENDING for those, but older error
+        // strings could still surface transiently) is transient — leave
+        // #pendingFee for the next cycle / the user's Retry Claim.
+        let isTransient =
+          bindingMsg.contains(#text "missing")
+          or bindingMsg.contains(#text "cannot fetch")
+          or bindingMsg.contains(#text "not found")
+          or bindingMsg.contains(#text "carries no binding payload");
+        if (isTransient) {
+          Debug.print("[grit-api] recheckFeeClaim transient binding error (kept pendingFee): " # bindingMsg);
+        } else {
+          GritLib.updateClaimStatus(gritState, record.txHash, #failed, 0, null);
+          Debug.print("[grit-api] recheckFeeClaim binding fail: " # bindingMsg);
+        };
+      };
       case (#ok) {
         // Fee confirmed — fetch token info and price to credit GRIT
         let tokenOpt = AllowlistLib.findToken(allowlistState, record.tokenAddress, record.chain);
@@ -620,14 +768,30 @@ mixin (
       return #err("Unauthorized: caller did not create this claim");
     };
 
-    // Claim must be in #pendingFee
+    // Claim must be awaiting a fee: #pendingFee (fee tried and failed/still
+    // confirming) or #pending with no fee hash yet (the modal's slow-burn
+    // background path — Pay Fee button completes it from Burn History).
+    // #pending claims WITH a fee hash are mid-verification; Retry Claim, not
+    // Pay Fee, is their path.
     switch (claim.status) {
       case (#pendingFee) {};
-      case _ { return #err("Claim is not in pending fee state") };
+      case (
+        #pending
+      ) {
+        switch (claim.feeTxHash) {
+          case null {}; // no fee yet — exactly the Pay Fee case
+          case (?existing) {
+            if (existing.size() > 0) {
+              return #err("Claim is already verifying — use Retry Claim instead");
+            };
+          };
+        };
+      };
+      case _ { return #err("Claim is not awaiting a fee payment") };
     };
 
-    // Verify the fee tx on-chain
-    let feeResult = await verifyFeeTx(feeTxHash, claim.chain);
+    // AKK-4: verify the new fee tx binding too
+    let feeResult = await verifyFeeBinding(feeTxHash, txHash, claim.chain, caller);
     switch (feeResult) {
       case (#err("PENDING")) {
         return #err("Fee transaction not yet confirmed");
@@ -635,8 +799,9 @@ mixin (
       case (#err("TX_FAILED")) {
         return #err("Fee transaction failed on-chain");
       };
-      case (#err(_)) {
-        return #err("Fee transaction not yet confirmed");
+      case (#err(bindingMsg)) {
+        // Claim stays #pendingFee — user can retry with a correctly bound fee tx
+        return #err(bindingMsg);
       };
       case (#ok) {
         // Fee confirmed — store new fee hash and credit GRIT

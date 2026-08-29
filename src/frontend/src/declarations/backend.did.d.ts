@@ -280,6 +280,8 @@ export interface _SERVICE {
       'isMiningActive' : boolean,
     }
   >,
+  'getFeeCollectorAddress' : ActorMethod<[], string>,
+  'getFeePaidCheckEnabled' : ActorMethod<[], boolean>,
   'getFeePercent' : ActorMethod<[], number>,
   'getFeeRecipient' : ActorMethod<[], [] | [string]>,
   'getGritIssuanceRate' : ActorMethod<[], bigint>,
@@ -421,6 +423,8 @@ export interface _SERVICE {
     { 'ok' : null } |
       { 'err' : string }
   >,
+  'setFeeCollectorAddress' : ActorMethod<[string], undefined>,
+  'setFeePaidCheckEnabled' : ActorMethod<[boolean], undefined>,
   'setFeePercent' : ActorMethod<[number], undefined>,
   'setFeeRecipient' : ActorMethod<[string], undefined>,
   'setGritIssuanceRate' : ActorMethod<[bigint], undefined>,

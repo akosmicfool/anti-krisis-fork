@@ -29,6 +29,8 @@ interface BurnProgressModalProps {
   errorMsg: string | null;
   priceNote?: string | null;
   userRejected?: boolean;
+  /** Which step a terminal "failed" belongs to (1=burn, 2=fee, 3=GRIT). */
+  failStep?: 1 | 2 | 3;
   onClose: () => void;
   onContinueInBackground: () => void;
   formatGrit: (v: bigint) => string;
@@ -59,15 +61,15 @@ function getStepStatus(step: BurnStep): string {
     case "awaiting_confirm":
       return "Awaiting wallet confirmation…";
     case "confirming_on_chain":
-      return "Waiting for RPC indexing…";
+      return "Confirming on-chain…";
     case "paying_fee":
       return "Calculating platform fee…";
     case "submitting_claim":
-      return "Submitting claim to ICP…";
+      return "Submitting claim…";
     case "pending_verification":
-      return "Pending — monitoring transaction…";
+      return "Processing GRIT credit…";
     case "pending_fee":
-      return "Awaiting platform fee confirmation... This may take a few minutes on Ethereum.";
+      return "Fee payment needs a retry.";
     case "awaiting_fee_confirm":
       return "Waiting for platform fee to confirm…";
     case "verified":
@@ -168,13 +170,17 @@ export function BurnProgressModal({
   errorMsg,
   priceNote,
   userRejected = false,
+  failStep = 3,
   onClose,
   onContinueInBackground,
   formatGrit,
 }: BurnProgressModalProps) {
-  const activeIndex = getModalStep(step) - 1; // 0-based
   const isVerified = step === "verified";
   const isFailed = step === "failed";
+  // "failed" maps to step 3 unconditionally in getModalStep, so failure
+  // sites pass the step the failure actually happened at (1=burn, 2=fee,
+  // 3=GRIT credit).
+  const activeIndex = (isFailed ? failStep : getModalStep(step)) - 1; // 0-based
   const isTerminal = isVerified || isFailed;
   const canBackground = !isTerminal;
   const statusText = getStepStatus(step);
@@ -368,7 +374,7 @@ export function BurnProgressModal({
                 )}
               </AnimatePresence>
 
-              {/* Failed fee note — shown only for failed state, no retry button here */}
+              {/* Failure guidance — phase-accurate, shown only for failed state */}
               <AnimatePresence>
                 {isFailed && (
                   <motion.div
@@ -379,7 +385,11 @@ export function BurnProgressModal({
                     data-ocid="burn_modal.failed_fee_note"
                   >
                     <p className="text-xs text-muted-foreground font-body">
-                      If a fee payment failed, check Burn History to retry.
+                      {failStep === 1
+                        ? "Nothing was charged. Check Burn History later — or simply try the burn again."
+                        : failStep === 2
+                          ? "Check Burn History — Retry Fee resubmits the platform fee."
+                          : "Check Burn History — Retry Claim re-verifies at no extra cost."}
                     </p>
                   </motion.div>
                 )}

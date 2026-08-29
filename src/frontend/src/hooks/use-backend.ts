@@ -209,7 +209,10 @@ export function useInitiateClaim() {
         // PENDING means the TX was submitted but verification is deferred —
         // the 60-second backend timer will recheck and settle the claim.
         // Treat this as a success so the UI enters pending_verification state.
+        // STILL_PROCESSING is the same story for the re-price path (GRIT is
+        // finalizing; the modal's poller watches for settlement).
         if (result.err === "PENDING") return result;
+        if (result.err.startsWith("STILL_PROCESSING")) return result;
         throw new Error(result.err);
       }
       return result;
@@ -423,6 +426,62 @@ export function useSetFeePercent() {
       return actor.setFeePercent(percent);
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ["feePercent"] }),
+  });
+}
+
+// ─── FeeCollector Contract (AKK-4 Option B) ──────────────────────────────────
+
+export function useGetFeeCollectorAddress() {
+  const { actor, isFetching } = useActorInstance();
+  return useQuery<string>({
+    queryKey: ["feeCollectorAddress"],
+    queryFn: async () => {
+      if (!actor) return "";
+      return actor.getFeeCollectorAddress();
+    },
+    enabled: !!actor && !isFetching,
+    staleTime: 8_000,
+    refetchOnMount: true,
+  });
+}
+
+export function useSetFeeCollectorAddress() {
+  const { actor } = useActorInstance();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (address: string) => {
+      if (!actor) throw new Error("Not connected");
+      return actor.setFeeCollectorAddress(address);
+    },
+    onSuccess: () =>
+      qc.invalidateQueries({ queryKey: ["feeCollectorAddress"] }),
+  });
+}
+
+export function useGetFeePaidCheckEnabled() {
+  const { actor, isFetching } = useActorInstance();
+  return useQuery<boolean>({
+    queryKey: ["feePaidCheckEnabled"],
+    queryFn: async () => {
+      if (!actor) return false;
+      return actor.getFeePaidCheckEnabled();
+    },
+    enabled: !!actor && !isFetching,
+    staleTime: 8_000,
+    refetchOnMount: true,
+  });
+}
+
+export function useSetFeePaidCheckEnabled() {
+  const { actor } = useActorInstance();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (enabled: boolean) => {
+      if (!actor) throw new Error("Not connected");
+      return actor.setFeePaidCheckEnabled(enabled);
+    },
+    onSuccess: () =>
+      qc.invalidateQueries({ queryKey: ["feePaidCheckEnabled"] }),
   });
 }
 // ─── Miner Creation Fees ─────────────────────────────────────────────────────

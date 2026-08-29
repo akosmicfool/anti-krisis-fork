@@ -342,6 +342,8 @@ export interface backendInterface {
         lastBlockTime: bigint;
         isMiningActive: boolean;
     }>;
+    getFeeCollectorAddress(): Promise<string>;
+    getFeePaidCheckEnabled(): Promise<boolean>;
     getFeePercent(): Promise<number>;
     getFeeRecipient(): Promise<string | null>;
     getGritIssuanceRate(): Promise<bigint>;
@@ -499,6 +501,8 @@ export interface backendInterface {
         __kind__: "err";
         err: string;
     }>;
+    setFeeCollectorAddress(address: string): Promise<void>;
+    setFeePaidCheckEnabled(enabled: boolean): Promise<void>;
     setFeePercent(percent: number): Promise<void>;
     setFeeRecipient(address: string): Promise<void>;
     setGritIssuanceRate(rate: bigint): Promise<void>;

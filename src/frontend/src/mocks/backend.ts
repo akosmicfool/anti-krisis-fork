@@ -197,6 +197,10 @@ export const mockBackend: backendInterface = {
   }),
   getFeeRecipient: async () => "0x000000000000000000000000000000000000dead",
   setFeeRecipient: async (_address: string) => undefined,
+  getFeeCollectorAddress: async () => "",
+  setFeeCollectorAddress: async (_address: string) => undefined,
+  getFeePaidCheckEnabled: async () => false,
+  setFeePaidCheckEnabled: async (_enabled: boolean) => undefined,
   whoami: async () => Principal.fromText("aaaaa-aa"),
   createMiner: async (_name: string, _gritAmount: bigint, _rate: bigint) => ({
     __kind__: "ok" as const,

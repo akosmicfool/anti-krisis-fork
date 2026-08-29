@@ -49,6 +49,73 @@ export const KVCM_RETIREMENT = {
 /** Slippage buffer on the quoted kVCM cost, in basis points (200 = 2%). */
 const SLIPPAGE_BPS = 200n;
 
+// ─── Klima credit whitelist (measured 2026-08-28, rescan when inventory shifts) ──
+//
+// Ranked by live simulation + inventory ceiling. Klima UCR credits sell at a
+// FIXED price (1.8158 kVCM/t, zero slippage) until inventory runs out — so a
+// credit's "liquidity" is its remaining inventory. Ceilings probed by
+// laddering forward quotes until revert:
+//   T1 (12k–20k t): c532b6f3, 9623e6c9, 49655fbc (prod-proven), 2037eca7
+//   T2 (4k–8k t):   cb4d420f, 10772cdf
+//   T3 (1k–2k t):   f218acd8, fc978c0a, f1965ac1
+// Excluded: 6 credits that revert at execution at ANY size, 3 dust credits.
+// Selection: burn USD ≤ $6.9 → all 9 · ≤ $69 → T1+T2 · above → T1 only.
+// The whitelist is an ORDER preference, not a guarantee — the simulation
+// gate remains the final arbiter, and full discovery is the fallback.
+const KLIMA_CREDIT_WHITELIST: Array<{
+  credit: `0x${string}`;
+  class: `0x${string}`;
+  tier: 1 | 2 | 3;
+}> = [
+  {
+    credit: "0xc532b6f31e4b75557badd24b189fc43663f1bcf4",
+    class: "0x1ff9bd464155d32fd2f9d302008d38544c0ae371",
+    tier: 1,
+  },
+  {
+    credit: "0x9623e6c969dc54f1972eb8b311eb9ed4cebc5e3e",
+    class: "0x1ff9bd464155d32fd2f9d302008d38544c0ae371",
+    tier: 1,
+  },
+  {
+    credit: "0x49655fbcc66d0ea6c3d0029d60e6762563ae4b82",
+    class: "0x1ff9bd464155d32fd2f9d302008d38544c0ae371",
+    tier: 1,
+  },
+  {
+    credit: "0x2037eca75ad1f6f7b28d8ed745c0e0954e383758",
+    class: "0x1ff9bd464155d32fd2f9d302008d38544c0ae371",
+    tier: 1,
+  },
+  {
+    credit: "0xcb4d420fbcc9f4319495e4139af37d47becbd031",
+    class: "0x1ff9bd464155d32fd2f9d302008d38544c0ae371",
+    tier: 2,
+  },
+  {
+    credit: "0x10772cdf6105d09fd8ab20996e5a4b9b59ba3907",
+    class: "0x1ff9bd464155d32fd2f9d302008d38544c0ae371",
+    tier: 2,
+  },
+  {
+    credit: "0xf218acd83d1593e985e3ec7ed95306a04998dc18",
+    class: "0x1ff9bd464155d32fd2f9d302008d38544c0ae371",
+    tier: 3,
+  },
+  {
+    credit: "0xfc978c0ae3e7ad8edc6655d9c38bd61f210cd8bf",
+    class: "0x1ff9bd464155d32fd2f9d302008d38544c0ae371",
+    tier: 3,
+  },
+  {
+    credit: "0xf1965ac1c0c5bdfdbcb4f3942b2e96040c6f9be7",
+    class: "0x1ff9bd464155d32fd2f9d302008d38544c0ae371",
+    tier: 3,
+  },
+];
+const SMALL_BURN_USD = 6.9;
+const MEDIUM_BURN_USD = 69;
+
 // ─── Subgraph endpoints (public Goldsky endpoints, rate limited) ────────────
 
 const PROTOCOL_SUBGRAPH =
@@ -255,14 +322,14 @@ const QUOTE_FORWARD_ABI = [
 ] as const;
 
 function publicClient() {
-  // Same fallback set as the backend's fee verifier — a single Base RPC
+  // Same fallback set as the backend's fee verifier (llamarpc removed —
+  // it 521s dead and stalls viem's fallback transport). A single Base RPC
   // (mainnet.base.org) rate-limits and stalls the quote step; viem's
   // fallback() tries transports in order and skips failed ones.
   return createPublicClient({
     chain: base,
     transport: fallback([
       http("https://mainnet.base.org"),
-      http("https://base.llamarpc.com"),
       http("https://1rpc.io/base"),
       http("https://base.publicnode.com"),
     ]),
@@ -351,6 +418,14 @@ export interface SendContractTransactionParams {
   data: `0x${string}`;
   value?: bigint;
   chainId?: number;
+  /**
+   * Explicit gas cap. The kVCM retirement route walks multiple internal
+   * swaps inside the KlimaDAO diamond and can consume far more than the
+   * wallet's default estimate; some RPCs then reject the raw tx with
+   * "exceeds maximum per-tx gas limit: 140000000 > 25000000" (Base).
+   * Passing an explicit cap stops wallets/RPCs from inflating the estimate.
+   */
+  gas?: bigint;
 }
 
 export type SendContractTransaction = (
@@ -364,6 +439,12 @@ export interface RetireKvcmParams {
   beneficiaryAddress: `0x${string}`;
   /** Generic contract-call helper from useWallet. */
   sendContractTransaction: SendContractTransaction;
+  /**
+   * USD value of the burn (amount × live kVCM price), used ONLY to pick the
+   * whitelist tier: ≤ $6.9 → all 9 credits · ≤ $69 → T1+T2 · above → T1.
+   * Unknown price ⇒ all tiers eligible (the dice widen, never block).
+   */
+  burnValueUsd?: number;
 }
 
 export interface RetireKvcmResult {
@@ -378,6 +459,15 @@ export interface RetireKvcmResult {
   /** Which registry family was retired ("CMARK" | "UCR"). */
   bridge: string;
 }
+
+/**
+ * Gas cap for the retire tx. The KlimaDAO route executes several internal
+ * Uniswap-style swaps in one call — gas estimates from some nodes balloon
+ * past the chain's 25M per-tx ceiling ("exceeds maximum per-tx gas limit:
+ * 140000000 > 25000000", observed live on Base 2026-08-28). 20M leaves
+ * headroom above the real consumption while staying under every RPC cap.
+ */
+const RETIRE_GAS_CAP = 20_000_000n;
 
 /** Auto-filled retirement metadata — permanent on-chain, never user-edited. */
 const RETIRE_DETAILS = {
@@ -402,6 +492,19 @@ const ERC20_APPROVE_ABI = [
     ],
     outputs: [{ name: "", type: "bool" }],
     stateMutability: "nonpayable",
+  },
+] as const;
+
+const ERC20_ALLOWANCE_ABI = [
+  {
+    name: "allowance",
+    type: "function",
+    stateMutability: "view",
+    inputs: [
+      { name: "owner", type: "address" },
+      { name: "spender", type: "address" },
+    ],
+    outputs: [{ name: "", type: "uint256" }],
   },
 ] as const;
 
@@ -452,30 +555,104 @@ export async function retireKvcm(
   }
   const kvcmWei = parseUnits(trimmed, KVCM_RETIREMENT.decimals);
 
-  // 1-2. Discover eligible credits and pick one at random
-  const credits = await getEligibleCredits();
-  if (credits.length === 0) {
-    throw new Error(
-      "No eligible carbon credits are currently available for retirement. Please try again later.",
-    );
-  }
+  // 1-2. Candidate selection — WHITELIST FIRST. The public Goldsky subgraphs
+  // are rate-limited and must not be called per-burn: the happy path uses
+  // only the constant whitelist (zero subgraph calls). Full discovery runs
+  // ONCE, as a fallback, only if every whitelisted route fails.
   const client = publicClient();
-
-  // Shuffle candidates so every qualifying credit stays in the random mix,
-  // then take the FIRST one whose backing pool can actually fund the swap.
-  // Klima pools vary in depth: some registered credits cannot source the
-  // quoted amount at execution time (the aggregator's view quotes revert
-  // with available<required), which would otherwise fail the burn after
-  // the user had already signed the approve transaction.
-  const candidates = [...credits];
+  // Tier policy: ≤ $6.9 → all 9 · ≤ $69 → T1+T2 · above → T1 only.
+  // Unknown price ⇒ all tiers eligible (the dice widen, never block).
+  const maxTier =
+    params.burnValueUsd === undefined
+      ? 3
+      : params.burnValueUsd <= SMALL_BURN_USD
+        ? 3
+        : params.burnValueUsd <= MEDIUM_BURN_USD
+          ? 2
+          : 1;
+  const tierPicks = KLIMA_CREDIT_WHITELIST.filter((w) => w.tier <= maxTier);
+  let candidates: EligibleCredit[] = tierPicks.map(
+    (w): EligibleCredit => ({
+      creditToken: w.credit,
+      carbonClass: w.class,
+      bridge: "UCR",
+    }),
+  );
+  // Shuffle within the tier so every qualifying credit stays in the random mix.
   for (let i = candidates.length - 1; i > 0; i--) {
     const j = randomIndex(i + 1);
     [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
   }
 
-  let credit: EligibleCredit | null = null;
-  let quoted: { tonnes: bigint; kvcmCost: bigint } | null = null;
+  // Spend cap up front — the simulation calldata needs it. The retire route
+  // is EXACT-IN: it consumes the FULL entered kVCM amount, so the cap must
+  // cover the entire budget plus a small buffer. Capping it at the quoted
+  // tokenAmount under-funds the pull and the tx reverts (observed as
+  // ERC20InsufficientAllowance 0xfb8f41b2).
+  const maxKvcmIn = kvcmWei + (kvcmWei * SLIPPAGE_BPS) / 10000n;
+
+  // Allowance awareness: the Klima aggregator swallows the token's allowance
+  // revert and re-emits its own, so with a stale/insufficient allowance the
+  // simulation CANNOT distinguish "dead route" from "allowance missing" —
+  // every healthy route reads as dead (observed live 2026-08-28 → the
+  // "(19 routes simulated)" failure on a fully healthy fleet). Read the
+  // real allowance once: if it can't cover maxKvcmIn, skip pre-approve
+  // simulations entirely (quotes still filter obviously-dead routes) and
+  // let the approve fix the world first; phase B re-sims with the
+  // allowance live, where DEAD verdicts are trustworthy again.
+  let hasAllowance = false;
+  try {
+    const live = await client.readContract({
+      address: KVCM_RETIREMENT.kvcm as `0x${string}`,
+      abi: ERC20_ALLOWANCE_ABI,
+      functionName: "allowance",
+      args: [params.beneficiaryAddress, KVCM_RETIREMENT.aam as `0x${string}`],
+    });
+    hasAllowance = live >= maxKvcmIn;
+  } catch {
+    hasAllowance = false;
+  }
+
+  // ── Simulation gate, phase A (pre-approve) ──────────────────────────────
+  // Runs ONLY when the allowance already covers the burn. For each shuffled
+  // candidate: build the EXACT retire calldata and eth_estimateGas it.
+  //   • simulates clean → viable, shortlisted
+  //   • reverts ONLY on the kVCM allowance (0xfb8f41b2 / *Allowance*) →
+  //     route fine, allowance changed concurrently — shortlisted
+  //   • any other revert → dead route, skipped BEFORE any wallet popup
+  //   • no live allowance → skip sims (allowance-poisoned), trust quotes;
+  //     phase B (post-approve) does the real gating
+  interface Simulated {
+    candidate: EligibleCredit;
+    q: { tonnes: bigint; kvcmCost: bigint };
+    data: `0x${string}`;
+  }
+  const shortlist: Simulated[] = [];
+  let tried = 0;
+  const SIM_LIMIT = 6;
+
+  const buildRetireData = (candidate: EligibleCredit, tonnes: bigint) =>
+    encodeFunctionData({
+      abi: RETIRE_CREDIT_VIA_KLIMA_ABI,
+      functionName: "retireCreditViaKlima",
+      args: [
+        candidate.creditToken,
+        0n,
+        0n,
+        tonnes,
+        KVCM_RETIREMENT.kvcm as `0x${string}`,
+        candidate.carbonClass,
+        maxKvcmIn,
+        0n,
+        {
+          ...RETIRE_DETAILS,
+          beneficiaryAddress: params.beneficiaryAddress,
+        },
+      ],
+    });
+
   for (const candidate of candidates) {
+    if (shortlist.length >= SIM_LIMIT) break;
     let q: { tonnes: bigint; kvcmCost: bigint };
     try {
       q = await inverseQuote(client, candidate, kvcmWei);
@@ -487,94 +664,139 @@ export async function retireKvcm(
       }
     }
     if (q.tonnes <= 0n || q.kvcmCost <= 0n) continue;
-
-    // Liquidity probe: re-quote the same tonnes via the pure-view forward
-    // entry point. If the pool cannot fund the swap leg, this reverts and
-    // we simply move on to the next candidate — before any wallet prompt.
-    try {
-      await client.readContract({
-        address: KVCM_RETIREMENT.aggregator as `0x${string}`,
-        abi: QUOTE_FORWARD_ABI,
-        functionName: "quoteRetireCreditViaKlima",
-        args: [
-          candidate.creditToken,
-          0n,
-          q.tonnes,
-          KVCM_RETIREMENT.kvcm as `0x${string}`,
-          candidate.carbonClass,
-          0n,
-        ],
-      });
-    } catch {
-      continue; // illiquid credit — try the next one
+    tried += 1;
+    const data = buildRetireData(candidate, q.tonnes);
+    if (!hasAllowance) {
+      shortlist.push({ candidate, q, data });
+      continue;
     }
-
-    credit = candidate;
-    quoted = q;
-    break;
+    try {
+      const est = await client.estimateGas({
+        to: KVCM_RETIREMENT.aggregator as `0x${string}`,
+        data,
+        account: params.beneficiaryAddress,
+        gas: RETIRE_GAS_CAP,
+      });
+      if (est > RETIRE_GAS_CAP) continue; // too heavy for Base RPCs — skip
+      shortlist.push({ candidate, q, data });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("Allowance") || msg.includes("0xfb8f41b2")) {
+        shortlist.push({ candidate, q, data }); // route fine, allowance moved
+      }
+      // anything else: genuinely dead route — skip
+    }
   }
 
-  if (!credit || !quoted) {
+  if (shortlist.length === 0) {
+    // Whitelist routes all failed — fall back to FULL subgraph discovery
+    // (the only per-burn subgraph call, and only on this path).
+    try {
+      const discovered = await getEligibleCredits();
+      const seen = new Set(candidates.map((c) => c.creditToken));
+      const extra = discovered.filter((c) => !seen.has(c.creditToken));
+      for (const candidate of extra) {
+        if (shortlist.length >= SIM_LIMIT) break;
+        let q: { tonnes: bigint; kvcmCost: bigint };
+        try {
+          q = await inverseQuote(client, candidate, kvcmWei);
+        } catch {
+          try {
+            q = await forwardSearchQuote(client, candidate, kvcmWei);
+          } catch {
+            continue;
+          }
+        }
+        if (q.tonnes <= 0n || q.kvcmCost <= 0n) continue;
+        tried += 1;
+        const data = buildRetireData(candidate, q.tonnes);
+        shortlist.push({ candidate, q, data });
+      }
+    } catch {
+      // discovery unavailable — fall through to the error below
+    }
+  }
+
+  if (shortlist.length === 0) {
     throw new Error(
-      "No eligible carbon credit can currently fund a burn of this size. Try a smaller amount or try again later.",
+      `No eligible carbon credit can currently fund a burn of this size (${tried} routes simulated). Try a smaller amount or try again later.`,
     );
   }
 
-  // 4. Spend cap: the retire route is EXACT-IN — it consumes the FULL
-  // entered kVCM amount. maxInputTokenIn must therefore cover the entire
-  // budget plus a small buffer. Capping it at the quoted tokenAmount
-  // under-funds the pull and the tx reverts (observed as ERC20Insufficient-
-  // Allowance 0xfb8f41b2 in the wallet after approve had succeeded).
-  const maxKvcmIn = kvcmWei + (kvcmWei * SLIPPAGE_BPS) / 10000n;
+  // 5. TX A — approve the AAM to pull up to maxKvcmIn, ONLY when the live
+  // allowance is insufficient (ONE approve covers every candidate: the
+  // allowance is on kVCM to the AAM, not per-credit). A sufficient leftover
+  // allowance from a previous burn skips the popup entirely.
+  let approveHash: string | null = null;
+  if (!hasAllowance) {
+    const approveData = encodeFunctionData({
+      abi: ERC20_APPROVE_ABI,
+      functionName: "approve",
+      args: [KVCM_RETIREMENT.aam as `0x${string}`, maxKvcmIn],
+    });
+    approveHash = await params.sendContractTransaction({
+      to: KVCM_RETIREMENT.kvcm as `0x${string}`,
+      data: approveData,
+      chainId: KVCM_RETIREMENT.chainId,
+    });
 
-  // 5. TX A — approve the AAM to pull up to maxKvcmIn
-  const approveData = encodeFunctionData({
-    abi: ERC20_APPROVE_ABI,
-    functionName: "approve",
-    args: [KVCM_RETIREMENT.aam as `0x${string}`, maxKvcmIn],
-  });
-  const approveHash = await params.sendContractTransaction({
-    to: KVCM_RETIREMENT.kvcm as `0x${string}`,
-    data: approveData,
-    chainId: KVCM_RETIREMENT.chainId,
-  });
-
-  // The AAM pulls kVCM during the retire call — the allowance must be live first.
-  const receipt = await client.waitForTransactionReceipt({
-    hash: approveHash as `0x${string}`,
-    timeout: 120_000,
-  });
-  if (receipt.status !== "success") {
-    throw new Error("Approval transaction failed on-chain. Please try again.");
+    // The AAM pulls kVCM during the retire call — the allowance must be live first.
+    const receipt = await client.waitForTransactionReceipt({
+      hash: approveHash as `0x${string}`,
+      timeout: 120_000,
+    });
+    if (receipt.status !== "success") {
+      throw new Error(
+        "Approval transaction failed on-chain. Please try again.",
+      );
+    }
   }
 
-  // 6. TX B — retire the picked credit, paying with kVCM
-  const retireData = encodeFunctionData({
-    abi: RETIRE_CREDIT_VIA_KLIMA_ABI,
-    functionName: "retireCreditViaKlima",
-    args: [
-      credit.creditToken, // creditToken — a REGISTERED credit, never kVCM
-      0n, // tokenId — 0 for ERC-20 credits
-      0n, // batchId — 0 for CMARK/UCR
-      quoted.tonnes, // amount — tonnes from the quote, NOT the raw payment
-      KVCM_RETIREMENT.kvcm as `0x${string}`, // inputToken — paying with kVCM
-      credit.carbonClass, // carbonClass — vault owning the picked credit
-      maxKvcmIn, // slippage-protected spend cap
-      0n, // couponTonnes — none issued
-      {
-        ...RETIRE_DETAILS,
-        beneficiaryAddress: params.beneficiaryAddress,
-      },
-    ],
-  });
+  // ── Simulation gate, phase B (post-approve) ─────────────────────────────
+  // The allowance is now live: re-simulate the shortlist and take the first
+  // route that executes clean, with real measured gas (1.3x headroom,
+  // clamped to the cap). A route that simulated pre-approve but reverts now
+  // had its pool move — the next shortlisted candidate takes over, and the
+  // only cost so far is the approve's gas (kVCM untouched).
+  let credit: EligibleCredit | null = null;
+  let quoted: { tonnes: bigint; kvcmCost: bigint } | null = null;
+  let retireData: `0x${string}` | null = null;
+  let retireGas: bigint = RETIRE_GAS_CAP;
+  for (const sim of shortlist) {
+    try {
+      const est = await client.estimateGas({
+        to: KVCM_RETIREMENT.aggregator as `0x${string}`,
+        data: sim.data,
+        account: params.beneficiaryAddress,
+        gas: RETIRE_GAS_CAP,
+      });
+      if (est > RETIRE_GAS_CAP) continue;
+      credit = sim.candidate;
+      quoted = sim.q;
+      retireData = sim.data;
+      retireGas =
+        (est * 13n) / 10n > RETIRE_GAS_CAP ? RETIRE_GAS_CAP : (est * 13n) / 10n;
+      break;
+    } catch {
+      // route moved since phase A — fall through to the next shortlisted one
+    }
+  }
+  if (!credit || !quoted || !retireData) {
+    throw new Error(
+      "The simulated retirement routes moved before execution. No kVCM was spent (only the approve gas). Please try again.",
+    );
+  }
+
+  // 6. TX B — retire the simulated route, paying with kVCM
   const retireHash = await params.sendContractTransaction({
     to: KVCM_RETIREMENT.aggregator as `0x${string}`,
     data: retireData,
     chainId: KVCM_RETIREMENT.chainId,
+    gas: retireGas,
   });
 
   return {
-    approveHash,
+    approveHash: approveHash ?? "",
     retireHash,
     tonnes: quoted.tonnes,
     maxKvcmIn,
@@ -585,4 +807,78 @@ export async function retireKvcm(
 /** Formats an 18-decimal tonnes value for status lines ("0.0421 tCO2e"). */
 export function formatTonnes(tonnesWei: bigint): string {
   return `${formatUnits(tonnesWei, 18)} tCO2e`;
+}
+
+// ─── Dropped-transaction guard ───────────────────────────────────────────────
+
+/** Public RPC fallbacks per chain (mirrors the backend's rpcUrlForChain sets). */
+const TX_INDEX_RPCS: Record<number, string[]> = {
+  8453: [
+    "https://mainnet.base.org",
+    "https://1rpc.io/base",
+    "https://base.publicnode.com",
+  ],
+  1: [
+    "https://ethereum.publicnode.com",
+    "https://rpc.ankr.com/eth",
+    "https://eth.drpc.org",
+    "https://cloudflare-eth.com",
+  ],
+  10: ["https://mainnet.optimism.io"],
+  42220: [
+    "https://forno.celo.org",
+    "https://rpc.ankr.com/celo",
+    "https://celo.drpc.org",
+    "https://celo.meowrpc.com",
+  ],
+};
+
+/**
+ * Waits for the burn transaction's RECEIPT on one of the chain's public
+ * nodes — which proves it MINED, and returns its on-chain outcome.
+ * (Replaces waitTxIndexed: a tx *object* existing says nothing about
+ * success, and the old dropped-verdict could double-burn a slow tx that
+ * later mined.) Returns:
+ *   settled=true, success=true   → mined, status 0x1 — proceed to fee
+ *   settled=true, success=false  → mined, REVERTED — "Burn Failed", no fee
+ *   settled=false                → not mined within the window — submit the
+ *     claim without a fee and let it finish from Burn History (the tx may
+ *     still be in the wallet relay's queue; declaring it dead risks a
+ *     double burn).
+ * Unknown chains return settled=true (don't block the flow).
+ */
+export async function waitBurnReceipt(
+  chainId: number,
+  hash: string,
+  timeoutMs = 90_000,
+): Promise<{ settled: boolean; success: boolean }> {
+  const urls = TX_INDEX_RPCS[chainId];
+  if (!urls || urls.length === 0) return { settled: true, success: true };
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    for (const url of urls) {
+      try {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            method: "eth_getTransactionReceipt",
+            params: [hash],
+            id: 1,
+          }),
+        });
+        const j = (await res.json()) as {
+          result?: { status?: string } | null;
+        };
+        if (j.result !== null && j.result !== undefined) {
+          return { settled: true, success: j.result.status === "0x1" };
+        }
+      } catch {
+        // try the next fallback
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10_000));
+  }
+  return { settled: false, success: false };
 }

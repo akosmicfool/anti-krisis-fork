@@ -68,6 +68,8 @@ import {
   useGetAdmins,
   useGetAkkLedgerCanisterId,
   useGetAkkTransferFee,
+  useGetFeeCollectorAddress,
+  useGetFeePaidCheckEnabled,
   useGetFeePercent,
   useGetFeeRecipient,
   useGetGritIssuanceRate,
@@ -81,6 +83,8 @@ import {
   useRemoveToken,
   useSetAkkLedgerCanisterId,
   useSetAkkTransferFee,
+  useSetFeeCollectorAddress,
+  useSetFeePaidCheckEnabled,
   useSetFeePercent,
   useSetFeeRecipient,
   useSetGritIssuanceRate,
@@ -1313,6 +1317,165 @@ function AuditLogTab() {
   );
 }
 
+// ─── FeeCollector Contract Section (AKK-4 Option B) ──────────────────────────
+function FeeCollectorSection() {
+  const { data: collectorAddress, isLoading } = useGetFeeCollectorAddress();
+  const { data: checkEnabled } = useGetFeePaidCheckEnabled();
+  const setCollector = useSetFeeCollectorAddress();
+  const setCheck = useSetFeePaidCheckEnabled();
+  const [input, setInput] = useState("");
+  const [touched, setTouched] = useState(false);
+
+  const inputError =
+    touched && !EVM_ADDRESS_REGEX.test(input)
+      ? "Must be a valid EVM address (0x followed by 40 hex characters)"
+      : null;
+
+  async function handleSaveCollector(e: React.FormEvent) {
+    e.preventDefault();
+    setTouched(true);
+    if (!EVM_ADDRESS_REGEX.test(input)) return;
+    try {
+      await setCollector.mutateAsync(input.trim());
+      toast.success("FeeCollector contract address saved");
+    } catch {
+      toast.error("Failed to save FeeCollector address");
+    }
+  }
+
+  async function handleToggleCheck(enabled: boolean) {
+    try {
+      await setCheck.mutateAsync(enabled);
+      toast.success(
+        enabled
+          ? "FeePaid check ARMED — fees must now carry a FeePaid event from the collector"
+          : "FeePaid check disarmed",
+      );
+    } catch {
+      toast.error("Failed to toggle FeePaid check");
+    }
+  }
+
+  return (
+    <div className="border border-border bg-card p-5 space-y-4">
+      <div className="flex items-center gap-2 border-b border-border pb-3">
+        <ShieldCheck className="h-4 w-4 text-muted-foreground" />
+        <h3 className="font-display text-xl font-semibold uppercase tracking-widest text-foreground">
+          FeeCollector Contract
+        </h3>
+      </div>
+
+      {isLoading ? (
+        <div className="space-y-2" data-ocid="fee_collector.loading_state">
+          <div className="h-4 w-64 bg-muted animate-pulse" />
+          <div className="h-10 w-full bg-muted animate-pulse" />
+        </div>
+      ) : (
+        <>
+          <div className="flex items-center gap-2 text-xs font-mono text-muted-foreground">
+            <span className="uppercase tracking-widest">Collector:</span>
+            {collectorAddress ? (
+              <>
+                <span className="text-foreground">
+                  {truncateAddress(collectorAddress, 14)}
+                </span>
+                <CopyBtn text={collectorAddress} />
+              </>
+            ) : (
+              <span className="text-muted-foreground/60 italic">
+                Not configured
+              </span>
+            )}
+          </div>
+
+          <form onSubmit={handleSaveCollector} className="space-y-3">
+            <div>
+              <Label className="text-xs font-mono uppercase tracking-widest text-white">
+                Collector Address <span className="text-destructive">*</span>
+              </Label>
+              <Input
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onBlur={() => setTouched(true)}
+                placeholder="0x…"
+                className="mt-1.5 font-mono text-sm bg-background border-input"
+                data-ocid="fee_collector.address_input"
+              />
+              {inputError && (
+                <p
+                  className="text-xs text-destructive mt-1"
+                  data-ocid="fee_collector.address_input.field_error"
+                >
+                  {inputError}
+                </p>
+              )}
+            </div>
+            <div className="flex items-center gap-3">
+              <Button
+                type="submit"
+                size="sm"
+                disabled={setCollector.isPending}
+                className="bg-accent text-accent-foreground hover:bg-accent/80 gap-1.5 text-xs transition-smooth"
+                data-ocid="fee_collector.save_button"
+              >
+                <ShieldCheck className="h-3.5 w-3.5" />
+                {setCollector.isPending ? "Saving…" : "Save Collector"}
+              </Button>
+              {setCollector.isSuccess && (
+                <span className="flex items-center gap-1 text-xs font-mono text-emerald-400">
+                  <CheckCircle2 className="h-3.5 w-3.5" />
+                  Saved
+                </span>
+              )}
+            </div>
+          </form>
+
+          <div
+            className="border border-border rounded-md p-3 space-y-2"
+            data-ocid="fee_collector.check_state"
+          >
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-xs font-mono uppercase tracking-widest text-foreground">
+                  FeePaid check:{" "}
+                  {checkEnabled ? (
+                    <span className="text-emerald-400">ARMED</span>
+                  ) : (
+                    <span className="text-muted-foreground">off</span>
+                  )}
+                </div>
+                <p className="text-xs text-muted-foreground mt-1">
+                  When armed, every fee claim additionally requires a FeePaid
+                  event from this collector in the fee receipt. Arm only after
+                  the collector is deployed on ALL allowlisted chains and the
+                  fee recipient above matches this address — arming early stalls
+                  every claim.
+                </p>
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                variant={checkEnabled ? "destructive" : "default"}
+                disabled={setCheck.isPending}
+                onClick={() => void handleToggleCheck(!checkEnabled)}
+                className="gap-1.5 text-xs transition-smooth shrink-0"
+                data-ocid="fee_collector.toggle_button"
+              >
+                {setCheck.isPending ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <ShieldAlert className="h-3.5 w-3.5" />
+                )}
+                {checkEnabled ? "Disarm" : "Arm"}
+              </Button>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ─── Fee Settings Tab ────────────────────────────────────────────────────────
 const EVM_ADDRESS_REGEX = /^0x[0-9a-fA-F]{40}$/;
 
@@ -1551,6 +1714,9 @@ function FeeSettingsTab() {
           </>
         )}
       </div>
+
+      {/* FeeCollector Contract (AKK-4 Option B) */}
+      <FeeCollectorSection />
 
       {/* GRIT Issuance Rate */}
       <GritIssuanceRateSection />

@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FeeCollector deploy — Anti Krisis (AKK-4 Option B) v2.1</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: ui-monospace, Menlo, Consolas, monospace; background: #0f1115; color: #d7dae0;
+         max-width: 780px; margin: 32px auto; padding: 0 20px; line-height: 1.55; }
+  h1 { font-size: 19px; color: #fff; } h2 { font-size: 15px; color: #fff; margin-top: 28px; }
+  a { color: #58a6ff; }
+  .card { background: #161a22; border: 1px solid #2b3240; border-radius: 10px; padding: 14px 16px; margin: 12px 0; }
+  .addr { word-break: break-all; font-size: 12px; }
+  button { font-family: inherit; font-size: 13px; padding: 8px 14px; margin: 4px 8px 4px 0; cursor: pointer;
+           background: #21262d; color: #e6e6e6; border: 1px solid #3d444d; border-radius: 8px; }
+  button:hover { background: #2a313a; }
+  .ok { color: #3fb950; } .pending { color: #d29922; } .err { color: #f85149; }
+  .st { font-size: 12px; } .mono { word-break: break-all; }
+  .muted { color: #8b949e; font-size: 12px; }
+  .banner { border: 1px solid #d29922; background: #2a2205; padding: 10px 14px; border-radius: 8px; font-size: 12px; }
+</style>
+</head>
+<body>
+<h1>FeeCollector — 4-chain CREATE2 deploy (v2.1)</h1>
+<div class="banner">
+  <b>Base is already deployed and verified.</b> v2.1: every row checks via that chain's own public RPC,
+  Deploy verifies the wallet actually switched chains, and this page now shows a health line + any page
+  errors under the Connect button. Remaining: Optimism, Celo, Ethereum.
+</div>
+
+<div class="card addr">
+  <div>Factory (recipient of every tx): <b>0x4e59b44847b379578588920cA78FbF26c0B4956C</b></div>
+  <div>Value: <b>0</b> and Payload: <b id="len"></b> hex chars (salt + creation code)</div>
+  <div>Expected contract everywhere: <b>0x6cBB624D23eeeFd23c7F02912F7F35129174aCD2</b></div>
+  <div>Contract owner after deploy: <b>0x66Cc129C0f758B52d561F0bD2AC8ECf37f19C052</b></div>
+</div>
+
+<p class="muted">Local page, no keys, no server. Buttons only forward requests to your wallet extension.
+Deploying grants no approvals or token permissions; the only cost is gas.</p>
+
+<p><button onclick="connect()">1 - Connect wallet</button> <span id="acct" class="st"></span></p>
+<div id="diag" class="st muted"></div>
+
+<h2>2 - Deploy the remaining three</h2>
+<div id="chains"></div>
+
+<h2>3 - When the last row says DEPLOYED</h2>
+<p class="muted">Tell the agent - it re-verifies eth_getCode and owner() on all four chains from the repo
+before the admin-panel step.</p>
+
+<script>
+const FACTORY  = '0x4e59b44847b379578588920cA78FbF26c0B4956C';
+const EXPECTED = '0x6cBB624D23eeeFd23c7F02912F7F35129174aCD2';
+const DATA     = '0x510c4acc617c59d4878bd3699fb368c2149cfc1e1ef372cab53ad8795583f621608060405234801561000f575f80fd5b5060405161046738038061046783398101604081905261002e916100a2565b6001600160a01b0381166100555760405163d92e233d60e01b815260040160405180910390fd5b5f80546001600160a01b0319166001600160a01b03831690811782556040519091907f8be0079c531659141344cd1fd0a4f28419497f9722a3daafe3b4186f6b6457e0908290a3506100cf565b5f602082840312156100b2575f80fd5b81516001600160a01b03811681146100c8575f80fd5b9392505050565b61038b806100dc5f395ff3fe608060405260043610610037575f3560e01c806301681a62146100c05780638da5cb5b146100e1578063f2fde38b1461011b57610083565b3661008357604080518181525f9181019190915234602082015233907f6306705606f6bb80eb21422af69622d33b086a84411f822776f54f64b5daa027906060015b60405180910390a2005b336001600160a01b03167f6306705606f6bb80eb21422af69622d33b086a84411f822776f54f64b5daa0275f3634604051610079939291906102d1565b3480156100cb575f80fd5b506100df6100da36600461031f565b61013a565b005b3480156100ec575f80fd5b505f546100ff906001600160a01b031681565b6040516001600160a01b03909116815260200160405180910390f35b348015610126575f80fd5b506100df61013536600461031f565b610231565b5f546001600160a01b03163314610164576040516330cd747160e01b815260040160405180910390fd5b6001600160a01b03811661018b5760405163d92e233d60e01b815260040160405180910390fd5b60405147905f906001600160a01b0384169083908381818185875af1925050503d805f81146101d5576040519150601f19603f3d011682016040523d82523d5f602084013e6101da565b606091505b505090508061021e5760405162461bcd60e51b815260206004820152600c60248201526b1cddd9595c0819985a5b195960a21b604482015260640160405180910390fd5b471561022c5761022c610341565b505050565b5f546001600160a01b0316331461025b576040516330cd747160e01b815260040160405180910390fd5b6001600160a01b0381166102825760405163d92e233d60e01b815260040160405180910390fd5b5f80546001600160a01b038381166001600160a01b0319831681178455604051919092169283917f8be0079c531659141344cd1fd0a4f28419497f9722a3daafe3b4186f6b6457e09190a35050565b60408152826040820152828460608301375f606084830101525f6060601f19601f8601168301019050826020830152949350505050565b6001600160a01b038116811461031c575f80fd5b50565b5f6020828403121561032f575f80fd5b813561033a81610308565b9392505050565b634e487b7160e01b5f52600160045260245ffdfea26469706673582212205eee4c45a6397b244c3cefd3589c5442268e289994ab54abc22846f7892d8f5064736f6c6343000818003300000000000000000000000066cc129c0f758b52d561f0bd2ac8ecf37f19c052';
+document.getElementById('len').textContent = DATA.length;
+const eth = () => window.ethereum;
+window.onerror = function(m, s, l) {
+  const d = document.getElementById('diag');
+  if (d) d.innerHTML = '<span class="err">page error: ' + m + ' (line ' + l + ')</span>';
+  return false;
+};
+
+const CHAINS = [
+  { name: 'Base',     id: '0x2105', rpc: 'https://mainnet.base.org',        exp: 'https://basescan.org',            sym: 'ETH',  need: false, note: 'DEPLOYED + verified already' },
+  { name: 'Optimism', id: '0xa',    rpc: 'https://mainnet.optimism.io',     exp: 'https://optimistic.etherscan.io', sym: 'ETH',  need: true,  note: 'cheap' },
+  { name: 'Celo',     id: '0xa4ec', rpc: 'https://forno.celo.org',          exp: 'https://celoscan.io',             sym: 'CELO', need: true,  note: 'needs a little CELO for gas' },
+  { name: 'Ethereum', id: '0x1',    rpc: 'https://ethereum.publicnode.com', exp: 'https://etherscan.io',            sym: 'ETH',  need: true,  note: 'most expensive - check gas estimate' },
+];
+
+async function rpcCode(c) {
+  const res = await fetch(c.rpc, { method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', method: 'eth_getCode', params: [EXPECTED, 'latest'], id: 1 }) });
+  const j = await res.json();
+  return j.result && j.result !== '0x';
+}
+
+async function walletChainId() { return (await eth().request({ method: 'eth_chainId' })).toLowerCase(); }
+
+async function ensureChainStrict(c, st) {
+  const before = await walletChainId();
+  if (before !== c.id) {
+    st.innerHTML = '<span class="pending">asking wallet to switch to ' + c.name + '...</span>';
+    try {
+      await eth().request({ method: 'wallet_switchEthereumChain', params: [{ chainId: c.id }] });
+    } catch (e) {
+      if (e.code === 4902) {
+        await eth().request({ method: 'wallet_addEthereumChain', params: [{
+          chainId: c.id, chainName: c.name, rpcUrls: [c.rpc], blockExplorerUrls: [c.exp],
+          nativeCurrency: { name: c.sym, symbol: c.sym, decimals: 18 } }] });
+        await eth().request({ method: 'wallet_switchEthereumChain', params: [{ chainId: c.id }] });
+      } else { throw new Error('could not switch wallet to ' + c.name + ': ' + (e.message || e.code)); }
+    }
+  }
+  const after = await walletChainId();
+  if (after !== c.id) throw new Error('wallet still on chain ' + after + ' - refusing to send to the wrong network');
+}
+
+async function connect() {
+  const diag = document.getElementById('diag');
+  if (diag) diag.innerHTML = 'connect clicked, contacting wallet extension...';
+  if (!eth()) {
+    document.getElementById('acct').innerHTML = '<span class="err">NO WALLET EXTENSION in this window.</span>';
+    if (diag) diag.innerHTML = 'open this page via http://127.0.0.1:8642/deploy-helper.html in Chrome/Brave/Edge with MetaMask or Rabby installed and enabled';
+    return;
+  }
+  try {
+    const accs = await eth().request({ method: 'eth_requestAccounts' });
+    document.getElementById('acct').innerHTML = 'connected: <b>' + accs[0] + '</b>';
+    if (diag) diag.innerHTML = 'wallet on chain ' + (await walletChainId());
+  } catch (e) {
+    document.getElementById('acct').innerHTML = '<span class="err">connect failed: ' + (e.message || e) + '</span>';
+    if (diag) diag.innerHTML = 'if the popup did not appear, open the wallet extension once manually and accept its connection prompt';
+  }
+}
+
+async function deploy(i) {
+  const c = CHAINS[i], st = document.getElementById('st' + i);
+  try {
+    if (!eth()) { st.innerHTML = '<span class="err">no wallet extension on this page</span>'; return; }
+    st.innerHTML = '<span class="pending">checking ' + c.name + ' via public RPC...</span>';
+    if (await rpcCode(c)) { st.innerHTML = '<span class="ok">already deployed (verified on ' + c.name + ' RPC)</span>'; return; }
+    await ensureChainStrict(c, st);
+    const accs = await eth().request({ method: 'eth_accounts' });
+    if (!accs || !accs.length) { st.innerHTML = '<span class="err">connect the wallet first</span>'; return; }
+    st.innerHTML = '<span class="pending">confirm in your wallet (network: ' + c.name + ')...</span>';
+    const tx = await eth().request({ method: 'eth_sendTransaction',
+      params: [{ from: accs[0], to: FACTORY, value: '0x0', data: DATA }] });
+    st.innerHTML = '<span class="pending">sent on ' + c.name + ': <a href="' + c.exp + '/tx/' + tx + '" target="_blank" rel="noreferrer">' +
+      tx.slice(0, 12) + '...' + tx.slice(-6) + '</a> - wait for mining, then click Check</span>';
+  } catch (e) {
+    st.innerHTML = '<span class="err">error: ' + (e.message || JSON.stringify(e)) + '</span>';
+  }
+}
+
+async function check(i) {
+  const c = CHAINS[i], st = document.getElementById('st' + i);
+  try {
+    st.innerHTML = '<span class="pending">reading code from ' + c.name + ' public RPC...</span>';
+    st.innerHTML = (await rpcCode(c))
+      ? '<span class="ok">DEPLOYED (verified via ' + c.name + ' RPC)</span>'
+      : '<span class="pending">no code on ' + c.name + ' yet - tx pending or not sent</span>';
+  } catch (e) { st.innerHTML = '<span class="err">error: ' + (e.message || e) + '</span>'; }
+}
+
+const host = document.getElementById('chains');
+CHAINS.forEach((c, i) => {
+  const d = document.createElement('div');
+  d.className = 'card';
+  d.innerHTML =
+    '<b>' + c.name + '</b> <span class="muted">(chainId ' + parseInt(c.id, 16) + ') - ' + c.note + '</span><br>' +
+    '<button onclick="check(' + i + ')">Check code</button>' +
+    (c.need ? '<button onclick="deploy(' + i + ')">Deploy on ' + c.name + '</button>' : '') +
+    '<div id="st' + i + '" class="st"></div>';
+  host.appendChild(d);
+});
+CHAINS.forEach((_, i) => check(i));
+(function healthLine() {
+  const d = document.getElementById('diag');
+  if (d) d.innerHTML = 'page v2.1 loaded - wallet extension: ' +
+    (eth() ? '<span class="ok">DETECTED</span>' : '<span class="err">NOT DETECTED in this window/tab</span>');
+})();
+</script>
+</body>
+</html>

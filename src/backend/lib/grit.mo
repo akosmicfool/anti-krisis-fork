@@ -63,6 +63,39 @@ module {
     state.claims.add(record);
   };
 
+  /// Retry semantics (AKK-4 era): a #failed claim is terminal-but-worthless —
+  /// it credited nothing (gritMinted is 0 by construction) and blocks the
+  /// duplicate guard from ever re-attempting the same burn. Resurrection
+  /// mutates that record in place back to #pending with the NEW feeTxHash and
+  /// a fresh timestamp (restarting the 35-min age window), letting the same
+  /// burn retry fee binding and pricing. Only the ORIGINAL claimant may
+  /// resurrect, and only #failed records — #verified keeps its CAS-protected
+  /// credit, #pending/#pendingFee have their own retry loops.
+  public func resurrectFailedClaim(state : State, txHash : Text, caller : Principal, feeTxHash : Text, now : Int) : Bool {
+    var eligible = false;
+    switch (state.claims.find(func(r : Types.ClaimRecord) : Bool { r.txHash == txHash })) {
+      case null { return false };
+      case (?r) {
+        if (r.status == #failed and r.claimant == caller) { eligible := true };
+      };
+    };
+    if (not eligible) { return false };
+    state.claims.mapInPlace(func(r : Types.ClaimRecord) : Types.ClaimRecord {
+      if (r.txHash == txHash) {
+        {
+          r with
+          status = #pending;
+          feeTxHash = ?feeTxHash;
+          amountBurned = 0.0;
+          usdValue = 0.0;
+          gritMinted = 0;
+          timestamp = now;
+        }
+      } else { r }
+    });
+    true;
+  };
+
   /// Update an existing claim's status and (on #verified) credit GRIT to the claimant.
   /// onGritCredited is called with (user, newBalance) if GRIT is credited, to allow tribe stats sync.
   ///
@@ -254,14 +287,12 @@ module {
   /// Remove #pending burn claims older than 1 hour (3,600,000,000,000 ns).
   /// Calls this at the start of processBlock to prevent unbounded claim accumulation.
   public func cleanupExpiredClaims(state : State, now : Int) {
-    let ONE_HOUR_NS : Int = 3_600_000_000_000;
-    let kept = state.claims.filter(func(r : Types.ClaimRecord) : Bool {
-      not (r.status == #pending and (now - r.timestamp) > ONE_HOUR_NS)
-    });
-    state.claims.clear();
-    for (r in kept.values()) {
-      state.claims.add(r);
-    };
+    // User decision (2026-08-28): NEVER expire or delete claims. Failed and
+    // abandoned claims stay in Burn History forever — failed ones are
+    // recoverable via Retry Claim (same-burn resurrection), and history is
+    // the user's audit trail. This function is kept as a no-op so the
+    // call site in main.mo survives; deletion would orphan real burns and
+    // make retry paths impossible.
   };
 
   /// Convert a nanosecond timestamp to "YYYY-MM-DD" UTC dayKey.
