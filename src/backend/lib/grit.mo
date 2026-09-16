@@ -116,6 +116,15 @@ module {
     status : Types.ClaimStatus,
     gritToCredit : Nat,
     onGritCredited : ?((Principal, Nat) -> ()),
+    // W1A: optional economic metadata committed IN THE SAME atomic guarded
+    // write as the status transition. Callers that computed fresh pricing or
+    // fee evidence before an await no longer need a separate mapInPlace —
+    // a separate write could interleave with a concurrent completion and
+    // overwrite a #verified record's receipt (stale-metadata corruption).
+    // Pass null for fields that should stay unchanged.
+    amountBurned : ?Float,
+    usdValue : ?Float,
+    feeTxHash : ?Text,
   ) {
     // CAS step 1: re-read the authoritative record right before mutating. No await may
     // occur between this find and the balance writes below (this function body has none),
@@ -130,10 +139,35 @@ module {
           case (#verified) false;
           case (#failed) false;
         };
-        if (mayTransition) {
+        // W4 review fix (F2): a claim whose BURN was never verified (the
+        // transient "not yet indexed" paths in initiateClaim leave amountBurned
+        // at 0.0) must not be terminalized as #verified with a zero credit.
+        // The fee-verification paths (retryFeeClaim / the 15s recheck) never
+        // re-verify the burn — they only prove the FEE — so a user who paid the
+        // fee before their burn was indexed used to land here with
+        // gritToCredit == 0, and because #verified is sticky and claims never
+        // expire, the real burn could never be credited afterwards (the
+        // duplicate guard then reports it as already claimed). Refusing the
+        // transition leaves the claim awaiting resolution, where the timer's
+        // burn re-check can still credit it properly.
+        let effectiveAmountBurned = switch (amountBurned) {
+          case null { authoritative.amountBurned };
+          case (?a) { a };
+        };
+        let creditlessVerified = switch (status) {
+          case (#verified) { gritToCredit == 0 and effectiveAmountBurned <= 0.0 };
+          case (_) { false };
+        };
+        if (mayTransition and not creditlessVerified) {
           state.claims.mapInPlace(func(r : Types.ClaimRecord) : Types.ClaimRecord {
             if (r.txHash == txHash) {
-              { r with status; gritMinted = gritToCredit }
+              {
+                r with status;
+                gritMinted = gritToCredit;
+                amountBurned = switch (amountBurned) { case null { r.amountBurned }; case (?a) { a } };
+                usdValue = switch (usdValue) { case null { r.usdValue }; case (?u) { u } };
+                feeTxHash = switch (feeTxHash) { case null { r.feeTxHash }; case (?f) { ?f } };
+              }
             } else {
               r
             }
@@ -162,6 +196,48 @@ module {
             };
           };
         };
+      };
+    };
+  };
+
+  /// W4/F4 fix — CLAIM SQUATTING RELIEF.
+  ///
+  /// `initiateClaim` stores `claimant = caller` on first sight of a burn hash,
+  /// before anything proves who owns the burn. Ownership is only PROVEN later, by
+  /// the fee transaction: its sender must be the burn's sender/owner on the EVM
+  /// side, and its binding payload must name the claimant's principal. So a
+  /// watcher who submits someone else's public burn hash first used to lock the
+  /// genuine burner out permanently — claims never expire, `resurrectFailedClaim`
+  /// requires the ORIGINAL claimant, and `retryFeeClaim` requires
+  /// `claim.claimant == caller`. The squatter cannot steal the GRIT (the fee
+  /// binding blocks that) but the victim could never receive it either — pure
+  /// destruction of value.
+  ///
+  /// Fix: an UNCREDITED claim (never `#verified`, `gritMinted == 0`) may be
+  /// adopted by a different caller. Adoption rebinds the claimant, drops any fee
+  /// hash the squatter supplied (so the adopter pays their own), and resets the
+  /// status to `#pending` so the normal Pay Fee flow resumes. This gives away
+  /// nothing: the adopter still has to pass the SAME fee-binding proof as
+  /// before, which only the burn's own wallet can produce — so the GRIT can only
+  /// ever go to the true burner.
+  ///
+  /// Returns false (no change) when the claim is unknown, already credited, or
+  /// already belongs to the caller.
+  public func adoptUncreditedClaim(state : State, txHash : Text, caller : Principal) : Bool {
+    let found = state.claims.find(func(r : Types.ClaimRecord) : Bool { r.txHash == txHash });
+    switch (found) {
+      case null { false };
+      case (?r) {
+        let isVerified = switch (r.status) { case (#verified) true; case (_) false };
+        let credited = isVerified or r.gritMinted > 0;
+        if (credited) { return false };
+        if (r.claimant == caller) { return false };
+        state.claims.mapInPlace(func(x : Types.ClaimRecord) : Types.ClaimRecord {
+          if (x.txHash == txHash) {
+            { x with claimant = caller; feeTxHash = null; status = #pending; gritMinted = 0 }
+          } else { x }
+        });
+        true;
       };
     };
   };

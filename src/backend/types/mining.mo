@@ -8,6 +8,21 @@ module {
     minerId          : Text;   // stringified MinerId for the winning miner
     owner            : Principal;
     amount           : Nat;    // reward in e8s
+    // F2 review fix: the `created_at_time` the FIRST attempt used, frozen at
+    // enqueue time. Every retry reuses THIS value verbatim, so all attempts of
+    // block N hash identically at the ledger and its dedup engages. Deriving
+    // the timestamp per attempt let the value drift across the clamp-grid
+    // boundary (measured: 4.36% of blocks over 200k consecutive blockIds),
+    // which would let a committed-but-unreported transfer mint twice.
+    //
+    // `var` (not immutable) for exactly one reason: the staleness net in
+    // drainPendingMints / creditAbandonedMints must be able to re-freeze the
+    // value once it is about to fall out of the ledger's 24h window, otherwise
+    // a delayed retry would fail #TooOld forever and the reward would become
+    // permanently unpayable. Writers are: construction at enqueue, the
+    // staleness net, and the migration that introduced the field. Nothing else
+    // may touch it — identity across retries is the whole point.
+    var createdAtTime : Nat64;
     var attempts     : Nat;
     var lastAttemptTime : Int; // Time.now() nanoseconds at last attempt
     var error        : Text;   // last error message
@@ -139,5 +154,9 @@ module {
     var totalMintAbandoned : Nat;
     /// Configurable AKK transfer fee in e8s (default 10_000). Applied in withdrawAkk.
     var akkTransferFee : Nat;
+    /// Consumed miner-creation fee transactions (single-use enforcement).
+    /// Key: "<chain>:<canonical tx hash>" (canonical = 0x + lowercase, W1A
+    /// identity). Value is ignored (set semantics via Map<Text, Bool>).
+    minerFeeTxs : Map.Map<Text, Bool>;
   };
 };

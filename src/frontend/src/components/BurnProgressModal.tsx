@@ -55,7 +55,7 @@ function getModalStep(step: BurnStep): 1 | 2 | 3 {
   return 3; // verified | failed
 }
 
-function getStepStatus(step: BurnStep): string {
+function getStepStatus(step: BurnStep, userRejected: boolean): string {
   switch (step) {
     case "burning":
     case "awaiting_confirm":
@@ -69,15 +69,38 @@ function getStepStatus(step: BurnStep): string {
     case "pending_verification":
       return "Processing GRIT credit…";
     case "pending_fee":
-      return "Fee payment needs a retry.";
+      // Distinguished by the caller (BurnPage) via userRejected: after a
+      // wallet rejection the fee was NEVER SENT — "still monitoring" would
+      // be false (Issue 2, 2026-09-11).
+      return userRejected
+        ? "Fee cancelled — nothing was charged."
+        : "Fee is taking longer than expected — still monitoring.";
     case "awaiting_fee_confirm":
       return "Waiting for platform fee to confirm…";
     case "verified":
-      return "GRIT Minted!";
+      // The verified state shows no status line: the step-3 label already
+      // carries the message (GRIT earned!) and the amount line sits
+      // directly beneath it (owner copy decision, v340 draft).
+      return "";
     case "failed":
       return "Transaction failed";
     default:
       return "";
+  }
+}
+
+// Completed-step past-tense labels (Issue 3, 2026-09-11): the step TITLE
+// described what was about to happen ("Confirming burn transaction") while
+// the ✓ Done badge sat next to it — contradictory. Completed steps now read
+// as a record of what happened.
+function getStepDoneLabel(index: number): string {
+  switch (index) {
+    case 0:
+      return "Burn transaction confirmed";
+    case 1:
+      return "Platform fee paid";
+    default:
+      return "GRIT credited";
   }
 }
 
@@ -87,32 +110,31 @@ const STEP_LABELS = [
   "GRIT credit status",
 ];
 
+// Owner copy: the success amount line reads "+1.12 B GRIT credited", while
+// formatGrit stays compact ("1.12B") for every other surface. Only the
+// trailing magnitude suffix gets a space — unsuffixed values are untouched.
+function withSpacedMagnitude(formatted: string): string {
+  return formatted.replace(/(\d)([BMK])$/, "$1 $2");
+}
+
 function StepDot({
   index,
   activeIndex,
   isCompleted,
   isFailed,
-  userRejected,
 }: {
   index: number;
   activeIndex: number;
   isCompleted: boolean;
   isFailed: boolean;
-  userRejected: boolean;
 }) {
   const isActive = index === activeIndex;
   const isPast = index < activeIndex;
 
-  // When user rejected before any tx was submitted, past steps should show
-  // as cancelled (X), not done (checkmark) — they never actually completed.
-  if (isPast && userRejected) {
-    return (
-      <div className="w-7 h-7 rounded-none border-2 border-red-500/60 bg-red-500/10 flex items-center justify-center shrink-0">
-        <XCircle className="h-4 w-4 text-red-400/80" />
-      </div>
-    );
-  }
-
+  // Completed steps always read as done once the burn tx was submitted
+  // (claim-first: at fee stage the burn tx EXISTS on-chain — a fee rejection
+  // never un-does it). The old userRejected X/Cancelled marks mislabeled a
+  // successful burn as cancelled (Issue 2, 2026-09-11).
   if (isPast && !isFailed) {
     return (
       <motion.div
@@ -183,7 +205,7 @@ export function BurnProgressModal({
   const activeIndex = (isFailed ? failStep : getModalStep(step)) - 1; // 0-based
   const isTerminal = isVerified || isFailed;
   const canBackground = !isTerminal;
-  const statusText = getStepStatus(step);
+  const statusText = getStepStatus(step, userRejected);
 
   return (
     <AnimatePresence>
@@ -256,7 +278,6 @@ export function BurnProgressModal({
                         activeIndex={activeIndex}
                         isCompleted={stepIsVerifiedFinal}
                         isFailed={stepIsFailedFinal}
-                        userRejected={userRejected}
                       />
 
                       <div className="flex-1 min-w-0 pt-0.5">
@@ -270,14 +291,9 @@ export function BurnProgressModal({
                           >
                             Step {i + 1}
                           </span>
-                          {(isPast || stepIsVerifiedFinal) && !userRejected && (
+                          {(isPast || stepIsVerifiedFinal) && (
                             <span className="text-xs font-accent text-accent/50 uppercase tracking-widest">
                               ✓ Done
-                            </span>
-                          )}
-                          {isPast && userRejected && (
-                            <span className="text-xs font-accent text-red-400/70 uppercase tracking-widest">
-                              Cancelled
                             </span>
                           )}
                         </div>
@@ -294,7 +310,13 @@ export function BurnProgressModal({
                                 : "text-muted-foreground/40"
                           }`}
                         >
-                          {label}
+                          {stepIsVerifiedFinal
+                            ? "GRIT earned! 💪"
+                            : isPast && !userRejected
+                              ? getStepDoneLabel(i)
+                              : userRejected && isPast
+                                ? "Fee cancelled"
+                                : label}
                         </p>
 
                         {/* Active status text */}
@@ -315,7 +337,6 @@ export function BurnProgressModal({
                               }`}
                               data-ocid="burn_modal.status_text"
                             >
-                              {isVerified && "🎉 "}
                               {statusText}
                             </motion.p>
                           )}
@@ -331,7 +352,7 @@ export function BurnProgressModal({
                               className="font-mono font-bold text-accent text-lg mt-1 energy-pulse"
                               data-ocid="burn_modal.grit_amount"
                             >
-                              +{formatGrit(verifiedGrit)} GRIT
+                              {`+${withSpacedMagnitude(formatGrit(verifiedGrit))} GRIT credited`}
                             </motion.p>
                           )}
                       </div>
@@ -352,6 +373,26 @@ export function BurnProgressModal({
                   >
                     <AlertTriangle className="h-4 w-4 text-red-400 shrink-0 mt-0.5" />
                     <p className="text-xs text-red-400 font-body">{errorMsg}</p>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              {/* W1B: fee-failure-but-recoverable — the burn is saved in
+                  Burn History (#pending, Pay Fee available). Amber info box,
+                  not red: nothing is lost, the user has an action to take. */}
+              <AnimatePresence>
+                {errorMsg && !isFailed && step === "pending_fee" && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: "auto" }}
+                    exit={{ opacity: 0, height: 0 }}
+                    className="mx-5 mb-4 rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 flex items-start gap-2"
+                    data-ocid="burn_modal.recoverable_fee_state"
+                  >
+                    <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
+                    <p className="text-xs text-amber-200 font-body">
+                      {errorMsg}
+                    </p>
                   </motion.div>
                 )}
               </AnimatePresence>

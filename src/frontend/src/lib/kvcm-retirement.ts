@@ -816,20 +816,28 @@ const TX_INDEX_RPCS: Record<number, string[]> = {
   8453: [
     "https://mainnet.base.org",
     "https://1rpc.io/base",
-    "https://base.publicnode.com",
+    "https://base-rpc.publicnode.com",
   ],
   1: [
-    "https://ethereum.publicnode.com",
-    "https://rpc.ankr.com/eth",
+    // Aligned with backend v339 sets (verification.mo rpcUrlForChain): the
+    // old list led with publicnode/ankr/cloudflare — ankr is key-gated
+    // (result:null), publicnode 403s canister-adjacent traffic, and
+    // cloudflare-eth served result:null for receipts other nodes had.
+    "https://1rpc.io/eth",
+    "https://eth-mainnet.public.blastapi.io",
     "https://eth.drpc.org",
-    "https://cloudflare-eth.com",
   ],
-  10: ["https://mainnet.optimism.io"],
+  10: [
+    // GAP-2 fix (2026-09-12): OP had a SINGLE endpoint — no fallback. Add
+    // 1rpc.io/op (probed against the stuck v338 receipts) to match backend.
+    "https://mainnet.optimism.io",
+    "https://optimism.drpc.org",
+    "https://1rpc.io/op",
+  ],
   42220: [
     "https://forno.celo.org",
-    "https://rpc.ankr.com/celo",
     "https://celo.drpc.org",
-    "https://celo.meowrpc.com",
+    "https://celo-rpc.publicnode.com",
   ],
 };
 
@@ -846,11 +854,15 @@ const TX_INDEX_RPCS: Record<number, string[]> = {
  *     still be in the wallet relay's queue; declaring it dead risks a
  *     double burn).
  * Unknown chains return settled=true (don't block the flow).
+ *
+ * pollMs controls the re-probe interval; callers tuning for a short
+ * confirmation window (miner creation) pass a tighter interval.
  */
 export async function waitBurnReceipt(
   chainId: number,
   hash: string,
   timeoutMs = 90_000,
+  pollMs = 10_000,
 ): Promise<{ settled: boolean; success: boolean }> {
   const urls = TX_INDEX_RPCS[chainId];
   if (!urls || urls.length === 0) return { settled: true, success: true };
@@ -878,7 +890,7 @@ export async function waitBurnReceipt(
         // try the next fallback
       }
     }
-    await new Promise((resolve) => setTimeout(resolve, 10_000));
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
   }
   return { settled: false, success: false };
 }

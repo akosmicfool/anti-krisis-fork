@@ -16,7 +16,15 @@ path = ".old/src/backend/dist/backend.most"
 
 [canisters.backend.migrations]
 chain = "src/backend/migrations"
-check-limit = 1
+# 3 (not 2): the pending chain is three steps — 20260828_000000 (feeState),
+# 20260910_200000 (MintRetryEntry.createdAtTime, F2) and 20260911_000000
+# (minerFeeTxs, creation-fee single-use). Folding earlier steps into the
+# latest would change their INPUT shapes and stop matching the state of any
+# canister that already ran them — including the live draft — turning its
+# next upgrade into a no-match/layout failure. The limit exists only to bound
+# how much of the chain the checker validates; 3 validates all pending steps
+# in order.
+check-limit = 3
 
 [toolchain]
 moc = "1.11.2"

@@ -222,7 +222,27 @@ module {
 
   // ─────────────────────────────────────────────────────────────────────────────
   // Stable shape — matches the stable field declarations in main.mo exactly.
-  // Pure legacy→EM upgrade: stable shape unchanged, so NewActor = OldActor.
+  //
+  // W1B fresh-install fix: the FIRST migration takes `{}` (per the Motoko
+  // enhanced-migration docs, the first migration in every chain initializes
+  // the actor's fields and its input is always empty) and produces the full
+  // default state. The previous version took `OldActor` — which made every
+  // plain `install_code` onto empty state trap during init
+  // ("field 'adminState' expected but not found in state"): fresh installs
+  // were only possible through Caffeine's own pipeline (vendor lock-in, no
+  // disaster-recovery path). Reproduced + root-caused 2026-09-07, see
+  // knowledge/vulnerability-audit-v264.md.
+  //
+  // On UPGRADE from a canister that already has this state, moc skips chain
+  // migrations whose input the stored state doesn't match / that already
+  // ran — changing this file's INPUT does not affect already-migrated
+  // canisters (the live/draft backends keep their state; later chain links
+  // 20260826_010000 and 20260828_000000 are unchanged).
+  //
+  // Defaults are MINIMAL: empty collections, zero/false/null scalars. The
+  // actor body in main.mo owns seeding (admin bootstrap, default token
+  // allowlist, canonical fee recipient) exactly as before — Init must not
+  // duplicate that logic, only produce a valid empty starting state.
   // ─────────────────────────────────────────────────────────────────────────────
   type OldActor = {
     var selfPrincipal : ?Principal;
@@ -282,5 +302,78 @@ module {
 
   type NewActor = OldActor;
 
-  public func migration(old : OldActor) : NewActor { old };
+  public func migration(_old : {}) : NewActor {
+    {
+      var selfPrincipal = null;
+      var cachedLedgerActor = null;
+      var cachedLedgerActorId = null;
+      // seedVersion 0 → main.mo's `if (seedVersion < 3)` seeding runs on
+      // first start (default token allowlist + canonical fee recipient),
+      // exactly as on the original fresh deploys.
+      var seedVersion = 0;
+      adminState = {
+        admins = List.empty();
+        var feeRecipient = null;
+        var feePercent = 0.69;
+        var gritIssuanceRate = 100_000_000_000;
+        var bootstrapPrincipalSet = false;
+        var isLaunched = false;
+      };
+      bootstrapAdminPrincipal = null;
+      gateState = {
+        var gateEnabled = false;
+        var gateStartTime = 0;
+        var gateEndTime = 0;
+        var launchTimeEnabled = false;
+        var launchTime = 0;
+        var nftGateEnabled = false;
+      };
+      allowlistState = {
+        tokens = List.empty();
+        auditLog = List.empty();
+      };
+      gritState = {
+        balances = Map.empty();
+        totalEarned = Map.empty();
+        claims = List.empty();
+      };
+      priceCache = Map.empty();
+      miningState = {
+        var akkLedgerId = null;
+        var nextMinerId = 0;
+        miners = Map.empty();
+        akkBalances = Map.empty();
+        gritSpentByUser = Map.empty();
+        totalAkkWonByUser = Map.empty();
+        var blockNumber = 0;
+        var totalAkkMined = 0;
+        minerCreationFees = Map.empty();
+        blockHistory = List.empty();
+        var lastBlockWasEmpty = false;
+        pendingMints = List.empty();
+        mintedBlockIds = List.empty();
+        abandonedMints = List.empty();
+        var totalMintRetried = 0;
+        var totalMintSucceeded = 0;
+        var totalMintAbandoned = 0;
+        var akkTransferFee = 10_000;
+      };
+      blockTimerState = { var timerId = null };
+      profileState = { profiles = Map.empty() };
+      tribeState = {
+        tribes = Map.empty();
+        memberTribeMap = Map.empty();
+        tribeMembers = Map.empty();
+        userOwnedTribes = Map.empty();
+        contributionSnapshots = Map.empty();
+        membershipHistory = List.empty();
+      };
+      scoringState = {
+        networkSnapshots = Map.empty();
+        playerSnapshots = Map.empty();
+        tribeSnapshots = Map.empty();
+      };
+      testingState = { overrides = Map.empty() };
+    };
+  };
 };

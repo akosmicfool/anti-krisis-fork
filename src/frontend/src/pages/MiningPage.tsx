@@ -3,12 +3,22 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Link } from "@tanstack/react-router";
-import { Clock, Cpu, PickaxeIcon, Plus, Zap } from "lucide-react";
+import {
+  Clock,
+  Cpu,
+  Loader2,
+  PickaxeIcon,
+  Plus,
+  RefreshCw,
+  X,
+  Zap,
+} from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useState } from "react";
 import { MinerStatus } from "../backend";
 import type { BlockRecord, MinerView } from "../backend";
 import { CreateMinerModal } from "../components/CreateMinerModal";
+import type { CreateMinerPrefill } from "../components/CreateMinerModal";
 import { EditMinerModal } from "../components/EditMinerModal";
 import { useAuth } from "../hooks/use-auth";
 import {
@@ -17,7 +27,12 @@ import {
   useMyMiners,
   useUserMiningStats,
 } from "../hooks/use-backend";
-import { formatGrit, truncateAddress } from "../types";
+import { useMinerCreation } from "../hooks/use-miner-creation";
+import type {
+  MinerAttempt,
+  MinerAttemptStatus,
+} from "../hooks/use-miner-creation";
+import { CHAIN_LABELS, formatGrit, truncateAddress } from "../types";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function formatAkk(amount: bigint): string {
@@ -56,6 +71,178 @@ function MinerStatusBadge({ status }: { status: MinerStatus }) {
     <span className="inline-flex items-center px-2 py-0.5 rounded border font-accent text-sm uppercase tracking-widest bg-red-500/15 text-red-400 border-red-500/30">
       Exhausted
     </span>
+  );
+}
+
+// ─── Pending miner card (in-flight creation attempt) ──────────────────────────
+const PENDING_PILL: Record<
+  MinerAttemptStatus,
+  { label: string; className: string; spinner: boolean }
+> = {
+  confirming_fee: {
+    label: "Confirming",
+    className:
+      "inline-flex items-center gap-1 px-2 py-0.5 rounded border font-accent text-sm uppercase tracking-widest bg-amber-500/15 text-amber-400 border-amber-500/30",
+    spinner: true,
+  },
+  creating: {
+    label: "Creating",
+    className:
+      "inline-flex items-center gap-1 px-2 py-0.5 rounded border font-accent text-sm uppercase tracking-widest bg-amber-500/15 text-amber-400 border-amber-500/30",
+    spinner: true,
+  },
+  action_needed: {
+    label: "Action Needed",
+    className:
+      "inline-flex items-center gap-1 px-2 py-0.5 rounded border font-accent text-sm uppercase tracking-widest bg-amber-500/15 text-amber-400 border-amber-500/30",
+    spinner: false,
+  },
+  failed_fee: {
+    label: "Fee Failed",
+    className:
+      "inline-flex items-center gap-1 px-2 py-0.5 rounded border font-accent text-sm uppercase tracking-widest bg-red-500/15 text-red-400 border-red-500/30",
+    spinner: false,
+  },
+};
+
+const PENDING_PILL_DETAIL: Record<MinerAttemptStatus, string> = {
+  confirming_fee: "Waiting for the fee to confirm",
+  creating: "Verifying on-chain",
+  action_needed: "Fee unusable — pay again",
+  failed_fee: "Fee reverted on-chain",
+};
+
+function PendingMinerCard({
+  attempt,
+  index,
+  escalated,
+  dismissible,
+  onRetryNow,
+  onRepay,
+  onDismiss,
+}: {
+  attempt: MinerAttempt;
+  index: number;
+  escalated: boolean;
+  dismissible: boolean;
+  onRetryNow: (id: string) => void;
+  onRepay: (attempt: MinerAttempt) => void;
+  onDismiss: (id: string) => void;
+}) {
+  const pill = PENDING_PILL[attempt.status];
+  const needsRepay =
+    attempt.status === "action_needed" || attempt.status === "failed_fee";
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: index * 0.06 }}
+      className="bg-card border border-dashed border-border p-4 flex flex-col gap-3 transition-smooth"
+      data-ocid={`mining.pending_miner_card.${index + 1}`}
+    >
+      {/* Top row: name / status pill / action — same slots as MinerCard */}
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-1 flex-wrap items-center gap-2 min-w-0">
+          <p className="font-display font-bold text-foreground truncate shrink-0 max-w-[150px] sm:max-w-[180px] text-[1.1rem] sm:text-[1.275rem]">
+            {attempt.name}
+          </p>
+          <span
+            className={pill.className}
+            data-ocid={`mining.pending_miner_card.${index + 1}.status_badge`}
+          >
+            {pill.spinner && <Loader2 className="h-3 w-3 animate-spin" />}
+            {pill.label}
+          </span>
+          <span className="font-mono text-xs text-muted-foreground">
+            @ {formatRate(BigInt(attempt.rate))}
+          </span>
+        </div>
+
+        <div className="flex items-center gap-1 shrink-0 ml-auto">
+          {needsRepay ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => onRepay(attempt)}
+              className="shrink-0 border-amber-500/40 text-amber-300 hover:border-amber-400/60 font-mono text-xs uppercase tracking-widest transition-smooth"
+              data-ocid={`mining.pending_miner_card.${index + 1}.repay_button`}
+            >
+              Pay fee &amp; retry
+            </Button>
+          ) : (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => onRetryNow(attempt.id)}
+              className="shrink-0 border-border hover:border-accent/60 font-mono text-xs uppercase tracking-widest transition-smooth"
+              data-ocid={`mining.pending_miner_card.${index + 1}.retry_button`}
+            >
+              <RefreshCw className="h-3 w-3" />
+              Retry now
+            </Button>
+          )}
+          {dismissible && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              onClick={() => onDismiss(attempt.id)}
+              aria-label="Dismiss pending miner"
+              className="h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground transition-smooth"
+              data-ocid={`mining.pending_miner_card.${index + 1}.dismiss_button`}
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {/* Display-only escalation — never red, never blocks */}
+      {escalated && (
+        <p
+          className="text-xs font-mono text-amber-400"
+          data-ocid={`mining.pending_miner_card.${index + 1}.escalation`}
+        >
+          Still confirming — taking longer than usual
+        </p>
+      )}
+
+      {/* Bottom stats — mirrors MinerCard's three-column layout */}
+      <div className="grid grid-cols-3 gap-1 sm:gap-2 border-t border-border/50 pt-3 items-end">
+        <div className="flex flex-col items-center justify-between gap-1">
+          <span className="font-mono text-[9px] sm:text-[10px] uppercase tracking-widest text-white text-center">
+            GRIT LOAD
+          </span>
+          <span className="font-mono text-xs sm:text-sm font-bold text-foreground text-center">
+            {formatGrit(BigInt(attempt.gritAmount))}
+          </span>
+        </div>
+        <div className="flex flex-col items-center justify-between gap-1">
+          <span className="font-mono text-[9px] sm:text-[10px] uppercase tracking-widest text-white text-center">
+            STATUS
+          </span>
+          <span
+            className="font-mono text-xs sm:text-sm font-bold text-foreground text-center"
+            data-ocid={`mining.pending_miner_card.${index + 1}.status_detail`}
+          >
+            {PENDING_PILL_DETAIL[attempt.status]}
+          </span>
+        </div>
+        <div className="flex flex-col items-center justify-between gap-1">
+          <span className="font-mono text-[9px] sm:text-[10px] uppercase tracking-widest text-white text-center">
+            FEE CHAIN
+          </span>
+          <span className="font-mono text-xs sm:text-sm font-bold text-accent text-center">
+            {attempt.feeChain
+              ? (CHAIN_LABELS[attempt.feeChain] ?? attempt.feeChain)
+              : "Free"}
+          </span>
+        </div>
+      </div>
+    </motion.div>
   );
 }
 
@@ -225,6 +412,23 @@ export function MiningPage({ embedded = false }: { embedded?: boolean }) {
 
   const [createOpen, setCreateOpen] = useState(false);
   const [editMiner, setEditMiner] = useState<MinerView | null>(null);
+  // Repay path: reopen the create modal prefilled from a pending-miner tile.
+  const [createPrefill, setCreatePrefill] = useState<CreateMinerPrefill | null>(
+    null,
+  );
+  const [replaceAttemptId, setReplaceAttemptId] = useState<string | null>(null);
+
+  const creation = useMinerCreation();
+  const hasPendingAttempts = creation.attempts.length > 0;
+
+  function openCreate(
+    prefill: CreateMinerPrefill | null,
+    attemptId: string | null,
+  ) {
+    setCreatePrefill(prefill);
+    setReplaceAttemptId(attemptId);
+    setCreateOpen(true);
+  }
 
   const { data: launchGateData } = useGetLaunchGateConfig();
   const [launchCountdown, setLaunchCountdown] = useState({
@@ -342,7 +546,7 @@ export function MiningPage({ embedded = false }: { embedded?: boolean }) {
             <Button
               type="button"
               disabled={isLaunchTimeBlocked}
-              onClick={() => setCreateOpen(true)}
+              onClick={() => openCreate(null, null)}
               className="bg-accent text-background hover:bg-accent/90 font-display font-black uppercase tracking-widest gap-2 h-9 px-4 text-sm transition-smooth"
               data-ocid="mining.create_miner_button"
             >
@@ -352,13 +556,39 @@ export function MiningPage({ embedded = false }: { embedded?: boolean }) {
           )}
         </div>
 
+        {/* In-flight creations — kept visible above the real miner cards */}
+        {hasPendingAttempts && (
+          <div
+            className="space-y-2 mb-2"
+            data-ocid="mining.pending_miners_list"
+          >
+            {creation.attempts.map((attempt, i) => (
+              <PendingMinerCard
+                key={attempt.id}
+                attempt={attempt}
+                index={i}
+                escalated={creation.isEscalated(attempt)}
+                dismissible={creation.canDismiss(attempt)}
+                onRetryNow={(id) => void creation.retryNow(id)}
+                onRepay={(a) =>
+                  openCreate(
+                    { name: a.name, gritAmount: a.gritAmount, rate: a.rate },
+                    a.id,
+                  )
+                }
+                onDismiss={creation.dismiss}
+              />
+            ))}
+          </div>
+        )}
+
         {minersLoading ? (
           <div className="space-y-3">
             {[1, 2].map((i) => (
               <Skeleton key={i} className="h-20 w-full bg-muted" />
             ))}
           </div>
-        ) : miners.length === 0 ? (
+        ) : miners.length === 0 && !hasPendingAttempts ? (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -382,7 +612,7 @@ export function MiningPage({ embedded = false }: { embedded?: boolean }) {
                 type="button"
                 disabled={isLaunchTimeBlocked}
                 size="sm"
-                onClick={() => setCreateOpen(true)}
+                onClick={() => openCreate(null, null)}
                 className="bg-accent text-background hover:bg-accent/90 font-mono text-xs uppercase tracking-widest gap-1.5 transition-smooth"
                 data-ocid="mining.empty_create_button"
               >
@@ -461,7 +691,14 @@ export function MiningPage({ embedded = false }: { embedded?: boolean }) {
       {/* Modals */}
       <CreateMinerModal
         open={createOpen}
-        onClose={() => setCreateOpen(false)}
+        onClose={() => {
+          setCreateOpen(false);
+          setCreatePrefill(null);
+          setReplaceAttemptId(null);
+        }}
+        creation={creation}
+        prefill={createPrefill}
+        replaceAttemptId={replaceAttemptId}
       />
       {editMiner && (
         <EditMinerModal

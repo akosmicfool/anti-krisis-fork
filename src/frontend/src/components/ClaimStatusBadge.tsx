@@ -15,10 +15,14 @@ interface ClaimStatusBadgeProps {
 
 /**
  * Displays a claim status indicator.
- * - pending      → amber, pulsing clock, "Confirming…"
- * - pending_fee  → orange, warning/card icon, "Retry Fee"
- * - verified     → emerald, check, "Verified"
- * - failed       → red, X, "Failed"
+ * W1B: labels mirror the user-approved state mapping (one language across
+ * Burn modal, Recent Burns and Burn History):
+ * - pending      → amber, pulsing clock, "Confirming burn"
+ * - pending_fee  → orange, card icon, "Confirming fee" (timer verifies;
+ *                  a REVERTED fee flips the hash to empty → "Pay Fee")
+ * - verified     → emerald, check, "GRIT Earned"
+ * - failed       → red, X, "Burn Failed" (burn never verified) or
+ *                  "Fee Failed" (burn verified, fee stage failed)
  */
 export function ClaimStatusBadge({
   status,
@@ -36,12 +40,15 @@ export function ClaimStatusBadge({
         ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"
         : "bg-red-500/15 text-red-400 border-red-500/30";
 
+  // Issue 2 (2026-09-11): pending states read by what the user must do
+  // next, not by which internal check is running. "Confirming burn" on a
+  // fee-less claim contradicted the Pay Fee action shown beside it.
   const label = isFeeStatus
-    ? "Fee Failed — Retry"
+    ? "Fee Pending"
     : isPending
-      ? "Confirming…"
+      ? "Fee Pending"
       : isVerified
-        ? "Verified"
+        ? "GRIT Earned"
         : "Failed";
 
   const Icon = isFeeStatus

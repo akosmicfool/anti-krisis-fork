@@ -243,6 +243,11 @@ export const TransformationOutput = IDL.Record({
 export const idlService = IDL.Service({
   'addAdmin' : IDL.Func([IDL.Principal], [], []),
   'addToken' : IDL.Func([AllowlistedToken], [], []),
+  'applySecureFeeConfig' : IDL.Func(
+      [IDL.Text, IDL.Text],
+      [IDL.Variant({ 'ok' : IDL.Null, 'err' : IDL.Text })],
+      [],
+    ),
   'claimOgBadge' : IDL.Func(
       [],
       [IDL.Variant({ 'ok' : IDL.Null, 'err' : IDL.Text })],
@@ -264,7 +269,7 @@ export const idlService = IDL.Service({
       [],
     ),
   'createMiner' : IDL.Func(
-      [IDL.Text, IDL.Nat, IDL.Nat],
+      [IDL.Text, IDL.Nat, IDL.Nat, IDL.Opt(IDL.Text), IDL.Opt(IDL.Text)],
       [IDL.Variant({ 'ok' : MinerId, 'err' : IDL.Text })],
       [],
     ),
@@ -278,6 +283,7 @@ export const idlService = IDL.Service({
       [IDL.Variant({ 'ok' : IDL.Nat, 'err' : IDL.Text })],
       [],
     ),
+  'disarmFeePaidCheck' : IDL.Func([], [], []),
   'editMiner' : IDL.Func(
       [
         MinerId,
@@ -511,6 +517,11 @@ export const idlService = IDL.Service({
       [IDL.Variant({ 'ok' : IDL.Null, 'err' : TribeError })],
       [],
     ),
+  'probeRpcEndpoints' : IDL.Func(
+      [],
+      [IDL.Vec(IDL.Tuple(IDL.Text, IDL.Text))],
+      [],
+    ),
   'recheckClaimByHash' : IDL.Func(
       [IDL.Text],
       [IDL.Variant({ 'ok' : IDL.Text, 'err' : IDL.Text })],
@@ -552,7 +563,6 @@ export const idlService = IDL.Service({
       [],
     ),
   'setFeeCollectorAddress' : IDL.Func([IDL.Text], [], []),
-  'setFeePaidCheckEnabled' : IDL.Func([IDL.Bool], [], []),
   'setFeePercent' : IDL.Func([IDL.Float64], [], []),
   'setFeeRecipient' : IDL.Func([IDL.Text], [], []),
   'setGritIssuanceRate' : IDL.Func([IDL.Nat], [], []),
@@ -839,6 +849,11 @@ export const idlFactory = ({ IDL }) => {
   return IDL.Service({
     'addAdmin' : IDL.Func([IDL.Principal], [], []),
     'addToken' : IDL.Func([AllowlistedToken], [], []),
+    'applySecureFeeConfig' : IDL.Func(
+        [IDL.Text, IDL.Text],
+        [IDL.Variant({ 'ok' : IDL.Null, 'err' : IDL.Text })],
+        [],
+      ),
     'claimOgBadge' : IDL.Func(
         [],
         [IDL.Variant({ 'ok' : IDL.Null, 'err' : IDL.Text })],
@@ -860,7 +875,7 @@ export const idlFactory = ({ IDL }) => {
         [],
       ),
     'createMiner' : IDL.Func(
-        [IDL.Text, IDL.Nat, IDL.Nat],
+        [IDL.Text, IDL.Nat, IDL.Nat, IDL.Opt(IDL.Text), IDL.Opt(IDL.Text)],
         [IDL.Variant({ 'ok' : MinerId, 'err' : IDL.Text })],
         [],
       ),
@@ -874,6 +889,7 @@ export const idlFactory = ({ IDL }) => {
         [IDL.Variant({ 'ok' : IDL.Nat, 'err' : IDL.Text })],
         [],
       ),
+    'disarmFeePaidCheck' : IDL.Func([], [], []),
     'editMiner' : IDL.Func(
         [
           MinerId,
@@ -1115,6 +1131,11 @@ export const idlFactory = ({ IDL }) => {
         [IDL.Variant({ 'ok' : IDL.Null, 'err' : TribeError })],
         [],
       ),
+    'probeRpcEndpoints' : IDL.Func(
+        [],
+        [IDL.Vec(IDL.Tuple(IDL.Text, IDL.Text))],
+        [],
+      ),
     'recheckClaimByHash' : IDL.Func(
         [IDL.Text],
         [IDL.Variant({ 'ok' : IDL.Text, 'err' : IDL.Text })],
@@ -1156,7 +1177,6 @@ export const idlFactory = ({ IDL }) => {
         [],
       ),
     'setFeeCollectorAddress' : IDL.Func([IDL.Text], [], []),
-    'setFeePaidCheckEnabled' : IDL.Func([IDL.Bool], [], []),
     'setFeePercent' : IDL.Func([IDL.Float64], [], []),
     'setFeeRecipient' : IDL.Func([IDL.Text], [], []),
     'setGritIssuanceRate' : IDL.Func([IDL.Nat], [], []),

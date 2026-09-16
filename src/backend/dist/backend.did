@@ -288,6 +288,11 @@ type Account =
 service : {
   addAdmin: (newAdmin: principal) -> ();
   addToken: (token: AllowlistedToken) -> ();
+  applySecureFeeConfig: (feeRecipient: text, collectorAddress: text) ->
+   (variant {
+      err: text;
+      ok;
+    });
   claimOgBadge: () -> (variant {
                          err: text;
                          ok;
@@ -304,11 +309,11 @@ service : {
                            err: text;
                            ok;
                          });
-  createMiner: (name: text, gritAmount: nat, rate: nat) ->
-   (variant {
-      err: text;
-      ok: MinerId;
-    });
+  createMiner: (name: text, gritAmount: nat, rate: nat, feeChain: opt text,
+   feeTxHash: opt text) -> (variant {
+                              err: text;
+                              ok: MinerId;
+                            });
   createTribe: (name: text, description: text, photoUrl: opt text,
    coverImageUrl: opt text) -> (variant {
                                   err: TribeError;
@@ -318,6 +323,7 @@ service : {
                                  err: text;
                                  ok: nat;
                                });
+  disarmFeePaidCheck: () -> ();
   editMiner: (minerId: MinerId, nameChange: opt text, topUp: opt nat,
    rateChange: opt nat, pause: opt bool) -> (variant {
                                                err: text;
@@ -465,6 +471,10 @@ service : {
                        err: TribeError;
                        ok;
                      });
+  probeRpcEndpoints: () -> (vec record {
+                                  text;
+                                  text;
+                                });
   recheckClaimByHash: (txHash: text) -> (variant {
                                            err: text;
                                            ok: text;
@@ -501,7 +511,6 @@ service : {
                                       ok;
                                     });
   setFeeCollectorAddress: (address: text) -> ();
-  setFeePaidCheckEnabled: (enabled: bool) -> ();
   setFeePercent: (percent: float64) -> ();
   setFeeRecipient: (address: text) -> ();
   setGritIssuanceRate: (rate: nat) -> ();

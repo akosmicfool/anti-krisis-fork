@@ -64,7 +64,9 @@ import {
   useAddAdmin,
   useAddToken,
   useAllowlistAuditLog,
+  useApplySecureFeeConfig,
   useCreditAbandonedMints,
+  useDisarmFeePaidCheck,
   useGetAdmins,
   useGetAkkLedgerCanisterId,
   useGetAkkTransferFee,
@@ -84,7 +86,6 @@ import {
   useSetAkkLedgerCanisterId,
   useSetAkkTransferFee,
   useSetFeeCollectorAddress,
-  useSetFeePaidCheckEnabled,
   useSetFeePercent,
   useSetFeeRecipient,
   useSetGritIssuanceRate,
@@ -1321,8 +1322,8 @@ function AuditLogTab() {
 function FeeCollectorSection() {
   const { data: collectorAddress, isLoading } = useGetFeeCollectorAddress();
   const { data: checkEnabled } = useGetFeePaidCheckEnabled();
-  const setCollector = useSetFeeCollectorAddress();
-  const setCheck = useSetFeePaidCheckEnabled();
+  const applySecure = useApplySecureFeeConfig();
+  const disarm = useDisarmFeePaidCheck();
   const [input, setInput] = useState("");
   const [touched, setTouched] = useState(false);
 
@@ -1336,23 +1337,33 @@ function FeeCollectorSection() {
     setTouched(true);
     if (!EVM_ADDRESS_REGEX.test(input)) return;
     try {
-      await setCollector.mutateAsync(input.trim());
-      toast.success("FeeCollector contract address saved");
-    } catch {
-      toast.error("Failed to save FeeCollector address");
+      // W1B: one atomic, validated operation — sets the collector, sets the
+      // fee recipient to the SAME address, and arms the FeePaid check
+      // together. The backend rejects a mismatched or malformed pair without
+      // touching state, so the old "armed but recipient still an EOA" trap
+      // (which failed every claim) can no longer be created.
+      await applySecure.mutateAsync({
+        feeRecipient: input.trim(),
+        collectorAddress: input.trim(),
+      });
+      toast.success(
+        "FeeCollector saved, fee recipient aligned, and FeePaid check ARMED",
+      );
+    } catch (err) {
+      toast.error(
+        err instanceof Error
+          ? err.message
+          : "Failed to apply secure fee configuration",
+      );
     }
   }
 
-  async function handleToggleCheck(enabled: boolean) {
+  async function handleDisarmCheck() {
     try {
-      await setCheck.mutateAsync(enabled);
-      toast.success(
-        enabled
-          ? "FeePaid check ARMED — fees must now carry a FeePaid event from the collector"
-          : "FeePaid check disarmed",
-      );
+      await disarm.mutateAsync();
+      toast.success("FeePaid check disarmed (recipient/collector kept)");
     } catch {
-      toast.error("Failed to toggle FeePaid check");
+      toast.error("Failed to disarm FeePaid check");
     }
   }
 
@@ -1414,17 +1425,17 @@ function FeeCollectorSection() {
               <Button
                 type="submit"
                 size="sm"
-                disabled={setCollector.isPending}
+                disabled={applySecure.isPending}
                 className="bg-accent text-accent-foreground hover:bg-accent/80 gap-1.5 text-xs transition-smooth"
                 data-ocid="fee_collector.save_button"
               >
                 <ShieldCheck className="h-3.5 w-3.5" />
-                {setCollector.isPending ? "Saving…" : "Save Collector"}
+                {applySecure.isPending ? "Applying…" : "Save & Arm Collector"}
               </Button>
-              {setCollector.isSuccess && (
+              {applySecure.isSuccess && (
                 <span className="flex items-center gap-1 text-xs font-mono text-emerald-400">
                   <CheckCircle2 className="h-3.5 w-3.5" />
-                  Saved
+                  Applied
                 </span>
               )}
             </div>
@@ -1445,29 +1456,31 @@ function FeeCollectorSection() {
                   )}
                 </div>
                 <p className="text-xs text-muted-foreground mt-1">
-                  When armed, every fee claim additionally requires a FeePaid
-                  event from this collector in the fee receipt. Arm only after
-                  the collector is deployed on ALL allowlisted chains and the
-                  fee recipient above matches this address — arming early stalls
-                  every claim.
+                  Saving the collector atomically aligns the fee recipient to
+                  the same address and arms the FeePaid check in one validated
+                  operation. When armed, every fee claim additionally requires a
+                  FeePaid event from this collector in the fee receipt.
+                  Disarming is emergency-only; recipient and collector are kept.
                 </p>
               </div>
-              <Button
-                type="button"
-                size="sm"
-                variant={checkEnabled ? "destructive" : "default"}
-                disabled={setCheck.isPending}
-                onClick={() => void handleToggleCheck(!checkEnabled)}
-                className="gap-1.5 text-xs transition-smooth shrink-0"
-                data-ocid="fee_collector.toggle_button"
-              >
-                {setCheck.isPending ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <ShieldAlert className="h-3.5 w-3.5" />
-                )}
-                {checkEnabled ? "Disarm" : "Arm"}
-              </Button>
+              {checkEnabled && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="destructive"
+                  disabled={disarm.isPending}
+                  onClick={() => void handleDisarmCheck()}
+                  className="gap-1.5 text-xs transition-smooth shrink-0"
+                  data-ocid="fee_collector.disarm_button"
+                >
+                  {disarm.isPending ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <ShieldAlert className="h-3.5 w-3.5" />
+                  )}
+                  Disarm
+                </Button>
+              )}
             </div>
           </div>
         </>

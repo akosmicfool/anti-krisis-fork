@@ -16,6 +16,9 @@ import Text "mo:core/Text";
 import Map "mo:core/Map";
 import TribeLib "../lib/tribe";
 import Error "mo:core/Error";
+import FeeAmount "../lib/fee-amount";
+import ClaimIdentity "../lib/claim-identity";
+import Nat "mo:core/Nat";
 
 mixin (
   gritState : GritLib.State,
@@ -83,7 +86,14 @@ mixin (
         // THIS RPC failed — skip to the next fallback URL instead of treating
         // it as a terminal PENDING. A legitimately-mined receipt never carries
         // an "error" key; result:null is the only not-yet-mined signal.
-        if (not candidate.contains(#text "\"error\"")) {
+        // 2026-09-11 guard: a blocked/rate-limited endpoint returns non-JSON
+        // junk (HTTP 403 HTML, literal "Too Many Requests" 429 text) that
+        // carries NEITHER marker — accepting it as a "valid response" produced
+        // garbage classification downstream. Require a JSON-RPC shape marker,
+        // same rule fetchTxByHash has used since the 2026-08-28 llamarpc
+        // outage.
+        if (not candidate.contains(#text "\"error\"")
+            and (candidate.contains(#text "\"jsonrpc\"") or candidate.contains(#text "\"result\""))) {
           response := candidate;
           gotValidResponse := true;
         };
@@ -132,8 +142,44 @@ mixin (
     };
   };
 
-  /// AKK-4 + AKK-8: verify the platform-fee tx exists, succeeded, AND binds the
-  /// burn to the claimant. Binding rules (all from public chain data):
+  // ── AKK-10: native-token (fee currency) price lookup ──────────────────────
+  // The platform fee is paid in the chain's NATIVE token (ETH on ethereum/
+  // base/optimism, CELO on celo), while the claim's USD value is priced by
+  // the token oracle. To verify the paid fee covers feePercent × usdValue we
+  // need the native token's USD price. DexScreener exposes canonical
+  // wrapped-native ERC-20s (WETH / CELO) — same oracle, same parser, no new
+  // trust. Keyed by chain; a chain without a verified wrapped-native address
+  // yields null → the amount check is SKIPPED for that chain (logged, never
+  // fails a claim) rather than guessing an address.
+  func nativeWrappedAddress(chain : Text) : ?Text {
+    switch (chain.toLower()) {
+      case ("ethereum") ?"0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"; // WETH
+      case ("base") ?"0x4200000000000000000000000000000000000006"; // WETH
+      case ("optimism") ?"0x4200000000000000000000000000000000000006"; // WETH
+      // CELO ERC-20 (native CELO as ERC-20) — user-verified 2026-09-03
+      case ("celo") ?"0x471EcE3750Da237f93B8E339c536989b8978a438";
+      case _ null;
+    };
+  };
+
+  func fetchNativePrice(chain : Text) : async ?Float {
+    let wrapped = switch (nativeWrappedAddress(chain)) {
+      case null { return null };
+      case (?w) w;
+    };
+    let result = try {
+      await PriceOracle.fetchTokenPrice(wrapped, chain, priceCache, transformPriceResponse);
+    } catch (_) { #err("network error") };
+    switch (result) {
+      case (#ok(p)) ?p;
+      case (#err(_)) null;
+    };
+  };
+
+  /// AKK-10 + AKK-8: verify the platform-fee tx exists, succeeded, AND binds the
+  /// burn to the claimant — and (Option B armed) that the FeePaid event's `value`
+  /// actually covers feePercent × the claim's oracle-priced USD value.
+  /// Binding rules (all from public chain data):
   ///   - fee tx status == success                      (receipt check)
   ///   - fee tx recipient == configured fee wallet     (anti fee-wallet spoofing)
   ///   - fee tx sender == burn tx sender               (same wallet did both)
@@ -144,7 +190,29 @@ mixin (
   ///     `FeePaid` event emitted BY the FeeCollector contract with the fee
   ///     sender as payer — defeats address-squatting on chains where the
   ///     collector is not yet deployed.
-  func verifyFeeBinding(feeTxHash : Text, burnTxHash : Text, chain : Text, claimant : Principal) : async { #ok; #err : Text } {
+  ///   - AKK-10: paid value ≥ ceil(feePercent × usdValue) × (1 − 7% tolerance).
+  ///     The tolerance mirrors the frontend-price deviation gate: the fee is
+  ///     sized on the frontend price, we check against the oracle price, so an
+  ///     honest fee may sit below the oracle-computed ideal by up to that band.
+  ///     The amount check runs ONLY when the FeePaid check is armed AND a
+  ///     native price is available (celo currently skips — no verified ERC-20
+  ///     CELO address); undecodable/missing event data stays PENDING (transient,
+  ///     never fraud) per the recovery model. Zero usdValue (oracle returned no
+  ///     price) or feePercent = 0 auto-pass — the amount check never blocks a
+  ///     claim the rest of the pipeline would credit.
+  func verifyFeeBinding(
+    feeTxHash : Text,
+    burnTxHash : Text,
+    chain : Text,
+    claimant : Principal,
+    usdValue : ?Float,
+    // W1B Bug-2 fix: the on-chain burn owner from the burn receipt's
+    // Transfer log (captured at claim verification). When present, the fee
+    // sender may match EITHER the burn tx.from (direct sends) OR this
+    // owner (relayed kVCM burns, where burnTx.from = the embedded-wallet
+    // relayer). Null keeps the strict tx.from rule — never a silent bypass.
+    burnOwner : ?Text,
+  ) : async { #ok; #err : Text } {
     // 1. status check + receipt fetch (single outcall — the receipt is reused
     //    for the FeePaid event check when the collector gate is armed)
     let statusResult = await verifyFeeTxWithReceipt(feeTxHash, chain);
@@ -152,14 +220,71 @@ mixin (
       case (#err(e)) { return #err(e) };
       case (#ok(r)) { r };
     };
-    // 2-4. fetch both txs and run the binding comparison
-    let feeTxResult = await VerifyLib.fetchTxByHash(feeTxHash, chain, transformResponse);
+    // 1b. W1B Bug-2: resolve the burn owner LAZILY — only fetched if the
+    //     strict sender check (feeTx.from == burnTx.from) is about to fail.
+    //     The caller may supply the owner (from the claim-verification
+    //     receipt, threaded through from initiateClaim/recheckClaim);
+    //     otherwise it's resolved below after both txs are fetched, so
+    //     direct-burn cycles cost zero extra outcalls. Failure leaves null
+    //     so the strict tx.from rule applies (fail closed).
+    var burnOwnerResolved : ?Text = switch (burnOwner) {
+      case (?o) { if (o.size() > 0) { ?o } else { null } };
+      case null { null };
+    };
+    // 5+6 first: Option B FeePaid event check + AKK-10 value decode — ONE
+    //      receipt scan, done BEFORE the binding check (and before the tx
+    //      fetch — a relayed fee's event is the only evidence of collector
+    //      receipt, since tx.to names the forwarder). Payer-vs-tx.from and
+    //      sender-vs-burn-sender are enforced after the tx fetch below.
+    //      Armed only when the admin enabled the check AND configured the
+    //      collector address. PENDING is the correct retriable outcome when
+    //      the event is missing (a successful fee tx to the collector ALWAYS
+    //      carries it — a missing event means a stale/partial RPC receipt).
+    //      #unparseable (log present, data unreadable) is also PENDING —
+    //      transient, never fraud, per the recovery model.
+    var paidValueWei : ?Nat = null;
+    var eventBindingHex : ?Text = null;
+    if (fee.requireFeePaidEvent) {
+      let collector = fee.collectorAddress;
+      if (collector.size() == 0) {
+        return #err("BINDING_FAIL: FeePaid check armed but collector address not configured");
+      };
+      switch (VerifyLib.feePaidLogValue(feeReceipt, collector, "")) {
+        case (#found(r)) {
+          paidValueWei := ?r.valueWei;
+          eventBindingHex := r.bindingHex;
+        };
+        case (#unparseable) { return #err("PENDING") };
+        case (#missing) { return #err("PENDING") };
+      };
+    };
+    // 2-4. fetch both txs, validate payer identity, and run the binding
+    //      comparison (relay-tolerant when the collector event is in hand:
+    //      the event attests receipt + carries the binding bytes; a relayed
+    //      payment's tx-level `to`/`input` name the forwarder, not the
+    //      collector).
+    // W1B LATENCY: the two tx fetches (fee + burn) run CONCURRENTLY —
+    // Motoko starts both async calls before awaiting either, so the wall
+    // clock is one outcall (~1–3 s) instead of two (~2–6 s). Same for the
+    // FeePaid-event receipt scan, which was already done above (its result
+    // is reused — no extra call).
+    let feeTxPromise = VerifyLib.fetchTxByHash(feeTxHash, chain, transformResponse);
+    let burnTxPromise = VerifyLib.fetchTxByHash(burnTxHash, chain, transformResponse);
+    let feeTxResult = await feeTxPromise;
     let feeTx = switch (feeTxResult) {
       case (#err("PENDING")) { return #err("PENDING") };
       case (#err(e)) { return #err(e) };
       case (#ok(tx)) { tx };
     };
-    let burnTxResult = await VerifyLib.fetchTxByHash(burnTxHash, chain, transformResponse);
+    // The matched event's payer must be the fee tx's actual sender (the scan
+    // above accepts any payer; this binds the event to THIS tx's sender).
+    if (fee.requireFeePaidEvent) {
+      switch (VerifyLib.feePaidPayerMatches(feeReceipt, fee.collectorAddress, feeTx.from)) {
+        case true {};
+        case false { return #err("PENDING") }; // stale/mismatched receipt — retriable
+      };
+    };
+    let burnTxResult = await burnTxPromise;
     let burnTx = switch (burnTxResult) {
       case (#err("PENDING")) { return #err("PENDING") };
       case (#err(e)) { return #err("BINDING_FAIL: cannot fetch burn tx: " # e) };
@@ -169,28 +294,80 @@ mixin (
       case null { return #err("BINDING_FAIL: fee recipient not configured") };
       case (?r) { r };
     };
-    let bindingResult = VerifyLib.verifyFeeBinding(feeTx, burnTx, expectedRecipient, claimant.toText(), burnTxHash);
+    // 1b. W1B Bug-2 (lazy): the strict sender check is about to run — if
+    //     feeTx.from != burnTx.from and no owner was supplied, fetch the
+    //     burn RECEIPT now and parse the Transfer log's sender (the real
+    //     burn owner for relayed burns). Direct burns never pay this
+    //     outcall; mismatched senders without a provable owner fail closed.
+    if (burnOwnerResolved == null and feeTx.from != burnTx.from) {
+      let burnRcpt = await verifyFeeTxWithReceipt(burnTxHash, chain);
+      burnOwnerResolved := switch (burnRcpt) {
+        case (#err(_)) { null };
+        case (#ok(json)) { VerifyLib.parseBurnOwnerFromReceipt(json) };
+      };
+    };
+    let bindingResult = VerifyLib.verifyFeeBinding(
+      feeTx,
+      burnTx,
+      expectedRecipient,
+      claimant.toText(),
+      burnTxHash,
+      eventBindingHex,
+      burnOwnerResolved,
+    );
     switch (bindingResult) {
       case (#err(e)) { return #err(e) };
       case (#ok) {};
     };
-    // 5. Option B: FeePaid event from the FeeCollector contract.
-    //    Armed only when the admin enabled the check AND configured the
-    //    collector address — both set from the admin panel AFTER the collector
-    //    is deployed and feeRecipient points at it. PENDING is the correct
-    //    retriable outcome when the event is missing: on a collector-deployed
-    //    chain a successful fee tx to the collector ALWAYS carries it, so a
-    //    missing event means an RPC served a stale/partial receipt (or the
-    //    tx went to a squatter address, which binding check 2 would have
-    //    caught) — either way, retry or fail, never credit.
-    if (fee.requireFeePaidEvent) {
-      let collector = fee.collectorAddress;
-      if (collector.size() == 0) {
-        return #err("BINDING_FAIL: FeePaid check armed but collector address not configured");
+    // AKK-10: the paid amount must cover feePercent × usdValue (oracle-priced).
+    // Runs only when the event check is armed (paidValueWei is authoritative
+    // there), the native price is available, and both fee% and usdValue are
+    // known-nonzero — a failed native lookup or an unknown value SKIPS the
+    // check (logged) rather than blocking a claim the rest of the pipeline
+    // would credit. Tolerance mirrors the frontend-price deviation gate.
+    // AKK-10 + W4 review fix (F1): the paid amount must cover feePercent ×
+    // usdValue (oracle-priced). The decision lives in FeeAmount.amountCheckFloor
+    // → a floor is returned whenever a fee is actually due, and the caller
+    // compares `paid < floor` UNCONDITIONALLY — including paid == 0.
+    //
+    // The bug this closes: the guard used to read
+    //   if (requireFeePaidEvent and paid > 0 and usd > 0.0)
+    // so a ZERO-value call to the collector (whose fallback() emits
+    // FeePaid(..., msg.value) with no minimum, and whose event value decodes
+    // to ?0) skipped the check entirely and still credited full GRIT — the
+    // whole platform fee was evadable at gas cost. 1 wei was rejected, 0 was
+    // free. Now every positive floor rejects 0.
+    //
+    // Remaining fail-open cases (deliberate, documented): an unknown claim
+    // value (usd ≤ 0) and an unavailable native price — both SKIP rather than
+    // block a claim the rest of the pipeline would credit.
+    switch (paidValueWei, usdValue) {
+      case (?paid, ?usd) {
+        if (fee.requireFeePaidEvent and usd > 0.0) {
+          let nativePrice = await fetchNativePrice(chain);
+          switch (nativePrice) {
+            case null {
+              Debug.print("[grit-api] AKK-10 amount check skipped (no native price for " # chain # ")");
+            };
+            case (?np) {
+              let feeBps = FeeAmount.feeBpsFromPercent(admin.feePercent);
+              switch (FeeAmount.amountCheckFloor(usd, feeBps, np, FeeAmount.DEFAULT_TOLERANCE_BPS)) {
+                case null {
+                  // No fee is due (feeBps = 0) or the price is unusable — nothing to enforce.
+                };
+                case (?minWei) {
+                  if (paid < minWei) {
+                    let paidNative = Float.fromInt(paid) / 1e18;
+                    let minNative = Float.fromInt(minWei) / 1e18;
+                    return #err("BINDING_FAIL: fee underpaid — paid " # paidNative.toText() # " native, required ≥ " # minNative.toText());
+                  };
+                };
+              };
+            };
+          };
+        };
       };
-      if (not VerifyLib.feePaidLogPresent(feeReceipt, collector, feeTx.from)) {
-        return #err("PENDING");
-      };
+      case _ {};
     };
     #ok
   };
@@ -208,6 +385,20 @@ mixin (
     tokenAddress  : Text,
     frontendPrice : Float
   ) : async { #ok; #err : Text } {
+    // W1A: canonical transaction identity — every spelling of the same
+    // on-chain tx (0x/no prefix, any casing) resolves to ONE claim. Strict
+    // validation happens HERE, before any duplicate check or outcall.
+    let canTxHash = switch (ClaimIdentity.canonicalTxHash(txHash)) {
+      case (#ok(c)) { c };
+      case (#err(e)) { return #err("INVALID_TX_HASH: " # e) };
+    };
+    let canFeeHash = switch (ClaimIdentity.canonicalOptionalFeeHash(feeTxHash)) {
+      case (#ok(c)) { c };
+      case (#err(e)) { return #err("INVALID_FEE_TX_HASH: " # e) };
+    };
+    // Canonical values replace the raw inputs for the rest of the flow.
+    let txHashCanon = canTxHash;
+    let feeTxHashCanon = canFeeHash;
     // Normalise token address to lowercase for all comparisons
     let normToken = tokenAddress.toLower();
 
@@ -243,11 +434,22 @@ mixin (
     // failure). The original claimant may resurrect it with a fresh fee tx;
     // any other duplicate stays rejected (AKK-2 protection intact).
     var resurrected = false;
-    if (GritLib.isDuplicateClaim(gritState, txHash)) {
-      if (not GritLib.resurrectFailedClaim(gritState, txHash, caller, feeTxHash, Time.now())) {
+    // W4/F4: set when the caller adopted an existing squatted claim (no store needed)
+    var adopted = false;
+    if (GritLib.isDuplicateClaim(gritState, txHashCanon)) {
+      // W4/F4: BEFORE considering this a duplicate, let a different caller adopt
+      // an uncredited claim — this is the relief for claim squatting (see
+      // GritLib.adoptUncreditedClaim). It cannot hand anyone GRIT: the adopter
+      // still has to pass the same fee-binding proof, which only the burn's own
+      // wallet can produce. Without this, a squatter who submitted the burn hash
+      // first locked the genuine burner out forever.
+      if (GritLib.adoptUncreditedClaim(gritState, txHashCanon, caller)) {
+        adopted := true;
+      } else if (not GritLib.resurrectFailedClaim(gritState, txHashCanon, caller, feeTxHashCanon, Time.now())) {
         return #err("already claimed");
+      } else {
+        resurrected := true;
       };
-      resurrected := true;
     };
 
     // Verify the token is on the allowlist
@@ -267,10 +469,10 @@ mixin (
     // resurrected in place above: appending would duplicate the txHash (the
     // background recheck would verify it twice and burn stats would
     // double-count it). The resurrected record is already #pending.
-    if (not resurrected) {
+    if (not resurrected and not adopted) {
       let pendingRecord : GritTypes.ClaimRecord = {
-        txHash;
-        feeTxHash     = ?feeTxHash;
+        txHash = txHashCanon;
+        feeTxHash     = ?feeTxHashCanon;
         tokenAddress  = normToken;
         chain;
         tokenSymbol   = tokenInfo.symbol;
@@ -289,11 +491,11 @@ mixin (
     let rpcUrlOpt = VerifyLib.rpcUrlForChain(chain);
     switch (rpcUrlOpt) {
       case null {
-        GritLib.updateClaimStatus(gritState, txHash, #failed, 0, null);
+        GritLib.updateClaimStatus(gritState, txHashCanon, #failed, 0, null, null, null, null);
         return #err("Unsupported chain: " # chain);
       };
       case (?rpcUrlsRaw) {
-        let body = VerifyLib.buildRpcRequestBody(txHash);
+        let body = VerifyLib.buildRpcRequestBody(txHashCanon);
 
         // Split pipe-delimited fallback URLs (e.g. Ethereum has 3 fallbacks)
         let rpcUrlList : [Text] = rpcUrlsRaw.split(#char '|').toArray();
@@ -334,7 +536,7 @@ mixin (
               urlIdx += 1;
               attempt += 1;
             } else {
-              GritLib.updateClaimStatus(gritState, txHash, #failed, 0, null);
+              GritLib.updateClaimStatus(gritState, txHashCanon, #failed, 0, null, null, null, null);
               return #err("HTTP outcall failed");
             };
           } else {
@@ -377,7 +579,7 @@ mixin (
           };
           case (#err("TX_FAILED")) {
             // Explicit on-chain revert — this is a definitive failure.
-            GritLib.updateClaimStatus(gritState, txHash, #failed, 0, null);
+            GritLib.updateClaimStatus(gritState, txHashCanon, #failed, 0, null, null, null, null);
             #err("Verification failed: transaction was reverted on-chain");
           };
           case (#err(_reason)) {
@@ -385,7 +587,7 @@ mixin (
             // Leave the claim as #pending — the background 60-second timer will retry.
             #ok;
           };
-          case (#ok({ amountBurned = rawAmountBurned })) {
+          case (#ok({ amountBurned = rawAmountBurned; burnOwner })) {
             let token = switch (AllowlistLib.findToken(allowlistState, normToken, chain)) {
               case null { Runtime.trap("Token disappeared from allowlist during claim") };
               case (?t) { t };
@@ -446,21 +648,51 @@ mixin (
 
             // Update amountBurned and usdValue in the stored record first
             let usdValueAtVerification : Float = humanAmount * effectivePrice;
-            gritState.claims.mapInPlace(func(r : GritTypes.ClaimRecord) : GritTypes.ClaimRecord {
-              if (r.txHash == txHash) { { r with amountBurned = humanAmount; usdValue = usdValueAtVerification } } else { r }
-            });
+            // W1A: metadata now commits atomically inside updateClaimStatus
+            // (no separate mapInPlace — a standalone write could interleave
+            // with a concurrent completion and rewrite a verified receipt).
+
+            // W1B UX fix (claim-first flow): an EMPTY fee hash means the
+            // user has not paid the fee yet (deferred-fee path). This is NOT
+            // a failure and MUST NOT touch the fee state: verify the burn
+            // only and leave the claim #pending with no fee hash. The user
+            // completes it via Pay Fee (retryFeeClaim handles a #pending
+            // claim with no fee hash); the background timer skips the fee
+            // half for fee-less claims. Previously this path ran an RPC for
+            // the empty hash, transitioned the claim to #pendingFee storing
+            // ?"" — a broken state that made the frontend skip the wallet
+            // popup and sit forever at "confirm fee" (draft v326 report).
+            if (feeTxHashCanon.size() == 0) {
+              GritLib.updateClaimStatus(
+                gritState,
+                txHashCanon,
+                #pending,
+                0,
+                null,
+                ?humanAmount,
+                ?usdValueAtVerification,
+                null,
+              );
+              // Deferred-fee submission SUCCEEDED: claim created, burn
+              // verified, fee to follow. Return #ok (NOT #err(FEE_PENDING) —
+              // that contract means "a fee tx was sent and is confirming",
+              // which made the frontend enter its fee-watching poll loop
+              // instead of showing the wallet popup — the user's "jumps to
+              // confirm fee without approval" symptom on draft v327).
+              return #ok;
+            };
 
             // Now verify the fee transaction AND its binding before crediting GRIT
-            let feeResult = await verifyFeeBinding(feeTxHash, txHash, chain, caller);
+            let feeResult = await verifyFeeBinding(feeTxHashCanon, txHashCanon, chain, caller, ?usdValueAtVerification, burnOwner);
             switch (feeResult) {
               case (#err("TX_FAILED")) {
                 // Fee tx reverted on-chain — ask user to retry fee payment
-                GritLib.updateClaimToPendingFee(gritState, txHash, feeTxHash);
+                GritLib.updateClaimToPendingFee(gritState, txHashCanon, feeTxHashCanon);
                 return #err("FEE_PENDING");
               };
               case (#err("PENDING")) {
                 // Fee not yet confirmed — transition to #pendingFee so user can retry
-                GritLib.updateClaimToPendingFee(gritState, txHash, feeTxHash);
+                GritLib.updateClaimToPendingFee(gritState, txHashCanon, feeTxHashCanon);
                 return #err("FEE_PENDING");
               };
               case (#err(bindingMsg)) {
@@ -480,13 +712,13 @@ mixin (
                   Debug.print("[grit-api] initiateClaim transient binding error (kept pending): " # bindingMsg);
                   return #ok;
                 };
-                GritLib.updateClaimStatus(gritState, txHash, #failed, 0, null);
+                GritLib.updateClaimStatus(gritState, txHashCanon, #failed, 0, null, null, null, null);
                 return #err(bindingMsg);
               };
               case (#ok) {
                 // Fee confirmed — credit GRIT and mark verified
                 let gritAmount = GritLib.calcGrit(rawAmountBurned, token.decimals, effectivePrice, admin.gritIssuanceRate);
-                GritLib.updateClaimStatus(gritState, txHash, #verified, gritAmount, null);
+                GritLib.updateClaimStatus(gritState, txHashCanon, #verified, gritAmount, null, ?humanAmount, ?usdValueAtVerification, null);
                 #ok;
               };
             };
@@ -541,7 +773,7 @@ mixin (
         // recheck going as long as the claim exists.
       };
       case (#err("TX_FAILED")) {
-        GritLib.updateClaimStatus(gritState, record.txHash, #failed, 0, null);
+        GritLib.updateClaimStatus(gritState, record.txHash, #failed, 0, null, null, null, null);
       };
       case (#err(_)) {
         // Any other error (malformed response, unrecognised status, etc.) is
@@ -550,7 +782,7 @@ mixin (
         // claim stays #pending (background rechecks continue) and the user
         // can always force a fresh verification via Retry Claim.
       };
-      case (#ok({ amountBurned = rawAmountBurned })) {
+      case (#ok({ amountBurned = rawAmountBurned; burnOwner })) {
         let tokenOpt = AllowlistLib.findToken(allowlistState, record.tokenAddress, record.chain);
         let token = switch (tokenOpt) { case null { return }; case (?t) { t } };
 
@@ -574,23 +806,51 @@ mixin (
         };
         let gritAmount = GritLib.calcGrit(rawAmountBurned, token.decimals, effectivePrice, admin.gritIssuanceRate);
 
-        // set amountBurned and usdValue on the record FIRST, then verify fee and mark #verified
+        // W1A: amountBurned + usdValue commit atomically in the final
+        // updateClaimStatus below (was a separate mapInPlace here).
         let usdValueRecheckBurn : Float = humanAmount * effectivePrice;
-        gritState.claims.mapInPlace(func(r : GritTypes.ClaimRecord) : GritTypes.ClaimRecord {
-          if (r.txHash == record.txHash) { { r with amountBurned = humanAmount; usdValue = usdValueRecheckBurn } } else { r }
-        });
 
         // AKK-4: verify fee tx binding before crediting GRIT. The legacy
         // empty-hash bypass (credit without any fee tx) is removed — fail closed.
+        // W1B UX fix (claim-first): an empty/null fee hash means the fee has
+        // NOT been paid yet (deferred-fee claim) — that is a WAITING state,
+        // not a failure. Leave the claim #pending so the user can Pay Fee
+        // from Burn History; do NOT age it out to #failed. (The old code
+        // failed these claims, killing any claim whose fee wasn't paid
+        // within the first timer tick.)
         let feeTxHash = switch (record.feeTxHash) {
           case null { "" };
           case (?h) { h };
         };
         if (feeTxHash == "") {
-          // No fee tx hash — cannot be bound to any wallet. Definitive failure.
-          GritLib.updateClaimStatus(gritState, record.txHash, #failed, 0, null);
+          // Waiting for the fee — keep #pending, nothing to verify yet.
+          // BUG FIX (2026-09-11, live incident): this early return previously
+          // DISCARDED the freshly-verified burn data — amountBurned stayed 0
+          // forever on every claim whose burn settled via the timer while
+          // fee-less. When the user then paid the fee, retryFeeClaim computed
+          // GRIT from amountBurned × divisor = 0 and credited ZERO GRIT (the
+          // "definitely not 0 but shows 0" report). Commit the verified
+          // amount atomically NOW, exactly like initiateClaim's inline path:
+          // the burn IS verified, its data must survive until the fee arrives.
+          GritLib.updateClaimStatus(
+            gritState,
+            record.txHash,
+            #pending,
+            0,
+            null,
+            ?humanAmount,
+            ?usdValueRecheckBurn,
+            null,
+          );
+          return;
         } else {
-          let feeResult = await verifyFeeBinding(feeTxHash, record.txHash, record.chain, record.claimant);
+          // AKK-10 amount check uses the STORED claim-time usdValue (the value
+          // the fee was actually sized against) — NOT usdValueRecheckBurn.
+          // This path auto-reprices the claim to the CURRENT oracle price for
+          // the GRIT credit, but the fee was paid at claim-time prices; using
+          // the repriced value would fail honest claims after a >7% price rise
+          // during the pending window (same class as the AKK-4b drift bug).
+          let feeResult = await verifyFeeBinding(feeTxHash, record.txHash, record.chain, record.claimant, ?record.usdValue, burnOwner);
           switch (feeResult) {
             case (#err("TX_FAILED")) {
               // Fee tx definitively failed — ask user to retry
@@ -614,13 +874,13 @@ mixin (
               if (isTransient) {
                 Debug.print("[grit-api] recheckClaim transient binding error (kept pending): " # bindingMsg);
               } else {
-                GritLib.updateClaimStatus(gritState, record.txHash, #failed, 0, null);
+                GritLib.updateClaimStatus(gritState, record.txHash, #failed, 0, null, null, null, null);
                 Debug.print("[grit-api] recheckClaim binding fail: " # bindingMsg);
               };
             };
             case (#ok) {
               // Both burn and fee confirmed AND bound — credit GRIT
-              GritLib.updateClaimStatus(gritState, record.txHash, #verified, gritAmount, null);
+              GritLib.updateClaimStatus(gritState, record.txHash, #verified, gritAmount, null, ?humanAmount, ?usdValueRecheckBurn, null);
             };
           };
         };
@@ -634,16 +894,99 @@ mixin (
   /// Internal: re-check a single #pendingFee claim. Verifies the stored feeTxHash on-chain.
   /// If confirmed, credits GRIT. If definitively failed, transitions back to #pendingFee (no change).
   /// If still pending, leaves claim unchanged for the next timer cycle.
+  /// Verify a claim's burn tx on-chain and return the human-readable amount.
+  /// Shared by recheckClaim and recheckFeeClaim's amt==0 recovery (2026-09-11):
+  /// same receipt fetch + verifyBurn + decimals scaling, without the fee side.
+  func recheckBurnAmount(record : GritTypes.ClaimRecord) : async { #ok : Float; #err : Text } {
+    let rpcUrlOpt = VerifyLib.rpcUrlForChain(record.chain);
+    let rpcUrlsRaw = switch (rpcUrlOpt) { case null { return #err("PENDING") }; case (?u) { u } };
+    let rpcUrlList : [Text] = rpcUrlsRaw.split(#char '|').toArray();
+    let body = VerifyLib.buildRpcRequestBody(record.txHash);
+    var response : Text = "";
+    var gotResponse = false;
+    var i = 0;
+    while (i < rpcUrlList.size() and not gotResponse) {
+      var innerAttempt = 0;
+      while (innerAttempt < 2 and not gotResponse) {
+        try {
+          response := await OutCall.httpPostRequest(
+            rpcUrlList[i],
+            [{ name = "Content-Type"; value = "application/json" }],
+            body,
+            transformResponse,
+          );
+          gotResponse := true;
+        } catch (_) {
+          innerAttempt += 1;
+          if (innerAttempt >= 2) { i += 1 };
+        };
+      };
+    };
+    if (not gotResponse) { return #err("PENDING") };
+    switch (verifyBurn(response, record.tokenAddress, record.chain)) {
+      case (#err("TX_FAILED")) { #err("TX_FAILED") };
+      case (#err(_)) { #err("PENDING") };
+      case (#ok({ amountBurned = rawAmountBurned; burnOwner = _ })) {
+        let tokenOpt = AllowlistLib.findToken(allowlistState, record.tokenAddress, record.chain);
+        let token = switch (tokenOpt) { case null { return #err("PENDING") }; case (?t) { t } };
+        var divisor : Nat = 1;
+        var dd = token.decimals;
+        while (dd > 0) { divisor *= 10; dd -= 1 };
+        #ok(rawAmountBurned.toFloat() / divisor.toFloat());
+      };
+    };
+  };
+
   func recheckFeeClaim(record : GritTypes.ClaimRecord) : async () {
     let feeTxHash = switch (record.feeTxHash) {
       case null { return }; // no fee tx hash stored — nothing to check
       case (?h) { h };
     };
+    // W1B UX fix (claim-first): an empty stored hash is the deferred-fee
+    // sentinel (claim is #pendingFee with no fee yet) — same as null, never
+    // run an RPC for it.
+    if (feeTxHash.size() == 0) { return };
 
-    let feeResult = await verifyFeeBinding(feeTxHash, record.txHash, record.chain, record.claimant);
+    // BUG FIX (2026-09-11, second pass): a #pendingFee claim with
+    // amountBurned == 0 means the burn NEVER verified (fee paid via Pay Fee
+    // before the burn settled — the RPC outage let users reach the fee step
+    // first). The FIRST version of this fix computed feeResult from the
+    // stale zero usdValue and then credited from record.amountBurned == 0 —
+    // converting "stuck at pendingFee" into "#verified with 0 GRIT", which
+    // is worse (verified claims are final). Correct order: re-verify the
+    // burn FIRST, commit the recovered amount, and run BOTH the fee check
+    // (AKK-10 now sees a real usd instead of being skipped by usd==0) and
+    // the credit from the RECOVERED record.
+    var rec = record;
+    if (record.amountBurned <= 0.0) {
+      switch (await recheckBurnAmount(record)) {
+        case (#err("TX_FAILED")) {
+          GritLib.updateClaimStatus(gritState, record.txHash, #failed, 0, null, null, null, null);
+          return;
+        };
+        case (#err(_)) { return }; // PENDING / transient RPC — retry next cycle
+        case (#ok(humanAmount)) {
+          let usdNow = switch (await PriceOracle.fetchTokenPrice(record.tokenAddress, record.chain, priceCache, transformPriceResponse)) {
+            case (#ok(p)) { humanAmount * p };
+            case (#err(_)) { return }; // price needed to commit + size AKK-10 — retry next cycle
+          };
+          GritLib.updateClaimStatus(gritState, record.txHash, #pendingFee, 0, null, ?humanAmount, ?usdNow, null);
+          rec := { record with amountBurned = humanAmount; usdValue = usdNow };
+        };
+      };
+    };
+    let feeResult = await verifyFeeBinding(feeTxHash, record.txHash, record.chain, record.claimant, ?rec.usdValue, null);
     switch (feeResult) {
       case (#err("PENDING")) { return }; // pending — try again next cycle
-      case (#err("TX_FAILED")) { return }; // definitively failed — user must retry fee
+      case (#err("TX_FAILED")) {
+        // Bug-3 fix (2026-09-09): the fee tx REVERTED on-chain — the user
+        // must pay a NEW fee. Clear the stored hash so the claim becomes
+        // "#pendingFee with no fee" → Burn History surfaces the single
+        // correct action (Pay Fee) instead of an endless "Confirming fee"
+        // that never resolves. The reverted hash is dropped (it can never
+        // verify); the claim itself stays alive per the no-expiry policy.
+        GritLib.updateClaimToPendingFee(gritState, record.txHash, "");
+      };
       case (#err(bindingMsg)) {
         // AKK-4 binding failure on a #pendingFee claim. IMPORTANT (root-cause
         // finding 2026-08-28): healthy claims were being failed here by
@@ -665,22 +1008,24 @@ mixin (
         if (isTransient) {
           Debug.print("[grit-api] recheckFeeClaim transient binding error (kept pendingFee): " # bindingMsg);
         } else {
-          GritLib.updateClaimStatus(gritState, record.txHash, #failed, 0, null);
+          GritLib.updateClaimStatus(gritState, record.txHash, #failed, 0, null, null, null, null);
           Debug.print("[grit-api] recheckFeeClaim binding fail: " # bindingMsg);
         };
       };
       case (#ok) {
         // Fee confirmed — fetch token info and price to credit GRIT
-        let tokenOpt = AllowlistLib.findToken(allowlistState, record.tokenAddress, record.chain);
+        // (from `rec` — the RECOVERED record when the burn re-verify ran,
+        // so a healed amt==0 claim credits the real burn, not zero).
+        let tokenOpt = AllowlistLib.findToken(allowlistState, rec.tokenAddress, rec.chain);
         let token = switch (tokenOpt) { case null { return }; case (?t) { t } };
 
         var divisor : Nat = 1;
         var dd = token.decimals;
         while (dd > 0) { divisor *= 10; dd -= 1 };
-        let rawAmountBurned : Nat = (record.amountBurned * divisor.toFloat()).toInt().toNat();
+        let rawAmountBurned : Nat = (rec.amountBurned * divisor.toFloat()).toInt().toNat();
 
         let priceResult = try {
-          await PriceOracle.fetchTokenPrice(record.tokenAddress, record.chain, priceCache, transformPriceResponse);
+          await PriceOracle.fetchTokenPrice(rec.tokenAddress, rec.chain, priceCache, transformPriceResponse);
         } catch (_) {
           #err("Price unavailable — network error. Please try again later.")
         };
@@ -692,12 +1037,9 @@ mixin (
           };
         };
         let gritAmount = GritLib.calcGrit(rawAmountBurned, token.decimals, effectivePrice, admin.gritIssuanceRate);
-        // Update usdValue at fee-confirmation time (price may have changed slightly)
-        let usdValueFeeConfirm : Float = record.amountBurned * effectivePrice;
-        gritState.claims.mapInPlace(func(r : GritTypes.ClaimRecord) : GritTypes.ClaimRecord {
-          if (r.txHash == record.txHash) { { r with usdValue = usdValueFeeConfirm } } else { r }
-        });
-        GritLib.updateClaimStatus(gritState, record.txHash, #verified, gritAmount, null);
+        // W1A: usdValue at fee-confirmation time commits atomically below
+        let usdValueFeeConfirm : Float = rec.amountBurned * effectivePrice;
+        GritLib.updateClaimStatus(gritState, rec.txHash, #verified, gritAmount, null, null, ?usdValueFeeConfirm, null);
       };
     };
   };
@@ -756,8 +1098,18 @@ mixin (
     txHash    : Text,
     feeTxHash : Text
   ) : async { #ok : Nat; #err : Text } {
-    // Look up the claim
-    let claimOpt = gritState.claims.find(func(r : GritTypes.ClaimRecord) : Bool { r.txHash == txHash });
+    // W1A: canonical identity — a retry with any spelling of the hash must
+    // find the SAME stored claim and update its canonical record.
+    let txHashCanon = switch (ClaimIdentity.canonicalTxHash(txHash)) {
+      case (#ok(c)) { c };
+      case (#err(e)) { return #err("INVALID_TX_HASH: " # e) };
+    };
+    let feeTxHashCanon = switch (ClaimIdentity.canonicalTxHash(feeTxHash)) {
+      case (#ok(c)) { c };
+      case (#err(e)) { return #err("INVALID_FEE_TX_HASH: " # e) };
+    };
+    // Look up the claim (canonical identity — see recheckClaimByHash)
+    let claimOpt = gritState.claims.find(func(r : GritTypes.ClaimRecord) : Bool { r.txHash == txHashCanon });
     let claim = switch (claimOpt) {
       case null { return #err("Claim not found") };
       case (?c) { c };
@@ -790,10 +1142,61 @@ mixin (
       case _ { return #err("Claim is not awaiting a fee payment") };
     };
 
-    // AKK-4: verify the new fee tx binding too
-    let feeResult = await verifyFeeBinding(feeTxHash, txHash, claim.chain, caller);
+    // AKK-10: a NEW fee (Pay Fee / Retry Fee) is sized by the frontend at the
+    // CURRENT price, so the amount check must compare against the CURRENT
+    // oracle-priced value — not the stored claim-time usdValue (stale after a
+    // price move; would demand a fee different from the one just paid).
+    // Fetch the price BEFORE the fee check so the comparator is current.
+    let tokenOpt = AllowlistLib.findToken(allowlistState, claim.tokenAddress, claim.chain);
+    let token = switch (tokenOpt) {
+      case null { return #err("Token no longer on allowlist") };
+      case (?t) { t };
+    };
+
+    // Compute raw amount from stored humanAmount
+    var divisor : Nat = 1;
+    var dd = token.decimals;
+    while (dd > 0) { divisor *= 10; dd -= 1 };
+    let rawAmountBurned : Nat = (claim.amountBurned * divisor.toFloat()).toInt().toNat();
+
+    // Bug-1 hardening (2026-09-10): STORE THE FEE HASH FIRST — before any
+    // price fetch or verification. The wallet has confirmed the fee tx; the
+    // claim MUST record it before anything can fail downstream (GIV/op case:
+    // a DexScreener outage threw before the old store point and the paid fee
+    // was orphaned — user prompted to pay AGAIN). Storing early costs
+    // nothing: if verification then succeeds, the claim goes #verified; if
+    // anything fails transiently, the 15s timer re-runs with the stored hash.
+    GritLib.updateClaimToPendingFee(gritState, txHashCanon, feeTxHashCanon);
+
+    // Fetch real-time price — must be live; no fallback allowed
+    let priceResult = try {
+      await PriceOracle.fetchTokenPrice(claim.tokenAddress, claim.chain, priceCache, transformPriceResponse);
+    } catch (_) {
+      #err("Price unavailable — network error. Please try again later.")
+    };
+    let effectivePrice = switch (priceResult) {
+      case (#ok(p)) { p };
+      case (#err(reason)) {
+        // Fee hash is stored + #pendingFee; the timer re-runs verification
+        // (incl. the price fetch) every 15s — the claim self-heals.
+        return #err(reason);
+      };
+    };
+    // Current oracle-priced USD value — what the new fee was sized against.
+    let usdValueRetry : Float = claim.amountBurned * effectivePrice;
+
+    // AKK-4: verify the new fee tx binding too (AKK-10 amount check vs CURRENT value)
+    let feeResult = await verifyFeeBinding(feeTxHashCanon, txHashCanon, claim.chain, caller, ?usdValueRetry, null);
     switch (feeResult) {
       case (#err("PENDING")) {
+        // Bug-1 fix (2026-09-09): the fee tx is REAL (wallet confirmed it) —
+        // RPC indexing just lags. STORE the fee hash + transition to
+        // #pendingFee so the background timer verifies it within seconds.
+        // The previous code returned an error WITHOUT storing the hash —
+        // every slow-indexed fee was orphaned (paid on-chain, claim never
+        // learned about it, user prompted to pay AGAIN). Frontend treats
+        // this message as processing, not failure.
+        GritLib.updateClaimToPendingFee(gritState, txHashCanon, feeTxHashCanon);
         return #err("Fee transaction not yet confirmed");
       };
       case (#err("TX_FAILED")) {
@@ -804,44 +1207,9 @@ mixin (
         return #err(bindingMsg);
       };
       case (#ok) {
-        // Fee confirmed — store new fee hash and credit GRIT
-        gritState.claims.mapInPlace(func(r : GritTypes.ClaimRecord) : GritTypes.ClaimRecord {
-          if (r.txHash == txHash) { { r with feeTxHash = ?feeTxHash } } else { r }
-        });
-
-        // Fetch token info for GRIT calculation
-        let tokenOpt = AllowlistLib.findToken(allowlistState, claim.tokenAddress, claim.chain);
-        let token = switch (tokenOpt) {
-          case null { return #err("Token no longer on allowlist") };
-          case (?t) { t };
-        };
-
-        // Compute raw amount from stored humanAmount
-        var divisor : Nat = 1;
-        var dd = token.decimals;
-        while (dd > 0) { divisor *= 10; dd -= 1 };
-        let rawAmountBurned : Nat = (claim.amountBurned * divisor.toFloat()).toInt().toNat();
-
-        // Fetch real-time price — must be live; no fallback allowed
-        let priceResult = try {
-          await PriceOracle.fetchTokenPrice(claim.tokenAddress, claim.chain, priceCache, transformPriceResponse);
-        } catch (_) {
-          #err("Price unavailable — network error. Please try again later.")
-        };
-        let effectivePrice = switch (priceResult) {
-          case (#ok(p)) { p };
-          case (#err(reason)) {
-            return #err(reason);
-          };
-        };
-
+        // Fee confirmed — new fee hash + usdValue + credit commit atomically below
         let gritAmount = GritLib.calcGrit(rawAmountBurned, token.decimals, effectivePrice, admin.gritIssuanceRate);
-        // Store usdValue at retry-fee time
-        let usdValueRetry : Float = claim.amountBurned * effectivePrice;
-        gritState.claims.mapInPlace(func(r : GritTypes.ClaimRecord) : GritTypes.ClaimRecord {
-          if (r.txHash == txHash) { { r with usdValue = usdValueRetry } } else { r }
-        });
-        GritLib.updateClaimStatus(gritState, txHash, #verified, gritAmount, null);
+        GritLib.updateClaimStatus(gritState, txHashCanon, #verified, gritAmount, null, null, ?usdValueRetry, ?feeTxHashCanon);
         #ok(gritAmount);
       };
     };
@@ -849,16 +1217,23 @@ mixin (
 
   /// User: manually re-check a single claim by its burn tx hash.
   /// Useful when the background timer has not yet picked up a slow confirmation.
+  /// No expiry applies: claims are never timed out (see lib/grit.mo).
   /// Caller must be the original claimant.
   public shared ({ caller }) func recheckClaimByHash(txHash : Text) : async { #ok : Text; #err : Text } {
+    // W1A: canonical identity — a re-check submitted with any spelling of the
+    // hash must find the SAME stored claim.
+    let txHashCanon = switch (ClaimIdentity.canonicalTxHash(txHash)) {
+      case (#ok(c)) { c };
+      case (#err(e)) { return #err("INVALID_TX_HASH: " # e) };
+    };
     // Look up the claim — must belong to this caller
     let claimOpt = gritState.claims.find(func(r : GritTypes.ClaimRecord) : Bool {
-      r.txHash == txHash and r.claimant == caller
+      r.txHash == txHashCanon and r.claimant == caller
     });
     let claim = switch (claimOpt) {
       case null {
         // Could be a different user's claim or simply not found — check if the hash exists at all
-        let anyClaimOpt = gritState.claims.find(func(r : GritTypes.ClaimRecord) : Bool { r.txHash == txHash });
+        let anyClaimOpt = gritState.claims.find(func(r : GritTypes.ClaimRecord) : Bool { r.txHash == txHashCanon });
         switch (anyClaimOpt) {
           case (?_) { return #err("Unauthorized") };
           case null  { return #err("Claim not found") };
@@ -879,7 +1254,7 @@ mixin (
           await recheckClaim(claim);
           // Read back the updated status
           let updatedOpt = gritState.claims.find(func(r : GritTypes.ClaimRecord) : Bool {
-            r.txHash == txHash
+            r.txHash == txHashCanon
           });
           let statusText = switch (updatedOpt) {
             case null { "unknown" };
@@ -916,5 +1291,70 @@ mixin (
       Runtime.trap("Unauthorized: caller is not admin");
     };
     GritLib.getAllClaims(gritState);
+  };
+
+  /// Admin: probe EVERY configured RPC endpoint of every chain FROM THE
+  /// CANISTER and report which ones actually serve a request right now
+  /// (2026-09-11 diagnostic; widened to all endpoints per owner 2026-09-12).
+  ///
+  /// Why this exists: endpoint re-probes from an agent's machine proved
+  /// meaningless — canister subnets face different blocking (publicnode 403s,
+  /// 429 rate-limit text bodies) than residential IPs, and the 2026-09-11
+  /// incident (every OP/ETH claim stuck while Base/Celo verified) was only
+  /// diagnosable by elimination. This turns that class into a one-call read.
+  ///
+  /// Method: for each chain, probe EVERY configured endpoint with a
+  /// lightweight `eth_chainId` (no tx hash needed, ~every node serves it).
+  /// Verified live = response parses as JSON-RPC with a result. Cost: one
+  /// outcall per endpoint (~18 across 6 chains) per call — admin-only, never
+  /// on the burn path. Blocked bodies are truncated to 200 chars.
+  public shared ({ caller }) func probeRpcEndpoints() : async [(Text, Text)] {
+    if (not AllowlistLib.isAdmin(admin, caller)) {
+      Runtime.trap("Unauthorized: caller is not admin");
+    };
+    let chains : [Text] = ["ethereum", "optimism", "base", "celo", "arbitrum", "polygon"];
+    let results = List.empty<(Text, Text)>();
+    for (chain in chains.vals()) {
+      switch (VerifyLib.rpcUrlForChain(chain)) {
+        case null { results.add((chain, "no endpoints configured")) };
+        case (?raw) {
+          // Probe EVERY endpoint of the chain (owner request 2026-09-12):
+          // a first-endpoint-only probe reported BLOCKED when #1 was down
+          // while #2/#3 served fine — chasing ghosts while the real
+          // verification was falling over successfully.
+          for (ep in raw.split(#char '|').toArray().vals()) {
+            let probeBody = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_chainId\",\"params\":[]}";
+            try {
+              let resp = await OutCall.httpPostRequest(
+                ep,
+                [{ name = "Content-Type"; value = "application/json" }],
+                probeBody,
+                transformResponse,
+              );
+              if (resp.contains(#text "\"result\"")) {
+                results.add((chain, "OK " # ep));
+              } else {
+                // Truncate junk bodies (403 HTML / 429 text can be KB–MB) —
+                // the diagnostic only needs the head to identify the blocker.
+                var head : Text = "";
+                var taken : Nat = 0;
+                label take for (c in resp.chars()) {
+                  if (taken >= 200) {
+                    head #= "…";
+                    break take;
+                  };
+                  head #= Text.fromChar(c);
+                  taken += 1;
+                };
+                results.add((chain, "NON-JSON/BLOCKED " # ep # " → " # head));
+              };
+            } catch (e) {
+              results.add((chain, "ERROR " # ep # " → " # Error.message(e)));
+            };
+          };
+        };
+      };
+    };
+    results.toArray();
   };
 };

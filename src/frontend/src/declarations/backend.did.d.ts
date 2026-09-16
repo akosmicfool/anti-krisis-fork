@@ -226,6 +226,11 @@ export type Value = { 'int' : bigint } |
 export interface _SERVICE {
   'addAdmin' : ActorMethod<[Principal], undefined>,
   'addToken' : ActorMethod<[AllowlistedToken], undefined>,
+  'applySecureFeeConfig' : ActorMethod<
+    [string, string],
+    { 'ok' : null } |
+      { 'err' : string }
+  >,
   'claimOgBadge' : ActorMethod<[], { 'ok' : null } | { 'err' : string }>,
   'clearAbandonedMints' : ActorMethod<
     [],
@@ -235,7 +240,7 @@ export interface _SERVICE {
   'clearPendingMints' : ActorMethod<[], { 'ok' : bigint } | { 'err' : string }>,
   'clearTestScore' : ActorMethod<[], { 'ok' : null } | { 'err' : string }>,
   'createMiner' : ActorMethod<
-    [string, bigint, bigint],
+    [string, bigint, bigint, [] | [string], [] | [string]],
     { 'ok' : MinerId } |
       { 'err' : string }
   >,
@@ -249,6 +254,7 @@ export interface _SERVICE {
     { 'ok' : bigint } |
       { 'err' : string }
   >,
+  'disarmFeePaidCheck' : ActorMethod<[], undefined>,
   'editMiner' : ActorMethod<
     [MinerId, [] | [string], [] | [bigint], [] | [bigint], [] | [boolean]],
     { 'ok' : null } |
@@ -387,6 +393,7 @@ export interface _SERVICE {
       { 'err' : TribeError }
   >,
   'leaveTribe' : ActorMethod<[], { 'ok' : null } | { 'err' : TribeError }>,
+  'probeRpcEndpoints' : ActorMethod<[], Array<[string, string]>>,
   'recheckClaimByHash' : ActorMethod<
     [string],
     { 'ok' : string } |
@@ -424,7 +431,6 @@ export interface _SERVICE {
       { 'err' : string }
   >,
   'setFeeCollectorAddress' : ActorMethod<[string], undefined>,
-  'setFeePaidCheckEnabled' : ActorMethod<[boolean], undefined>,
   'setFeePercent' : ActorMethod<[number], undefined>,
   'setFeeRecipient' : ActorMethod<[string], undefined>,
   'setGritIssuanceRate' : ActorMethod<[bigint], undefined>,

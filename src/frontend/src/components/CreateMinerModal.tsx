@@ -7,20 +7,29 @@ import {
 } from "@/components/ui/dialog";
 import { AlertTriangle, CheckCircle2, Cpu, Loader2, Zap } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
-import { useState } from "react";
-import { toast } from "sonner";
-import {
-  useCreateMiner,
-  useMinerCreationFees,
-  useMyBalance,
-} from "../hooks/use-backend";
-import { useGetFeeRecipient } from "../hooks/use-backend";
+import { useEffect, useState } from "react";
+import { useMinerCreationFees, useMyBalance } from "../hooks/use-backend";
+import type { UseMinerCreationReturn } from "../hooks/use-miner-creation";
 import { useWallet } from "../hooks/use-wallet";
-import { CHAIN_IDS, formatGrit } from "../types";
+import { formatGrit } from "../types";
+
+export interface CreateMinerPrefill {
+  name: string;
+  /** e9-scaled GRIT amount, as stored on the attempt. */
+  gritAmount: string;
+  /** GRIT/day rate, as stored on the attempt. */
+  rate: string;
+}
 
 interface CreateMinerModalProps {
   open: boolean;
   onClose: () => void;
+  /** Owned by MiningPage — the flow outlives this modal. */
+  creation: UseMinerCreationReturn;
+  /** "Pay fee & retry" prefill from a pending-miner tile. */
+  prefill?: CreateMinerPrefill | null;
+  /** Attempt the fresh fee send replaces (repay path). */
+  replaceAttemptId?: string | null;
 }
 
 const _MIN_RATE = 1_000_000_000n; // 1 billion GRIT/day
@@ -50,20 +59,23 @@ function getChainName(chainId: number | null): string {
   return map[chainId] ?? `Chain ${chainId}`;
 }
 
-export function CreateMinerModal({ open, onClose }: CreateMinerModalProps) {
+export function CreateMinerModal({
+  open,
+  onClose,
+  creation,
+  prefill = null,
+  replaceAttemptId = null,
+}: CreateMinerModalProps) {
   const { data: gritBalance = 0n } = useMyBalance();
   const { data: feeConfig } = useMinerCreationFees();
-  const { data: feeRecipient } = useGetFeeRecipient();
-  const createMiner = useCreateMiner();
   const wallet = useWallet();
 
   const [name, setName] = useState("");
   const [gritInput, setGritInput] = useState("");
   const [rate, setRate] = useState(1_000_000_000); // store as number for slider
-  const [step, setStep] = useState<
-    "idle" | "paying_fee" | "creating" | "done" | "error"
-  >("idle");
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // The hook owns the real flow; this only marks whether THIS modal started
+  // it, so a closed-then-reopened modal never renders a stranger's progress.
+  const [flowStarted, setFlowStarted] = useState(false);
 
   const chainId = wallet.chainId;
   const chainNameKey = getChainNameFromId(chainId);
@@ -80,70 +92,57 @@ export function CreateMinerModal({ open, onClose }: CreateMinerModalProps) {
     ? BigInt(Math.floor(Number(gritInput.trim()) * 1_000_000_000))
     : 0n;
   const hasInsufficientGrit = parsedGrit > gritBalance;
+
+  const displayStep = flowStarted ? creation.activeStep : "idle";
+  const isPayingSignature = displayStep === "paying_fee";
+  const isBusy =
+    isPayingSignature ||
+    displayStep === "confirming_fee" ||
+    displayStep === "creating";
   const canCreate =
-    step === "idle" &&
+    displayStep === "idle" &&
     name.trim().length > 0 &&
     parsedGrit > 0n &&
     !hasInsufficientGrit &&
     wallet.isConnected;
+  const errorMsg = flowStarted ? creation.errorMessage : null;
+
+  // Repay path: prefill from the pending-miner tile. gritAmount is e9-scaled.
+  useEffect(() => {
+    if (!open || !prefill) return;
+    setName(prefill.name);
+    setGritInput(String(Number(prefill.gritAmount) / 1e9));
+    setRate(Number(prefill.rate));
+    setFlowStarted(false);
+  }, [open, prefill]);
 
   function handleClose() {
-    if (step === "paying_fee" || step === "creating") return;
+    if (isPayingSignature) return; // wallet prompt open — pre-hash
     setName("");
     setGritInput("");
     setRate(1_000_000_000);
-    setStep("idle");
-    setErrorMsg(null);
+    setFlowStarted(false);
     onClose();
   }
 
-  async function handleCreate() {
+  function handleCreate() {
     if (!canCreate) return;
-    setErrorMsg(null);
-
-    try {
-      // Step 1: send creation fee if nonzero
-      if (creationFeeWei > 0n) {
-        if (!feeRecipient || !feeRecipient.startsWith("0x")) {
-          setErrorMsg("Fee recipient not configured. Contact an admin.");
-          setStep("error");
-          return;
-        }
-        setStep("paying_fee");
-        await wallet.sendTransaction({
-          to: feeRecipient as `0x${string}`,
-          data: "0x" as `0x${string}`,
-          value: creationFeeWei,
-          chainId: chainId ?? undefined,
-        });
-      }
-
-      // Step 2: call createMiner on ICP
-      setStep("creating");
-      const result = await createMiner.mutateAsync({
-        name: name.trim(),
-        gritAmount: parsedGrit,
-        rate: BigInt(rate),
-      });
-
-      if (result.__kind__ === "err") {
-        throw new Error(result.err);
-      }
-
-      setStep("done");
-      toast.success(
-        "Miner created! It will start competing from the next block.",
-      );
-    } catch (err) {
-      const msg =
-        err instanceof Error ? err.message : "Unexpected error occurred.";
-      setErrorMsg(msg);
-      setStep("error");
-    }
+    setFlowStarted(true);
+    // From here the flow belongs to the page-level hook: it keeps polling and
+    // retrying with the same feeTxHash even if this modal is closed.
+    void creation.start(
+      { name: name.trim(), gritAmount: parsedGrit, rate: BigInt(rate) },
+      replaceAttemptId ? { replaceAttemptId } : undefined,
+    );
   }
 
-  const isBusy = step === "paying_fee" || step === "creating";
   const rateDisplay = (rate / 1_000_000_000).toFixed(0);
+  const stepLabel =
+    displayStep === "paying_fee"
+      ? "Paying creation fee…"
+      : displayStep === "confirming_fee"
+        ? "Confirming your fee payment…"
+        : "Creating miner on ICP…";
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && handleClose()}>
@@ -173,7 +172,7 @@ export function CreateMinerModal({ open, onClose }: CreateMinerModalProps) {
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="My Miner"
-              disabled={isBusy || step === "done"}
+              disabled={isBusy || displayStep === "done"}
               maxLength={20}
               className="w-full bg-background border border-border rounded-md h-10 px-3 font-mono text-sm text-foreground placeholder:text-muted-foreground focus:ring-2 focus:ring-accent focus:outline-none disabled:opacity-50 transition-smooth"
               data-ocid="mining.miner_name_input"
@@ -205,7 +204,7 @@ export function CreateMinerModal({ open, onClose }: CreateMinerModalProps) {
                 value={gritInput}
                 onChange={(e) => setGritInput(e.target.value)}
                 placeholder="0"
-                disabled={isBusy || step === "done"}
+                disabled={isBusy || displayStep === "done"}
                 className={[
                   "w-full bg-background border rounded-md h-10 px-3 pr-16 font-mono text-sm text-foreground placeholder:text-muted-foreground focus:ring-2 focus:ring-accent focus:outline-none disabled:opacity-50 transition-smooth",
                   hasInsufficientGrit ? "border-red-500/60" : "border-border",
@@ -216,7 +215,7 @@ export function CreateMinerModal({ open, onClose }: CreateMinerModalProps) {
                 GRIT
               </span>
             </div>
-            {hasInsufficientGrit && step !== "done" && (
+            {hasInsufficientGrit && displayStep !== "done" && (
               <p
                 className="text-xs text-red-400 font-mono"
                 data-ocid="mining.grit_load_input.field_error"
@@ -247,7 +246,7 @@ export function CreateMinerModal({ open, onClose }: CreateMinerModalProps) {
               step={1}
               value={rate / 1_000_000_000}
               onChange={(e) => setRate(Number(e.target.value) * 1_000_000_000)}
-              disabled={isBusy || step === "done"}
+              disabled={isBusy || displayStep === "done"}
               className="w-full accent-accent cursor-pointer disabled:opacity-50"
               data-ocid="mining.rate_slider"
             />
@@ -273,7 +272,7 @@ export function CreateMinerModal({ open, onClose }: CreateMinerModalProps) {
           <AnimatePresence mode="wait">
             {isBusy && (
               <motion.div
-                key={step}
+                key={displayStep}
                 initial={{ opacity: 0, y: -4 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: 4 }}
@@ -281,12 +280,10 @@ export function CreateMinerModal({ open, onClose }: CreateMinerModalProps) {
                 data-ocid="mining.create_loading_state"
               >
                 <Loader2 className="h-4 w-4 animate-spin shrink-0" />
-                {step === "paying_fee"
-                  ? "Paying creation fee…"
-                  : "Creating miner on ICP…"}
+                {stepLabel}
               </motion.div>
             )}
-            {step === "done" && (
+            {displayStep === "done" && (
               <motion.div
                 key="done"
                 initial={{ opacity: 0, y: -4 }}
@@ -299,6 +296,17 @@ export function CreateMinerModal({ open, onClose }: CreateMinerModalProps) {
               </motion.div>
             )}
           </AnimatePresence>
+
+          {/* Post-signature hint: closing this dialog does NOT cancel it */}
+          {(displayStep === "confirming_fee" || displayStep === "creating") && (
+            <p
+              className="text-xs font-mono text-muted-foreground"
+              data-ocid="mining.create_background_hint"
+            >
+              Your fee is paid. This keeps running — you can close this dialog
+              and follow it from MY MINERS.
+            </p>
+          )}
 
           {/* Error */}
           <AnimatePresence>
@@ -327,22 +335,25 @@ export function CreateMinerModal({ open, onClose }: CreateMinerModalProps) {
 
           {/* Actions */}
           <div className="flex gap-3 pt-1">
-            {step !== "done" ? (
+            {displayStep !== "done" ? (
               <>
                 <Button
                   type="button"
                   variant="outline"
                   onClick={handleClose}
-                  disabled={isBusy}
+                  disabled={isPayingSignature}
                   className="flex-1 border-border font-mono text-xs uppercase tracking-widest transition-smooth"
                   data-ocid="mining.create_cancel_button"
                 >
-                  Cancel
+                  {displayStep === "confirming_fee" ||
+                  displayStep === "creating"
+                    ? "Close"
+                    : "Cancel"}
                 </Button>
                 <Button
                   type="button"
                   onClick={handleCreate}
-                  disabled={!canCreate || isBusy}
+                  disabled={!canCreate}
                   className="flex-1 bg-accent text-background hover:bg-accent/90 font-display font-black uppercase tracking-widest gap-2 transition-smooth disabled:opacity-40"
                   data-ocid="mining.create_submit_button"
                 >
@@ -351,7 +362,7 @@ export function CreateMinerModal({ open, onClose }: CreateMinerModalProps) {
                   ) : (
                     <Zap className="h-4 w-4" />
                   )}
-                  {step === "paying_fee" ? "Paying…" : "Create"}
+                  {displayStep === "paying_fee" ? "Paying…" : "Create"}
                 </Button>
               </>
             ) : (

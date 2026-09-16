@@ -472,13 +472,39 @@ export function useGetFeePaidCheckEnabled() {
   });
 }
 
-export function useSetFeePaidCheckEnabled() {
+// W1B: arming happens exclusively through applySecureFeeConfig (validated,
+// atomic recipient==collector + arm). The old arm-anything setter is gone.
+export function useApplySecureFeeConfig() {
   const { actor } = useActorInstance();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (enabled: boolean) => {
+    mutationFn: async (args: {
+      feeRecipient: string;
+      collectorAddress: string;
+    }) => {
       if (!actor) throw new Error("Not connected");
-      return actor.setFeePaidCheckEnabled(enabled);
+      const result = await actor.applySecureFeeConfig(
+        args.feeRecipient,
+        args.collectorAddress,
+      );
+      if ("err" in result) throw new Error(result.err);
+      return result;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["feeRecipient"] });
+      qc.invalidateQueries({ queryKey: ["feeCollectorAddress"] });
+      qc.invalidateQueries({ queryKey: ["feePaidCheckEnabled"] });
+    },
+  });
+}
+
+export function useDisarmFeePaidCheck() {
+  const { actor } = useActorInstance();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      if (!actor) throw new Error("Not connected");
+      await actor.disarmFeePaidCheck();
     },
     onSuccess: () =>
       qc.invalidateQueries({ queryKey: ["feePaidCheckEnabled"] }),
@@ -622,9 +648,17 @@ export function useCreateMiner() {
       name: string;
       gritAmount: bigint;
       rate: bigint;
+      feeChain: string | null;
+      feeTxHash: string | null;
     }) => {
       if (!actor) throw new Error("Not connected");
-      return actor.createMiner(args.name, args.gritAmount, args.rate);
+      return actor.createMiner(
+        args.name,
+        args.gritAmount,
+        args.rate,
+        args.feeChain,
+        args.feeTxHash,
+      );
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["myMiners"] });

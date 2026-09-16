@@ -44,6 +44,7 @@ import {
   useRetryFeeClaim,
 } from "../hooks/use-backend";
 import { type PlatformFeeInfo, useWallet } from "../hooks/use-wallet";
+import { deriveClaimAction } from "../lib/claim-recovery";
 import { buildFeeBindingData } from "../lib/fee-binding";
 import {
   KVCM_RETIREMENT,
@@ -344,12 +345,21 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
   const [txHash, setTxHash] = useState<string | null>(null);
   // When the claim first entered #pendingFee during this run. pendingFee
   // means "burn verified, fee not yet credited" — usually the fee tx is
-  // simply still confirming and the backend's recheck loop credits it
-  // within ~15s. Only a stall beyond PENDING_FEE_GRACE_MS (or a definitive
-  // on-chain revert) warrants the retry UI — flipping earlier showed
-  // "Fee payment needs a retry" for fees that went through moments later.
+  // simply still confirming and the backend's recheck credits it
+  // within ~15s. Only a stall beyond the chain-aware grace window (or a
+  // definitive on-chain revert) warrants the retry UI — flipping earlier
+  // showed "Fee payment needs a retry" for fees that went through moments
+  // later. Ethereum L1 routinely takes minutes to index for public RPCs;
+  // the 90s L2-tuned grace flipped to the retry UI while the fee was still
+  // healthy (user report 2026-09-03, IMPT on Ethereum).
   const pendingFeeSinceRef = useRef<number | null>(null);
-  const PENDING_FEE_GRACE_MS = 90_000;
+  // Chain-aware grace: Ethereum L1 public RPCs index slowly (minutes); the
+  // 90s L2-tuned grace flipped to the retry UI while the fee was still
+  // healthy (user report 2026-09-03, IMPT on Ethereum). burnChainIdRef is
+  // set before the burn flow starts and never changes mid-run, so reading
+  // it inside the effect is safe (no dep needed — it's a ref).
+  const PENDING_FEE_GRACE_MS_ETH = 300_000; // 5 min — Ethereum L1 (chainId 1)
+  const PENDING_FEE_GRACE_MS_L2 = 90_000; // Base / OP / Celo
   // Which modal step a terminal failure belongs to (1=burn, 2=fee, 3=GRIT).
   // getModalStep() maps "failed" to 3 unconditionally, so failure sites must
   // set this explicitly — otherwise a burn-phase failure renders steps 1-2
@@ -576,7 +586,13 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
 
       const result = await refetchHistory();
       const records = result.data ?? [];
-      const match = records.find((r) => r.txHash === claimedTxRef.current);
+      // W1A: the backend stores the CANONICAL hash (0x + lowercase); the
+      // wallet may report the burn with a mixed-case spelling. Compare
+      // case-insensitively so the modal still sees the verified claim.
+      const claimed = claimedTxRef.current?.toLowerCase() ?? null;
+      const match = records.find(
+        (r) => claimed !== null && r.txHash.toLowerCase() === claimed,
+      );
       if (!match) return;
 
       if (match.status === ClaimStatus.verified) {
@@ -601,10 +617,22 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
         }
         const stalled =
           Date.now() - (pendingFeeSinceRef.current ?? Date.now()) >
-          PENDING_FEE_GRACE_MS;
+          (burnChainIdRef.current === 1
+            ? PENDING_FEE_GRACE_MS_ETH
+            : PENDING_FEE_GRACE_MS_L2);
         if (stalled) {
+          // Escalate the display, but KEEP POLLING: a slow fee (Ethereum L1
+          // indexing lag) still settles, and the poller must be watching to
+          // flip the modal to "GRIT Minted!" when it does. Stopping the poller
+          // here left the modal on the retry screen while GRIT credited
+          // invisibly in the background (09-03 IMPT report). The hard
+          // POLL_TIMEOUT_MS below remains the safety net.
           setStepAndRef("pending_fee");
-          await stopPolling("settled");
+          setPriceNote(
+            (prev) =>
+              prev ??
+              "The platform fee is taking longer than expected — if it was actually paid, Burn History → Retry Fee will resolve it without a new payment.",
+          );
         } else {
           setStepAndRef("awaiting_fee_confirm");
           setPriceNote(
@@ -769,7 +797,7 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
         // Slow but not dead: submit claim, defer the fee to Burn History.
         setStepAndRef("pending_verification");
         setPriceNote(
-          "Burn verification is taking longer than expected… continuing in background. Monitor Burn History to finish your claim (Pay Fee will appear once the burn settles).",
+          "Burn verification is taking longer than expected… continuing in background. Burn History will show your claim as Fee Pending with a Pay Fee button — use it any time to finish your claim.",
         );
         // Register the burn for the modal poller BEFORE submitting — the
         // poller effect keys off claimedTxRef and would never start otherwise.
@@ -790,7 +818,25 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
       }
       setPriceNote(null);
 
-      // Step 2: Calculate and send platform fee (0.69% of burn USD value)
+      // Step 2 (W1B UX fix): submit the CLAIM FIRST, before the fee.
+      // Previously the fee was sent first (step 2) and the claim only
+      // created at step 3 — so any fee-send failure (user rejection, wallet
+      // nonce race, RPC error) orphaned the burn: it existed on-chain but
+      // never appeared in Burn History, with nothing to retry. Now the
+      // claim is created immediately as #pending with the deferred-fee
+      // sentinel (feeTxHash ''), exactly like the slow-burn background
+      // path — every burn is always recoverable from Burn History.
+      setStepAndRef("submitting_claim");
+      claimedTxRef.current = hash;
+      await initiateClaim.mutateAsync({
+        txHash: hash,
+        feeTxHash: "",
+        tokenAddress: selectedToken.tokenAddress,
+        chain: selectedToken.chain,
+        frontendPrice: livePrice ?? 0,
+      });
+
+      // Step 3: Calculate and send platform fee (0.69% of burn USD value)
       setStepAndRef("paying_fee");
       const burnValueUsd = parsedAmt * (livePrice ?? 0);
       burnValueUsdRef.current = burnValueUsd;
@@ -816,15 +862,13 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
       setFeeTxHash(feeHash);
       feeTxHashRef.current = feeHash;
 
-      // Step 3: Submit claim to ICP
+      // Step 4: bind the fee to the claim (backend verifies binding + FeePaid
+      // + amount, then credits GRIT). retryFeeClaim handles a #pending claim
+      // with no fee hash yet — the same path Burn History's Pay Fee uses.
       setStepAndRef("submitting_claim");
-      claimedTxRef.current = hash;
-      await initiateClaim.mutateAsync({
+      await retryFeeClaim.mutateAsync({
         txHash: hash,
         feeTxHash: feeHash ?? "",
-        tokenAddress: selectedToken.tokenAddress,
-        chain: selectedToken.chain,
-        frontendPrice: livePrice ?? 0,
       });
 
       setStepAndRef("pending_verification");
@@ -925,6 +969,20 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
           stepRef.current === "burning" ||
           stepRef.current === "awaiting_confirm" ||
           stepRef.current === "confirming_on_chain";
+        // W1B UX fix: with claim-first ordering, a fee-setup failure after
+        // the claim was already submitted is RECOVERABLE — the claim exists
+        // in Burn History as #pending (Pay Fee button). Send the user there
+        // instead of a dead-end "failed" screen.
+        if (!burnPhase && claimedTxRef.current) {
+          setFailStep(2);
+          setStepAndRef("pending_fee");
+          setErrorMsg(
+            err instanceof Error
+              ? `Fee step failed before the transaction was sent: ${err.message} — your burn is saved in Burn History. Use "Pay Fee" there to complete it.`
+              : 'Fee step failed before the transaction was sent — your burn is saved in Burn History. Use "Pay Fee" there to complete it.',
+          );
+          return;
+        }
         setFailStep(burnPhase ? 1 : 2);
         setStepAndRef("failed");
         setErrorMsg(
@@ -945,7 +1003,12 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
       const isStillProcessingBackend =
         err instanceof Error &&
         (err.message.includes("FEE_PENDING") ||
-          err.message.includes("STILL_PROCESSING"));
+          err.message.includes("STILL_PROCESSING") ||
+          // Bug-1: the fee tx was SENT (wallet confirmed) but the backend's
+          // RPC lagged on first check. The backend has now STORED the fee
+          // hash and transitioned the claim to #pendingFee — the 15s timer
+          // verifies and credits it. Processing, never terminal.
+          err.message.includes("Fee transaction not yet confirmed"));
       if (isStillProcessingBackend) {
         const processingGrit = (err as Error).message.includes(
           "STILL_PROCESSING",
@@ -959,9 +1022,13 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
             : "Still awaiting confirmation… monitor Burn History for status.",
         );
         // Start a polling loop to detect when the fee settles on-chain.
-        // Poll every 10 seconds, max 35 minutes (210 attempts).
-        const FEE_POLL_INTERVAL_MS = 10_000;
-        const FEE_POLL_MAX_ATTEMPTS = 210; // 35 min
+        // Poll every 5 seconds (latency fix: was 10s), max 35 min.
+        // KEY: when the claim sits in #pendingFee with a stored fee hash,
+        // each tick re-calls retryFeeClaim — if the fee has been indexed
+        // since the last attempt, the backend verifies + credits
+        // IMMEDIATELY instead of waiting for the 15s backend timer.
+        const FEE_POLL_INTERVAL_MS = 5_000;
+        const FEE_POLL_MAX_ATTEMPTS = 420; // 35 min at 5s
         let feeAttempts = 0;
         const feePollRef = pollingRef; // reuse the existing ref slot
         if (feePollRef.current) clearInterval(feePollRef.current);
@@ -981,8 +1048,11 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
           }
           const result = await refetchHistory();
           const records = result.data ?? [];
-          const match = claimedTxRef.current
-            ? records.find((r) => r.txHash === claimedTxRef.current)
+          // W1A: case-insensitive match (backend stores canonical lowercase;
+          // wallet may report mixed case) — same rationale as the other poll.
+          const claimedFee = claimedTxRef.current?.toLowerCase() ?? null;
+          const match = claimedFee
+            ? records.find((r) => r.txHash.toLowerCase() === claimedFee)
             : null;
           if (!match) return;
 
@@ -1001,20 +1071,35 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
           } else if (isPendingFee(match.status)) {
             // pendingFee ≠ failure. The fee is usually just confirming;
             // escalate to the retry UI only after the grace window.
+            // LATENCY FIX: actively re-drive verification every tick —
+            // retryFeeClaim re-checks the fee on-chain; if it has been
+            // indexed since the last attempt, the backend credits
+            // IMMEDIATELY instead of waiting for the 15s backend timer.
+            // Errors (still pending, reverted) are swallowed here: the
+            // claim history poll above reflects the authoritative state.
+            if (match.feeTxHash) {
+              void retryFeeClaim
+                .mutateAsync({
+                  txHash: match.txHash,
+                  feeTxHash: match.feeTxHash,
+                })
+                .catch(() => {});
+            }
             if (pendingFeeSinceRef.current === null) {
               pendingFeeSinceRef.current = Date.now();
             }
             const stalled =
               Date.now() - (pendingFeeSinceRef.current ?? Date.now()) >
-              PENDING_FEE_GRACE_MS;
+              (burnChainIdRef.current === 1
+                ? PENDING_FEE_GRACE_MS_ETH
+                : PENDING_FEE_GRACE_MS_L2);
             if (stalled) {
-              if (feePollRef.current) {
-                clearInterval(feePollRef.current);
-                feePollRef.current = null;
-              }
+              // Escalate the display, but KEEP POLLING (same 09-03 IMPT fix
+              // as the main poll loop): the fee can still settle and the
+              // poller must flip the modal to "GRIT Minted!" when it does.
               setStepAndRef("pending_fee");
               setPriceNote(
-                "The platform fee hasn't settled within the expected window — if it was actually paid, Burn History → Retry Fee will resolve it without a new payment.",
+                "The platform fee is taking longer than expected — if it was actually paid, Burn History → Retry Fee will resolve it without a new payment.",
               );
             }
             // else: keep polling — fee may still land.
@@ -1063,10 +1148,39 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
         }
       }
       setErrorMsg(msg);
+      // W1B UX fix: with claim-first ordering, ANY fee-phase failure (user
+      // rejection, nonce race, RPC error) happens AFTER the claim already
+      // exists in Burn History as #pending. Route the user to the
+      // recoverable state instead of a terminal "failed" screen — Pay Fee
+      // in Burn History completes the claim.
+      const phase = stepRef.current;
+      if (
+        claimedTxRef.current &&
+        (phase === "paying_fee" || phase === "awaiting_fee_confirm")
+      ) {
+        setFailStep(2);
+        setStepAndRef("pending_fee");
+        setErrorMsg(
+          `${msg} — your burn is saved in Burn History. Use "Pay Fee" there to complete it whenever you're ready.`,
+        );
+        // Issue 2 (2026-09-11): after a wallet REJECTION the fee was never
+        // sent — the modal must not say "still monitoring" (it watches for
+        // nothing) and the tables must offer Pay Fee, not "Confirming burn /
+        // Re-check Tx" (amountBurned may lag behind the on-chain burn while
+        // verification is pending; fee=="" is the discriminator for Pay Fee).
+        if (isUserRejection) {
+          setUserRejected(true);
+          // Burn History / Recent Burns derive from this same state: the
+          // claim is #pending with no fee hash once the burn verifies (or
+          // verification is pending — the RPC fix unblocks that), and
+          // claim-recovery maps fee=="" → Pay Fee.
+          setPriceNote(null);
+        }
+        return;
+      }
       // Attribute the failure to the phase handleBurn was actually in when
       // the error fired — getModalStep maps "failed" to 3 unconditionally,
       // so without this a burn-phase failure renders steps 1-2 as ✓ Done.
-      const phase = stepRef.current;
       setFailStep(
         phase === "paying_fee" ||
           phase === "awaiting_fee_confirm" ||
@@ -1773,6 +1887,101 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
                   <div className="hidden sm:block">
                     <ClaimStatusBadge status={record.status} />
                   </div>
+                  {/* W1B UX: single recovery action per row (same mapping as
+                      Burn History), placed DIRECTLY UNDER the status badge —
+                      same size, right-aligned on mobile, centered in the
+                      desktop grid column. Pay Fee / Retry Claim run inline. */}
+                  {(() => {
+                    const action = deriveClaimAction(record);
+                    const badgeSized =
+                      "inline-flex items-center px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-widest transition-colors disabled:opacity-50";
+                    if (action.kind === "none") return null;
+                    if (action.kind === "pay_fee") {
+                      return (
+                        <div className="sm:hidden w-full flex justify-end">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (!feeRecipient || !wallet.isConnected) return;
+                              void wallet
+                                .sendPlatformFee(
+                                  Number(record.amountBurned),
+                                  getChainId(record.chain),
+                                  feeRecipient,
+                                  feeRate,
+                                  buildFeeBindingData(
+                                    principal ?? "",
+                                    record.txHash,
+                                  ),
+                                )
+                                .then((feeHash) =>
+                                  retryFeeClaim.mutateAsync({
+                                    txHash: record.txHash,
+                                    feeTxHash: feeHash,
+                                  }),
+                                )
+                                .then(() => {
+                                  qc.invalidateQueries({
+                                    queryKey: ["myBalance"],
+                                  });
+                                  qc.invalidateQueries({
+                                    queryKey: ["myClaimHistory"],
+                                  });
+                                })
+                                .catch(() => {
+                                  // surfaced via Burn History — the claim is
+                                  // already saved and recoverable there.
+                                });
+                            }}
+                            disabled={
+                              !wallet.isConnected || retryFeeClaim.isPending
+                            }
+                            className={`${badgeSized} border border-amber-500/50 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20`}
+                            data-ocid={`claim_history.pay_fee_button.${i + 1}`}
+                          >
+                            {retryFeeClaim.isPending ? "Sending…" : "Pay Fee"}
+                          </button>
+                        </div>
+                      );
+                    }
+                    if (action.kind === "retry_claim") {
+                      return (
+                        <div className="sm:hidden w-full flex justify-end">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void initiateClaim
+                                .mutateAsync({
+                                  txHash: record.txHash,
+                                  feeTxHash: record.feeTxHash ?? "",
+                                  tokenAddress: record.tokenAddress,
+                                  chain: record.chain,
+                                  frontendPrice: 0,
+                                })
+                                .then(() => {
+                                  qc.invalidateQueries({
+                                    queryKey: ["myClaimHistory"],
+                                  });
+                                })
+                                .catch(() => {
+                                  // Burn History re-check retries later
+                                });
+                            }}
+                            disabled={initiateClaim.isPending}
+                            className={`${badgeSized} border border-sky-500/50 bg-sky-500/10 text-sky-300 hover:bg-sky-500/20`}
+                            data-ocid={`claim_history.retry_claim_button.${i + 1}`}
+                          >
+                            {initiateClaim.isPending
+                              ? "Submitting…"
+                              : "Retry Claim"}
+                          </button>
+                        </div>
+                      );
+                    }
+                    // verifying_burn / verifying_fee: no action — status
+                    // badge already communicates the in-flight state.
+                    return null;
+                  })()}
                 </div>
               ))}
               <div className="pt-3 text-center">

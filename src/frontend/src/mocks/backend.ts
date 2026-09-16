@@ -202,7 +202,13 @@ export const mockBackend: backendInterface = {
   getFeePaidCheckEnabled: async () => false,
   setFeePaidCheckEnabled: async (_enabled: boolean) => undefined,
   whoami: async () => Principal.fromText("aaaaa-aa"),
-  createMiner: async (_name: string, _gritAmount: bigint, _rate: bigint) => ({
+  createMiner: async (
+    _name: string,
+    _gritAmount: bigint,
+    _rate: bigint,
+    _feeChain: string | null,
+    _feeTxHash: string | null,
+  ) => ({
     __kind__: "ok" as const,
     ok: BigInt(1),
   }),

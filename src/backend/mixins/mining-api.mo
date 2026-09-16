@@ -17,6 +17,10 @@ import Time "mo:core/Time";
 import Utils "../lib/utils";
 import Runtime "mo:core/Runtime";
 import Error "mo:core/Error";
+import LedgerMint "../lib/ledger-mint";
+import VerifyLib "../lib/verification";
+import FeeConfig "../lib/fee-config";
+import OutCall "mo:caffeineai-http-outcalls/outcall";
 
 
 
@@ -28,7 +32,15 @@ mixin (
   adminState : AllowlistLib.AdminState,
   allowlistState : AllowlistLib.State,
   gate : AllowlistLib.GateState,
+  fee : FeeConfig.FeeState,
   getSelfPrincipal : () -> ?Principal,
+  // Cross-mixin callbacks (passed from main.mo, where the GritMixin splice is
+  // already in scope): on-chain fee-tx verification + the HTTP transform for
+  // eth_getTransactionByHash. Mixins are separate compilation units, so the
+  // mining mixin reaches the claim-side RPC helpers through these — the same
+  // pattern as getSelfPrincipal.
+  verifyFeeWithReceipt : (Text, Text) -> async { #ok : Text; #err : Text },
+  transformFn : shared query OutCall.TransformationInput -> async OutCall.TransformationOutput,
 ) {
   // The mining canister's own principal — passed in from main.mo's selfPrincipal.
   // Traps if selfPrincipal is not yet initialised.
@@ -54,10 +66,25 @@ mixin (
   };
 
   /// Create a new miner; deducts gritAmount from caller's GRIT balance.
+  ///
+  /// Miner-creation fee gate (miner-creation-fee-plan): when a fee is
+  /// configured for `feeChain` (decision 1: fee 0 / unset = FREE), the caller
+  /// must present a paid fee tx to the fee wallet — a FeeCollector payment
+  /// whose calldata binds (caller principal, "MINE"). Single-use: one fee tx
+  /// creates exactly one miner (consumed-fee map, W1A-canonical keys).
+  ///
+  /// Ordering (reentrancy): ALL awaits (RPC verification) run BEFORE any
+  /// state change. The tail — replay check → GRIT debit → miner insert →
+  /// consume — is await-free, so concurrent calls cannot interleave between
+  /// the replay check and the consume (no double-spend window). Consume
+  /// happens only on a successful create: a failed validation never burns
+  /// the caller's payment.
   public shared ({ caller }) func createMiner(
     name : Text,
     gritAmount : Nat,
     rate : Nat,
+    feeChain : ?Text,
+    feeTxHash : ?Text,
   ) : async { #ok : MiningTypes.MinerId; #err : Text } {
     // --- Launch-time gate ---
     // Block miner creation until the configured launch timestamp has been reached.
@@ -68,7 +95,141 @@ mixin (
         return #err("LAUNCH_NOT_STARTED");
       };
     };
-    MiningLib.createMiner(state, gritProxy(), caller, name, gritAmount, rate);
+
+    // --- Fee verification phase (RPC outcalls only — no state writes) ---
+    // D1: the gate is NOT caller-elected. When ANY chain carries an armed fee
+    // (a minerCreationFees entry > 0), creation is never free: feeChain must
+    // be Some AND name a chain that is itself armed. Omitting feeChain, or
+    // naming an unarmed/misspelled chain, can no longer skip verification.
+    // Only a fully unarmed fee map (the owner's launch switch) leaves
+    // creation free — exactly the previous behavior on an unarmed canister.
+    var feeCheck : ?{ chain : Text; txHash : Text } = null;
+    if (MiningLib.anyMinerFeeArmed(state)) {
+      let chain = switch (feeChain) {
+        case null {
+          return #err("MINER_FEE_TX_REQUIRED: a miner-creation fee is armed — pay the fee and pass feeChain + feeTxHash");
+        };
+        case (?c) { c };
+      };
+      let requiredWei = switch (MiningLib.minerFeeRequired(state, chain)) {
+        case null {
+          return #err("MINER_FEE_CHAIN_UNSUPPORTED: no miner-creation fee is configured for \"" # chain # "\" — armed chains only");
+        };
+        case (?f) { f };
+      };
+      let txHash = switch (feeTxHash) {
+        case null { return #err("MINER_FEE_TX_REQUIRED: a fee is configured for this chain — pay it in Step 1, then retry with the tx hash") };
+        case (?h) { h };
+      };
+      // Empty-config guard (never silently skip): a configured fee with a
+      // missing collector/event arm is an admin error, not a bypass.
+      let collector = fee.collectorAddress;
+      if (not fee.requireFeePaidEvent or collector.size() == 0) {
+        return #err("MINER_FEE_NOT_CONFIGURED: fee set but the FeePaid check or collector address is missing — contact an admin");
+      };
+      let recipient = switch (adminState.feeRecipient) {
+        case null { return #err("MINER_FEE_NOT_CONFIGURED: fee recipient not configured — contact an admin") };
+        case (?r) { if (r.size() == 0) { return #err("MINER_FEE_NOT_CONFIGURED: fee recipient not configured — contact an admin") }; r };
+      };
+
+      // 1. tx status == success + receipt fetch (one outcall, reused for
+      //    the FeePaid event check).
+      let receipt = switch (await verifyFeeWithReceipt(txHash, chain)) {
+        case (#err("PENDING")) { return #err("PENDING: fee tx not yet indexed — retry in a moment") };
+        case (#err("TX_FAILED")) { return #err("MINER_FEE_TX_FAILED: the fee transaction reverted on-chain") };
+        case (#err(e)) { return #err("MINER_FEE_TX_ERROR: " # e) };
+        case (#ok(json)) { json };
+      };
+
+      // 2. collector FeePaid event: value + binding bytes. PENDING outcomes
+      //    are retriable (same recovery model as claims); #missing with a
+      //    tx.to == collector means a plain transfer (no event) — the
+      //    binding then comes from the tx calldata, which the collector
+      //    requires anyway.
+      var paidValueWei : ?Nat = null;
+      var eventBindingHex : ?Text = null;
+      switch (VerifyLib.feePaidLogValue(receipt, collector, "")) {
+        case (#found(r)) {
+          paidValueWei := ?r.valueWei;
+          eventBindingHex := r.bindingHex;
+        };
+        case (#unparseable) { return #err("PENDING: fee event unreadable — retry in a moment") };
+        case (#missing) {
+          // NOT a usable fallback (review 2026-09-12): with recipient ==
+          // collector enforced and FeePaid emitted on every accepted
+          // payment, #missing here means a stale/partial RPC receipt —
+          // the payer-match check below correctly returns PENDING and the
+          // claim retried. A genuine plain transfer (no event) can never
+          // pass this gate, so no value/binding is read on this path.
+        };
+      };
+
+      // 3. fetch the fee tx (from / to / input).
+      let feeTx = switch (await VerifyLib.fetchTxByHash(txHash, chain, transformFn)) {
+        case (#err("PENDING")) { return #err("PENDING: fee tx not yet indexed — retry in a moment") };
+        case (#err(e)) { return #err("MINER_FEE_TX_ERROR: " # e) };
+        case (#ok(t)) { t };
+      };
+
+      // 4. the event's payer must be THIS tx's sender (binds event to tx).
+      switch (VerifyLib.feePaidPayerMatches(receipt, collector, feeTx.from)) {
+        case true {};
+        case false { return #err("PENDING: fee event payer mismatch — stale or partial receipt, retry") };
+      };
+
+      // 5. binding: recipient wallet + MINE payload naming the caller.
+      switch (VerifyLib.verifyMinerFeeBinding(feeTx, recipient, caller.toText(), eventBindingHex)) {
+        case (#ok) {};
+        case (#err(e)) { return #err(e) };
+      };
+
+      // 6. amount: exact-or-more against the configured fixed fee — only
+      //    on the event path (paidValueWei != null). Reachability note
+      //    (review 2026-09-12): the no-event path cannot reach this point
+      //    (payer-match fails on #missing → PENDING above), so the amount
+      //    floor is ALWAYS enforced for any payment that gets here —
+      //    there is no underpayment bypass through a missing event.
+      switch (paidValueWei) {
+        case null {}; // plain-transfer path — see comment above
+        case (?paid) {
+          switch (VerifyLib.minerFeeShortfall(paid, requiredWei)) {
+            case null {};
+            case (?missing) {
+              let paidEth = Float.fromInt(paid) / 1e18;
+              let reqEth = Float.fromInt(requiredWei) / 1e18;
+              return #err("MINER_FEE_UNDERPAID: paid " # paidEth.toText() # " native, required ≥ " # reqEth.toText());
+            };
+          };
+        };
+      };
+
+      // Remember the verified fee facts for the atomic tail below.
+      feeCheck := ?{ chain = chain; txHash = txHash };
+    };
+
+    // --- Atomic tail (await-free): replay check → create → consume ---
+    // Any concurrent createMiner with the same fee tx interleaves only at
+    // awaits — there are none between this check and the consume.
+    switch (feeCheck) {
+      case (?fc) {
+        if (MiningLib.isMinerFeeConsumed(state, fc.chain, fc.txHash)) {
+          return #err("MINER_FEE_REPLAY: this fee transaction was already used to create a miner");
+        };
+        let result = MiningLib.createMiner(state, gritProxy(), caller, name, gritAmount, rate);
+        switch (result) {
+          case (#ok(id)) {
+            // Tear the ticket ONLY on success — a failed create must not
+            // consume the caller's payment.
+            MiningLib.consumeMinerFee(state, fc.chain, fc.txHash);
+            #ok(id);
+          };
+          case (#err(e)) { #err(e) };
+        };
+      };
+      case null {
+        MiningLib.createMiner(state, gritProxy(), caller, name, gritAmount, rate);
+      };
+    };
   };
 
   /// Edit an existing miner (rename, top-up, rate change, pause/resume).
@@ -392,35 +553,82 @@ mixin (
             credited += 1;
           } else {
             try {
-              let result = await ledger.icrc1_transfer({
-                from_subaccount = null;
-                to = { owner = entry.owner; subaccount = null };
-                amount = entry.amount;
-                fee = null;
-                memo = ?Utils.blockIdMemo(entry.blockId);
-                created_at_time = ?Nat64.fromNat(Int.abs(Time.now()));
-              });
-              switch (result) {
-                case (#Ok _) {
-                  state.mintedBlockIds.add(entry.blockId);
-                  let without = state.abandonedMints.filter(func(e : MiningLib.MintRetryEntry) : Bool { e.blockId != entry.blockId });
-                  state.abandonedMints.clear();
-                  for (e in without.values()) { state.abandonedMints.add(e) };
-                  state.totalMintSucceeded += 1;
-                  credited += 1;
+              // AKK-6: cap-clamp the replayed amount against current supply —
+              // the "already counted in totalAkkMined" argument covers
+              // bookkeeping, not the LEDGER's 21M cap. If the supply query
+              // fails, leave the entry abandoned (retry later) — no blind mint.
+              var replayAmount = entry.amount;
+              var supplyUnknown = false;
+              try {
+                let currentSupply = await ledger.icrc1_total_supply();
+                replayAmount := LedgerMint.capDecision(currentSupply, LedgerMint.AKK_HARD_CAP, entry.amount);
+              } catch (_) { supplyUnknown := true };
+              if (supplyUnknown) {
+                entry.error := "creditAbandonedMints: supply query failed — left for retry (AKK-6)";
+                entry.lastAttemptTime := Time.now();
+              } else if (replayAmount == 0) {
+                // Ledger cap genuinely reached — these rewards can never mint.
+                state.mintedBlockIds.add(entry.blockId);
+                let without = state.abandonedMints.filter(func(e : MiningLib.MintRetryEntry) : Bool { e.blockId != entry.blockId });
+                state.abandonedMints.clear();
+                for (e in without.values()) { state.abandonedMints.add(e) };
+                credited += 1;
+              } else if (replayAmount != entry.amount) {
+                // W4/A-F1: cap-reached is settled above; here the frozen amount
+                // only PARTIALLY fits, so sending it would hash differently from
+                // the original attempt and a committed-but-unreported transfer
+                // could be paid twice. Leave it abandoned for the admin instead.
+                entry.error := "creditAbandonedMints: frozen amount no longer fits the remaining cap — not sent (request identity preserved)";
+                entry.lastAttemptTime := Time.now();
+              } else {
+                // F2 staleness net (mirrors drainPendingMints): an entry can
+                // reach the abandoned list with a timestamp that has since aged
+                // out of the ledger's 24h window, and a frozen value cannot
+                // refresh itself — the replay would fail #TooOld forever.
+                // Re-freeze before replaying. Safe here: every retry of this
+                // entry failed, so no transfer ever committed for the block (a
+                // committed one would have returned #Duplicate on the next
+                // identical attempt).
+                let replayNow = Time.now();
+                if (LedgerMint.isFrozenStale(entry.createdAtTime, replayNow)) {
+                  entry.createdAtTime := LedgerMint.mintCreatedAtTime(entry.blockId, replayNow);
+                  entry.error := "Re-froze stale mint timestamp on admin replay (F2 staleness net)";
                 };
-                case (#Err(#Duplicate _)) {
-                  state.mintedBlockIds.add(entry.blockId);
-                  let without = state.abandonedMints.filter(func(e : MiningLib.MintRetryEntry) : Bool { e.blockId != entry.blockId });
-                  state.abandonedMints.clear();
-                  for (e in without.values()) { state.abandonedMints.add(e) };
-                  state.totalMintSucceeded += 1;
-                  credited += 1;
-                };
-                case (#Err e) {
-                  entry.error := "creditAbandonedMints Err: " # debug_show(e);
-                  entry.attempts += 1;
-                  entry.lastAttemptTime := Time.now();
+                let result = await ledger.icrc1_transfer({
+                  from_subaccount = null;
+                  to = { owner = entry.owner; subaccount = null };
+                  amount = replayAmount;
+                  fee = null;
+                  memo = ?Utils.blockIdMemo(entry.blockId);
+                  // AKK-7 + F2: the entry's FROZEN timestamp — the admin replay
+                  // sends the same created_at_time as the original attempt, so
+                  // if that attempt actually committed before being abandoned,
+                  // the ledger's dedup returns #Duplicate rather than minting
+                  // a second time.
+                  created_at_time = ?entry.createdAtTime;
+                });
+                switch (result) {
+                  case (#Ok _) {
+                    state.mintedBlockIds.add(entry.blockId);
+                    let without = state.abandonedMints.filter(func(e : MiningLib.MintRetryEntry) : Bool { e.blockId != entry.blockId });
+                    state.abandonedMints.clear();
+                    for (e in without.values()) { state.abandonedMints.add(e) };
+                    state.totalMintSucceeded += 1;
+                    credited += 1;
+                  };
+                  case (#Err(#Duplicate _)) {
+                    state.mintedBlockIds.add(entry.blockId);
+                    let without = state.abandonedMints.filter(func(e : MiningLib.MintRetryEntry) : Bool { e.blockId != entry.blockId });
+                    state.abandonedMints.clear();
+                    for (e in without.values()) { state.abandonedMints.add(e) };
+                    state.totalMintSucceeded += 1;
+                    credited += 1;
+                  };
+                  case (#Err e) {
+                    entry.error := "creditAbandonedMints Err: " # debug_show(e);
+                    entry.attempts += 1;
+                    entry.lastAttemptTime := Time.now();
+                  };
                 };
               };
             } catch (e) {
@@ -457,6 +665,19 @@ mixin (
   ) : async { #ok; #err : Text } {
     if (not AllowlistLib.isAdmin(adminState, caller)) {
       return #err "Unauthorized: admins only";
+    };
+    // F1 hardening: fees are only armable on allowlisted chains. The UI's
+    // fee display filters to allowlisted chains — arming a fee on any other
+    // chain would make the UI show "free" while the backend enforced (a
+    // config-divergence bypass). Case-insensitive match; the allowlist is
+    // the source of truth for which chains exist.
+    let chainLc = chain.toLower();
+    var supported : Nat = 0;
+    for (t in AllowlistLib.getTokens(allowlistState).values()) {
+      if (t.chain.toLower() == chainLc) { supported += 1 };
+    };
+    if (not MiningLib.setMinerCreationFeeAllowed(supported)) {
+      return #err("MINER_FEE_CHAIN_UNSUPPORTED: no allowlisted tokens on \"" # chain # "\" — allowlist a token on that chain before setting its creation fee");
     };
     MiningLib.setMinerCreationFee(state, chain, feeWei);
     #ok;

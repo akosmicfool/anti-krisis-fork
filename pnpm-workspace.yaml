@@ -2,6 +2,7 @@ packages:
   - src/**/*
 allowBuilds:
   '@biomejs/biome': true
+  '@dfinity/pic': true
   '@reown/appkit': true
   esbuild: true
   sharp: true

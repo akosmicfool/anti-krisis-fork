@@ -24,6 +24,7 @@ import {
   useRetryFeeClaim,
 } from "../hooks/use-backend";
 import { useWallet } from "../hooks/use-wallet";
+import { deriveClaimAction } from "../lib/claim-recovery";
 import { buildFeeBindingData } from "../lib/fee-binding";
 import {
   type AllowlistedToken,
@@ -58,7 +59,7 @@ function formatGritFull(amount: bigint): string {
 
 // ─── Status Badge ─────────────────────────────────────────────────────────────
 function StatusBadge({ claim }: { claim: ClaimRecord }) {
-  const { color, label } = getClaimStatus(claim.status);
+  const { color } = getClaimStatus(claim.status);
   const styles: Record<string, string> = {
     pending:
       "border-yellow-500/40 bg-yellow-500/10 text-yellow-400 animate-pulse",
@@ -67,14 +68,30 @@ function StatusBadge({ claim }: { claim: ClaimRecord }) {
     pending_fee:
       "border-amber-500/40 bg-amber-500/10 text-amber-400 animate-pulse",
   };
+  // W1B: status names mirror the user-approved state mapping — and
+  // distinguish burn-verified from burn-unverified within #pending via
+  // amountBurned (backend commits it atomically when the burn verifies).
+  // Issue 2 (2026-09-11): #pending with NO fee hash = the fee was never
+  // sent (rejected or not yet paid) → "Fee Pending" with the Pay Fee
+  // action, regardless of burn-verification lag (the action is the same).
+  const burnVerified = claim.amountBurned > 0;
+  const feeBound = (claim.feeTxHash ?? "").trim() !== "";
   const displayLabel =
     color === "pending"
-      ? "Confirming…"
+      ? feeBound
+        ? burnVerified
+          ? "Confirming fee"
+          : "Confirming burn"
+        : "Fee Pending"
       : color === "verified"
-        ? "Confirmed"
+        ? "GRIT Earned"
         : color === "pending_fee"
-          ? "Fee Failed"
-          : label;
+          ? feeBound
+            ? "Confirming fee"
+            : "Fee Pending"
+          : burnVerified
+            ? "Fee Failed"
+            : "Burn Failed";
   return (
     <span
       className={`inline-flex items-center px-1.5 py-0.5 border font-mono text-[10px] tracking-widest uppercase ${styles[color] ?? ""}`}
@@ -265,8 +282,6 @@ function ClaimRow({
   const [claimRetrying, setClaimRetrying] = useState(false);
   const [claimRetryMsg, setClaimRetryMsg] = useState("");
   const feeRate = feePercent != null ? feePercent / 100 : 0.0069;
-  const claimIsPendingFee = isPendingFee(claim.status);
-  const claimNeedsRecheck = claim.status === ClaimStatus.pending;
 
   // Cooldown state for this claim
   const attemptState = recheckAttempts[claim.txHash];
@@ -327,7 +342,16 @@ function ClaimRow({
       });
       setRetrySuccess(true);
     } catch (err) {
-      setRetryError(err instanceof Error ? err.message : "Fee retry failed.");
+      // Bug-1: "not yet confirmed" = the fee tx was sent and the backend
+      // has STORED it (#pendingFee) — the 15s timer verifies + credits.
+      // Show it as in-progress success, not an error.
+      const msg = err instanceof Error ? err.message : "";
+      if (msg.includes("Fee transaction not yet confirmed")) {
+        setRetrySuccess(true);
+        setRetryError("");
+      } else {
+        setRetryError(err instanceof Error ? err.message : "Fee retry failed.");
+      }
     } finally {
       setRetrying(false);
     }
@@ -370,9 +394,8 @@ function ClaimRow({
   // count as "no fee" (the backend stores ?"" through the pendingFee
   // transition). Same flow as Retry Fee; a failed fee tx never loses the
   // burn (retry again any time).
-  const claimNeedsFee =
-    (claimIsPendingFee || claim.status === ClaimStatus.pending) &&
-    (claim.feeTxHash ?? "").trim() === "";
+  // (The old claimNeedsFee/claimIsPendingFee/claimNeedsRecheck flags are
+  // superseded by deriveClaimAction — one action per row.)
   async function handlePayFee() {
     if (!feeRecipient || !wallet.isConnected) return;
     setRetrying(true);
@@ -436,116 +459,138 @@ function ClaimRow({
       </td>
       <td className="px-3 py-3">
         <div className="flex flex-col gap-1.5">
+          {/* W1B UX: ONE status + ONE action per row, derived from the
+              claim's exact state (see lib/claim-recovery.ts). The old
+              independent flags could stack 2-3 actions inviting the user
+              to try everything. */}
           <StatusBadge claim={claim} />
-          {claimNeedsFee && !retrySuccess && (
-            <>
-              <button
-                type="button"
-                onClick={handlePayFee}
-                disabled={retrying || !wallet.isConnected}
-                className="inline-flex items-center gap-1 px-2 py-1 border border-amber-500/50 bg-amber-500/10 text-amber-300 font-mono text-[10px] uppercase tracking-widest hover:bg-amber-500/20 transition-colors disabled:opacity-50"
-                data-ocid={`dashboard.claims.pay_fee_button.${pos}`}
-              >
-                {retrying ? "Sending…" : "Pay Fee"}
-              </button>
-              {retryError && (
-                <p
-                  className="font-mono text-[10px] text-red-400"
-                  data-ocid={`dashboard.claims.pay_fee_error.${pos}`}
-                >
-                  {retryError}
-                </p>
-              )}
-            </>
-          )}
-          {claimIsPendingFee && !retrySuccess && (
-            <>
-              <button
-                type="button"
-                onClick={handleRetryFee}
-                disabled={retrying || !wallet.isConnected}
-                className="inline-flex items-center gap-1 px-2 py-1 border border-amber-500/50 bg-amber-500/10 text-amber-300 font-mono text-[10px] uppercase tracking-widest hover:bg-amber-500/20 transition-colors disabled:opacity-50"
-                data-ocid={`dashboard.claims.retry_fee_button.${pos}`}
-              >
-                {retrying ? "Sending…" : "Retry Fee"}
-              </button>
-              {retryError && (
-                <p
-                  className="font-mono text-[10px] text-red-400"
-                  data-ocid={`dashboard.claims.retry_fee_error.${pos}`}
-                >
-                  {retryError}
-                </p>
-              )}
-            </>
-          )}
-          {retrySuccess && (
-            <span
-              className="font-mono text-[10px] text-emerald-400"
-              data-ocid={`dashboard.claims.retry_fee_success.${pos}`}
-            >
-              Fee paid ✓
-            </span>
-          )}
-          {getClaimStatus(claim.status).color === "failed" && (
-            <>
-              <button
-                type="button"
-                onClick={() => void handleRetryClaim()}
-                disabled={claimRetrying || !wallet.isConnected}
-                className="inline-flex items-center gap-1 px-2 py-1 border border-sky-500/50 bg-sky-500/10 text-sky-300 font-mono text-[10px] uppercase tracking-widest hover:bg-sky-500/20 transition-colors disabled:opacity-50"
-                data-ocid={`dashboard.claims.retry_claim_button.${pos}`}
-              >
-                {claimRetrying ? "Submitting…" : "Retry Claim"}
-              </button>
-              {claimRetryMsg && (
-                <p
-                  className="font-mono text-[10px] text-muted-foreground"
-                  data-ocid={`dashboard.claims.retry_claim_msg.${pos}`}
-                >
-                  {claimRetryMsg}
-                </p>
-              )}
-            </>
-          )}
-          {claimNeedsRecheck && (
-            <>
-              <button
-                type="button"
-                onClick={handleRecheck}
-                disabled={rechecking || !wallet.address || inCooldown}
-                className={`inline-flex items-center gap-1 px-2 py-1 border font-mono text-[10px] uppercase tracking-widest transition-colors ${
-                  inCooldown
-                    ? "border-border bg-muted/20 text-muted-foreground cursor-not-allowed opacity-60"
-                    : "border-green-500/50 bg-green-500/10 text-green-300 hover:bg-green-500/20 disabled:opacity-50"
-                }`}
-                data-ocid={`dashboard.claims.recheck_button.${pos}`}
-              >
-                {inCooldown ? (
-                  `Wait ${remainingMM}:${remainingSS}`
-                ) : rechecking ? (
+          {(() => {
+            const action = deriveClaimAction(claim);
+            const disabled =
+              retrying ||
+              claimRetrying ||
+              rechecking ||
+              inCooldown ||
+              !wallet.isConnected;
+            switch (action.kind) {
+              case "pay_fee":
+                return (
                   <>
-                    <RefreshCw className="h-2.5 w-2.5 animate-spin" />
-                    Checking…
+                    <button
+                      type="button"
+                      onClick={handlePayFee}
+                      disabled={disabled}
+                      className="inline-flex items-center gap-1 px-2 py-1 border border-amber-500/50 bg-amber-500/10 text-amber-300 font-mono text-[10px] uppercase tracking-widest hover:bg-amber-500/20 transition-colors disabled:opacity-50"
+                      data-ocid={`dashboard.claims.pay_fee_button.${pos}`}
+                    >
+                      {retrying ? "Sending…" : "Pay Fee"}
+                    </button>
+                    {retryError && (
+                      <p
+                        className="font-mono text-[10px] text-red-400"
+                        data-ocid={`dashboard.claims.pay_fee_error.${pos}`}
+                      >
+                        {retryError}
+                      </p>
+                    )}
                   </>
-                ) : (
-                  "Re-check Tx"
-                )}
-              </button>
-              {recheckMsg && (
-                <p
-                  className={`font-mono text-[10px] ${
-                    recheckMsg.startsWith("✓")
-                      ? "text-emerald-400"
-                      : "text-red-400"
-                  }`}
-                  data-ocid={`dashboard.claims.recheck_msg.${pos}`}
-                >
-                  {recheckMsg}
-                </p>
-              )}
-            </>
-          )}
+                );
+              case "verifying_fee":
+                return retrySuccess ? (
+                  <span
+                    className="font-mono text-[10px] text-emerald-400"
+                    data-ocid={`dashboard.claims.retry_fee_success.${pos}`}
+                  >
+                    Fee paid ✓ — verifying
+                  </span>
+                ) : null;
+              case "retry_fee":
+                return (
+                  <>
+                    <button
+                      type="button"
+                      onClick={handleRetryFee}
+                      disabled={disabled}
+                      className="inline-flex items-center gap-1 px-2 py-1 border border-amber-500/50 bg-amber-500/10 text-amber-300 font-mono text-[10px] uppercase tracking-widest hover:bg-amber-500/20 transition-colors disabled:opacity-50"
+                      data-ocid={`dashboard.claims.retry_fee_button.${pos}`}
+                    >
+                      {retrying ? "Sending…" : "Retry Fee"}
+                    </button>
+                    {retryError && (
+                      <p
+                        className="font-mono text-[10px] text-red-400"
+                        data-ocid={`dashboard.claims.retry_fee_error.${pos}`}
+                      >
+                        {retryError}
+                      </p>
+                    )}
+                  </>
+                );
+              case "retry_claim":
+                return (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => void handleRetryClaim()}
+                      disabled={disabled}
+                      className="inline-flex items-center gap-1 px-2 py-1 border border-sky-500/50 bg-sky-500/10 text-sky-300 font-mono text-[10px] uppercase tracking-widest hover:bg-sky-500/20 transition-colors disabled:opacity-50"
+                      data-ocid={`dashboard.claims.retry_claim_button.${pos}`}
+                    >
+                      {claimRetrying ? "Submitting…" : "Retry Claim"}
+                    </button>
+                    {claimRetryMsg && (
+                      <p
+                        className="font-mono text-[10px] text-muted-foreground"
+                        data-ocid={`dashboard.claims.retry_claim_msg.${pos}`}
+                      >
+                        {claimRetryMsg}
+                      </p>
+                    )}
+                  </>
+                );
+              case "verifying_burn":
+                return (
+                  <>
+                    <button
+                      type="button"
+                      onClick={handleRecheck}
+                      disabled={disabled}
+                      className={`inline-flex items-center gap-1 px-2 py-1 border font-mono text-[10px] uppercase tracking-widest transition-colors ${
+                        inCooldown
+                          ? "border-border bg-muted/20 text-muted-foreground cursor-not-allowed opacity-60"
+                          : "border-green-500/50 bg-green-500/10 text-green-300 hover:bg-green-500/20 disabled:opacity-50"
+                      }`}
+                      data-ocid={`dashboard.claims.recheck_button.${pos}`}
+                    >
+                      {inCooldown ? (
+                        `Wait ${remainingMM}:${remainingSS}`
+                      ) : rechecking ? (
+                        <>
+                          <RefreshCw className="h-2.5 w-2.5 animate-spin" />
+                          Checking…
+                        </>
+                      ) : (
+                        "Re-check Tx"
+                      )}
+                    </button>
+                    {recheckMsg && (
+                      <p
+                        className={`font-mono text-[10px] ${
+                          recheckMsg.startsWith("✓")
+                            ? "text-emerald-400"
+                            : "text-red-400"
+                        }`}
+                        data-ocid={`dashboard.claims.recheck_msg.${pos}`}
+                      >
+                        {recheckMsg}
+                      </p>
+                    )}
+                  </>
+                );
+              default:
+                return null;
+            }
+          })()}
         </div>
       </td>
       <td className="px-3 py-3 whitespace-nowrap">

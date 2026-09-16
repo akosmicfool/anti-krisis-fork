@@ -261,6 +261,13 @@ export enum TribeError {
 export interface backendInterface {
     addAdmin(newAdmin: Principal): Promise<void>;
     addToken(token: AllowlistedToken): Promise<void>;
+    applySecureFeeConfig(feeRecipient: string, collectorAddress: string): Promise<{
+        __kind__: "ok";
+        ok: null;
+    } | {
+        __kind__: "err";
+        err: string;
+    }>;
     claimOgBadge(): Promise<{
         __kind__: "ok";
         ok: null;
@@ -289,7 +296,7 @@ export interface backendInterface {
         __kind__: "err";
         err: string;
     }>;
-    createMiner(name: string, gritAmount: bigint, rate: bigint): Promise<{
+    createMiner(name: string, gritAmount: bigint, rate: bigint, feeChain: string | null, feeTxHash: string | null): Promise<{
         __kind__: "ok";
         ok: MinerId;
     } | {
@@ -310,6 +317,7 @@ export interface backendInterface {
         __kind__: "err";
         err: string;
     }>;
+    disarmFeePaidCheck(): Promise<void>;
     editMiner(minerId: MinerId, nameChange: string | null, topUp: bigint | null, rateChange: bigint | null, pause: boolean | null): Promise<{
         __kind__: "ok";
         ok: null;
@@ -447,6 +455,7 @@ export interface backendInterface {
         __kind__: "err";
         err: TribeError;
     }>;
+    probeRpcEndpoints(): Promise<Array<[string, string]>>;
     recheckClaimByHash(txHash: string): Promise<{
         __kind__: "ok";
         ok: string;
@@ -502,7 +511,6 @@ export interface backendInterface {
         err: string;
     }>;
     setFeeCollectorAddress(address: string): Promise<void>;
-    setFeePaidCheckEnabled(enabled: boolean): Promise<void>;
     setFeePercent(percent: number): Promise<void>;
     setFeeRecipient(address: string): Promise<void>;
     setGritIssuanceRate(rate: bigint): Promise<void>;

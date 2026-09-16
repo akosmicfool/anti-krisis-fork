@@ -307,6 +307,13 @@ export enum TribeError {
 export interface backendInterface {
     addAdmin(newAdmin: Principal): Promise<void>;
     addToken(token: AllowlistedToken): Promise<void>;
+    applySecureFeeConfig(feeRecipient: string, collectorAddress: string): Promise<{
+        __kind__: "ok";
+        ok: null;
+    } | {
+        __kind__: "err";
+        err: string;
+    }>;
     claimOgBadge(): Promise<{
         __kind__: "ok";
         ok: null;
@@ -335,7 +342,7 @@ export interface backendInterface {
         __kind__: "err";
         err: string;
     }>;
-    createMiner(name: string, gritAmount: bigint, rate: bigint): Promise<{
+    createMiner(name: string, gritAmount: bigint, rate: bigint, feeChain: string | null, feeTxHash: string | null): Promise<{
         __kind__: "ok";
         ok: MinerId;
     } | {
@@ -356,6 +363,7 @@ export interface backendInterface {
         __kind__: "err";
         err: string;
     }>;
+    disarmFeePaidCheck(): Promise<void>;
     editMiner(minerId: MinerId, nameChange: string | null, topUp: bigint | null, rateChange: bigint | null, pause: boolean | null): Promise<{
         __kind__: "ok";
         ok: null;
@@ -493,6 +501,7 @@ export interface backendInterface {
         __kind__: "err";
         err: TribeError;
     }>;
+    probeRpcEndpoints(): Promise<Array<[string, string]>>;
     recheckClaimByHash(txHash: string): Promise<{
         __kind__: "ok";
         ok: string;
@@ -548,7 +557,6 @@ export interface backendInterface {
         err: string;
     }>;
     setFeeCollectorAddress(address: string): Promise<void>;
-    setFeePaidCheckEnabled(enabled: boolean): Promise<void>;
     setFeePercent(percent: number): Promise<void>;
     setFeeRecipient(address: string): Promise<void>;
     setGritIssuanceRate(rate: bigint): Promise<void>;
@@ -633,6 +641,26 @@ export class Backend implements backendInterface {
             return result;
         }
     }
+    async applySecureFeeConfig(arg0: string, arg1: string): Promise<{
+        __kind__: "ok";
+        ok: null;
+    } | {
+        __kind__: "err";
+        err: string;
+    }> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.applySecureFeeConfig(arg0, arg1);
+                return from_candid_variant_n1(this._uploadFile, this._downloadFile, result);
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.applySecureFeeConfig(arg0, arg1);
+            return from_candid_variant_n1(this._uploadFile, this._downloadFile, result);
+        }
+    }
     async claimOgBadge(): Promise<{
         __kind__: "ok";
         ok: null;
@@ -713,7 +741,7 @@ export class Backend implements backendInterface {
             return from_candid_variant_n1(this._uploadFile, this._downloadFile, result);
         }
     }
-    async createMiner(arg0: string, arg1: bigint, arg2: bigint): Promise<{
+    async createMiner(arg0: string, arg1: bigint, arg2: bigint, arg3: string | null, arg4: string | null): Promise<{
         __kind__: "ok";
         ok: MinerId;
     } | {
@@ -722,15 +750,15 @@ export class Backend implements backendInterface {
     }> {
         if (this.processError) {
             try {
-                const result = await this.actor.createMiner(arg0, arg1, arg2);
-                return from_candid_variant_n3(this._uploadFile, this._downloadFile, result);
+                const result = await this.actor.createMiner(arg0, arg1, arg2, to_candid_opt_n3(this._uploadFile, this._downloadFile, arg3), to_candid_opt_n3(this._uploadFile, this._downloadFile, arg4));
+                return from_candid_variant_n4(this._uploadFile, this._downloadFile, result);
             } catch (e) {
                 this.processError(e);
                 throw new Error("unreachable");
             }
         } else {
-            const result = await this.actor.createMiner(arg0, arg1, arg2);
-            return from_candid_variant_n3(this._uploadFile, this._downloadFile, result);
+            const result = await this.actor.createMiner(arg0, arg1, arg2, to_candid_opt_n3(this._uploadFile, this._downloadFile, arg3), to_candid_opt_n3(this._uploadFile, this._downloadFile, arg4));
+            return from_candid_variant_n4(this._uploadFile, this._downloadFile, result);
         }
     }
     async createTribe(arg0: string, arg1: string, arg2: string | null, arg3: string | null): Promise<{
@@ -742,14 +770,14 @@ export class Backend implements backendInterface {
     }> {
         if (this.processError) {
             try {
-                const result = await this.actor.createTribe(arg0, arg1, to_candid_opt_n4(this._uploadFile, this._downloadFile, arg2), to_candid_opt_n4(this._uploadFile, this._downloadFile, arg3));
+                const result = await this.actor.createTribe(arg0, arg1, to_candid_opt_n3(this._uploadFile, this._downloadFile, arg2), to_candid_opt_n3(this._uploadFile, this._downloadFile, arg3));
                 return from_candid_variant_n5(this._uploadFile, this._downloadFile, result);
             } catch (e) {
                 this.processError(e);
                 throw new Error("unreachable");
             }
         } else {
-            const result = await this.actor.createTribe(arg0, arg1, to_candid_opt_n4(this._uploadFile, this._downloadFile, arg2), to_candid_opt_n4(this._uploadFile, this._downloadFile, arg3));
+            const result = await this.actor.createTribe(arg0, arg1, to_candid_opt_n3(this._uploadFile, this._downloadFile, arg2), to_candid_opt_n3(this._uploadFile, this._downloadFile, arg3));
             return from_candid_variant_n5(this._uploadFile, this._downloadFile, result);
         }
     }
@@ -773,6 +801,20 @@ export class Backend implements backendInterface {
             return from_candid_variant_n2(this._uploadFile, this._downloadFile, result);
         }
     }
+    async disarmFeePaidCheck(): Promise<void> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.disarmFeePaidCheck();
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.disarmFeePaidCheck();
+            return result;
+        }
+    }
     async editMiner(arg0: MinerId, arg1: string | null, arg2: bigint | null, arg3: bigint | null, arg4: boolean | null): Promise<{
         __kind__: "ok";
         ok: null;
@@ -782,14 +824,14 @@ export class Backend implements backendInterface {
     }> {
         if (this.processError) {
             try {
-                const result = await this.actor.editMiner(arg0, to_candid_opt_n4(this._uploadFile, this._downloadFile, arg1), to_candid_opt_n11(this._uploadFile, this._downloadFile, arg2), to_candid_opt_n11(this._uploadFile, this._downloadFile, arg3), to_candid_opt_n12(this._uploadFile, this._downloadFile, arg4));
+                const result = await this.actor.editMiner(arg0, to_candid_opt_n3(this._uploadFile, this._downloadFile, arg1), to_candid_opt_n11(this._uploadFile, this._downloadFile, arg2), to_candid_opt_n11(this._uploadFile, this._downloadFile, arg3), to_candid_opt_n12(this._uploadFile, this._downloadFile, arg4));
                 return from_candid_variant_n1(this._uploadFile, this._downloadFile, result);
             } catch (e) {
                 this.processError(e);
                 throw new Error("unreachable");
             }
         } else {
-            const result = await this.actor.editMiner(arg0, to_candid_opt_n4(this._uploadFile, this._downloadFile, arg1), to_candid_opt_n11(this._uploadFile, this._downloadFile, arg2), to_candid_opt_n11(this._uploadFile, this._downloadFile, arg3), to_candid_opt_n12(this._uploadFile, this._downloadFile, arg4));
+            const result = await this.actor.editMiner(arg0, to_candid_opt_n3(this._uploadFile, this._downloadFile, arg1), to_candid_opt_n11(this._uploadFile, this._downloadFile, arg2), to_candid_opt_n11(this._uploadFile, this._downloadFile, arg3), to_candid_opt_n12(this._uploadFile, this._downloadFile, arg4));
             return from_candid_variant_n1(this._uploadFile, this._downloadFile, result);
         }
     }
@@ -802,14 +844,14 @@ export class Backend implements backendInterface {
     }> {
         if (this.processError) {
             try {
-                const result = await this.actor.editTribe(arg0, to_candid_opt_n4(this._uploadFile, this._downloadFile, arg1), to_candid_opt_n4(this._uploadFile, this._downloadFile, arg2), to_candid_opt_n4(this._uploadFile, this._downloadFile, arg3), to_candid_opt_n4(this._uploadFile, this._downloadFile, arg4));
+                const result = await this.actor.editTribe(arg0, to_candid_opt_n3(this._uploadFile, this._downloadFile, arg1), to_candid_opt_n3(this._uploadFile, this._downloadFile, arg2), to_candid_opt_n3(this._uploadFile, this._downloadFile, arg3), to_candid_opt_n3(this._uploadFile, this._downloadFile, arg4));
                 return from_candid_variant_n5(this._uploadFile, this._downloadFile, result);
             } catch (e) {
                 this.processError(e);
                 throw new Error("unreachable");
             }
         } else {
-            const result = await this.actor.editTribe(arg0, to_candid_opt_n4(this._uploadFile, this._downloadFile, arg1), to_candid_opt_n4(this._uploadFile, this._downloadFile, arg2), to_candid_opt_n4(this._uploadFile, this._downloadFile, arg3), to_candid_opt_n4(this._uploadFile, this._downloadFile, arg4));
+            const result = await this.actor.editTribe(arg0, to_candid_opt_n3(this._uploadFile, this._downloadFile, arg1), to_candid_opt_n3(this._uploadFile, this._downloadFile, arg2), to_candid_opt_n3(this._uploadFile, this._downloadFile, arg3), to_candid_opt_n3(this._uploadFile, this._downloadFile, arg4));
             return from_candid_variant_n5(this._uploadFile, this._downloadFile, result);
         }
     }
@@ -1742,6 +1784,20 @@ export class Backend implements backendInterface {
             return from_candid_variant_n60(this._uploadFile, this._downloadFile, result);
         }
     }
+    async probeRpcEndpoints(): Promise<Array<[string, string]>> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.probeRpcEndpoints();
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.probeRpcEndpoints();
+            return result;
+        }
+    }
     async recheckClaimByHash(arg0: string): Promise<{
         __kind__: "ok";
         ok: string;
@@ -1963,20 +2019,6 @@ export class Backend implements backendInterface {
             }
         } else {
             const result = await this.actor.setFeeCollectorAddress(arg0);
-            return result;
-        }
-    }
-    async setFeePaidCheckEnabled(arg0: boolean): Promise<void> {
-        if (this.processError) {
-            try {
-                const result = await this.actor.setFeePaidCheckEnabled(arg0);
-                return result;
-            } catch (e) {
-                this.processError(e);
-                throw new Error("unreachable");
-            }
-        } else {
-            const result = await this.actor.setFeePaidCheckEnabled(arg0);
             return result;
         }
     }
@@ -2832,7 +2874,14 @@ function from_candid_variant_n26(_uploadFile: (file: ExternalBlob) => Promise<Ui
 }): ClaimStatus {
     return "verified" in value ? ClaimStatus.verified : "pending" in value ? ClaimStatus.pending : "pendingFee" in value ? ClaimStatus.pendingFee : "failed" in value ? ClaimStatus.failed : value;
 }
-function from_candid_variant_n3(_uploadFile: (file: ExternalBlob) => Promise<Uint8Array>, _downloadFile: (file: Uint8Array) => Promise<ExternalBlob>, value: {
+function from_candid_variant_n31(_uploadFile: (file: ExternalBlob) => Promise<Uint8Array>, _downloadFile: (file: Uint8Array) => Promise<ExternalBlob>, value: {
+    add: null;
+} | {
+    remove: null;
+}): AuditAction {
+    return "add" in value ? AuditAction.add : "remove" in value ? AuditAction.remove : value;
+}
+function from_candid_variant_n4(_uploadFile: (file: ExternalBlob) => Promise<Uint8Array>, _downloadFile: (file: Uint8Array) => Promise<ExternalBlob>, value: {
     ok: _MinerId;
 } | {
     err: string;
@@ -2850,13 +2899,6 @@ function from_candid_variant_n3(_uploadFile: (file: ExternalBlob) => Promise<Uin
         __kind__: "err",
         err: value.err
     } : value;
-}
-function from_candid_variant_n31(_uploadFile: (file: ExternalBlob) => Promise<Uint8Array>, _downloadFile: (file: Uint8Array) => Promise<ExternalBlob>, value: {
-    add: null;
-} | {
-    remove: null;
-}): AuditAction {
-    return "add" in value ? AuditAction.add : "remove" in value ? AuditAction.remove : value;
 }
 function from_candid_variant_n47(_uploadFile: (file: ExternalBlob) => Promise<Uint8Array>, _downloadFile: (file: Uint8Array) => Promise<ExternalBlob>, value: {
     active: null;
@@ -3017,7 +3059,7 @@ function to_candid_opt_n11(_uploadFile: (file: ExternalBlob) => Promise<Uint8Arr
 function to_candid_opt_n12(_uploadFile: (file: ExternalBlob) => Promise<Uint8Array>, _downloadFile: (file: Uint8Array) => Promise<ExternalBlob>, value: boolean | null): [] | [boolean] {
     return value === null ? candid_none() : candid_some(value);
 }
-function to_candid_opt_n4(_uploadFile: (file: ExternalBlob) => Promise<Uint8Array>, _downloadFile: (file: Uint8Array) => Promise<ExternalBlob>, value: string | null): [] | [string] {
+function to_candid_opt_n3(_uploadFile: (file: ExternalBlob) => Promise<Uint8Array>, _downloadFile: (file: Uint8Array) => Promise<ExternalBlob>, value: string | null): [] | [string] {
     return value === null ? candid_none() : candid_some(value);
 }
 function to_candid_record_n64(_uploadFile: (file: ExternalBlob) => Promise<Uint8Array>, _downloadFile: (file: Uint8Array) => Promise<ExternalBlob>, value: {

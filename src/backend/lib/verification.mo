@@ -1,12 +1,13 @@
 import Text "mo:core/Text";
 import Char "mo:core/Char";
-import Array "mo:core/Array";
+import Prim "mo:⛔";
 import Nat8 "mo:core/Nat8";
 import OutCall "mo:caffeineai-http-outcalls/outcall";
+import FeeAmountLib "./fee-amount";
 
 module {
   public type VerificationResult = {
-    #ok : { amountBurned : Nat };
+    #ok : { amountBurned : Nat; burnOwner : ?Text };
     #err : Text;
   };
 
@@ -15,12 +16,21 @@ module {
   /// Ethereum gets a primary + two fallback URLs separated by '|'.
   public func rpcUrlForChain(chain : Text) : ?Text {
     switch (chain) {
-      case ("ethereum") { ?"https://ethereum.publicnode.com|https://rpc.ankr.com/eth|https://eth.drpc.org|https://cloudflare-eth.com" };
+      // Endpoint sets re-probed 2026-09-11 against the stuck v338 receipts
+      // (GIV fee 0x34864b…/burn 0x0d18e9… on OP, IMPT fee 0xbbd649… on ETH):
+      // canister-side fetches failed for BOTH chains while every receipt was
+      // verifiably live (publicnode 403s canister subnets per the 09-03
+      // incident; cloudflare-eth result:null; mainnet.optimism.io +
+      // optimism.drpc.org failing from the canister at the same time my
+      // machine could serve them). 1rpc.io (op + eth) and blastapi (eth)
+      // both served the actual stuck receipts receipts+txByHash from this
+      // machine — first in line until canister-side probing says otherwise.
+      case ("ethereum") { ?"https://1rpc.io/eth|https://eth-mainnet.public.blastapi.io|https://eth.drpc.org" };
       case ("arbitrum") { ?"https://arb1.arbitrum.io/rpc" };
       case ("polygon")  { ?"https://polygon-rpc.com" };
-      case ("optimism") { ?"https://mainnet.optimism.io" };
-      case ("base")     { ?"https://mainnet.base.org|https://1rpc.io/base|https://base.publicnode.com" };
-      case ("celo")     { ?"https://forno.celo.org|https://rpc.ankr.com/celo|https://celo.drpc.org|https://celo.meowrpc.com" };
+      case ("optimism") { ?"https://mainnet.optimism.io|https://optimism.drpc.org|https://1rpc.io/op" };
+      case ("base")     { ?"https://mainnet.base.org|https://1rpc.io/base|https://base-rpc.publicnode.com" };
+      case ("celo")     { ?"https://forno.celo.org|https://celo.drpc.org|https://celo-rpc.publicnode.com" };
       case (_)          { null };
     };
   };
@@ -309,29 +319,51 @@ module {
 
   /// Decode a lowercase hex string (no 0x prefix) into bytes. Invalid input
   /// returns an empty array (payload layout checks then reject it).
+  /// BUG FIX 2026-09-03: the old version used 0xFF as the invalid-digit
+  /// sentinel — but 0xFF is a LEGITIMATE byte value (any burn hash containing
+  /// an "ff" pair, ~11% of hashes, plus principal bytes). Those bindings were
+  /// silently rejected as "invalid hex" → "carries no binding payload".
+  /// Validity is now checked per CHARACTER before decoding; 0xFF bytes pass.
+  func hexDigitVal(c : Char) : ?Nat8 {
+    switch (c) {
+      case ('0') ?0;
+      case ('1') ?1;
+      case ('2') ?2;
+      case ('3') ?3;
+      case ('4') ?4;
+      case ('5') ?5;
+      case ('6') ?6;
+      case ('7') ?7;
+      case ('8') ?8;
+      case ('9') ?9;
+      case ('a') ?10;
+      case ('b') ?11;
+      case ('c') ?12;
+      case ('d') ?13;
+      case ('e') ?14;
+      case ('f') ?15;
+      case _ null;
+    };
+  };
+
   func hexToBytes(hex : Text) : [Nat8] {
     let arr = hex.toArray();
     if (arr.size() % 2 != 0) { return [] };
-    let out = Array.tabulate(arr.size() / 2, func(idx : Nat) : Nat8 {
-      let hi = hexDigitVal(arr[idx * 2]);
-      let lo = hexDigitVal(arr[idx * 2 + 1]);
-      if (hi == 0xFF or lo == 0xFF) { 0xFF } else { hi * 16 + lo };
+    // Validate every character FIRST (no sentinel collision with byte values).
+    var vi : Nat = 0;
+    while (vi < arr.size()) {
+      switch (hexDigitVal(arr[vi])) {
+        case null { return [] };
+        case (?_) {};
+      };
+      vi += 1;
+    };
+    let n = arr.size() / 2;
+    Prim.Array_tabulate(n, func(idx : Nat) : Nat8 {
+      let ?hi = hexDigitVal(arr[idx * 2]);
+      let ?lo = hexDigitVal(arr[idx * 2 + 1]);
+      hi * 16 + lo;
     });
-    // Reject if any nibble was invalid (0xFF marker)
-    var ok = true;
-    for (b in out.values()) {
-      if (b == 0xFF) { ok := false };
-    };
-    if (ok) out else [];
-  };
-
-  func hexDigitVal(c : Char) : Nat8 {
-    switch (c) {
-      case '0' 0; case '1' 1; case '2' 2; case '3' 3; case '4' 4;
-      case '5' 5; case '6' 6; case '7' 7; case '8' 8; case '9' 9;
-      case 'a' 10; case 'b' 11; case 'c' 12; case 'd' 13; case 'e' 14; case 'f' 15;
-      case _ 0xFF;
-    };
   };
 
   func byteToHex(b : Nat8) : Text {
@@ -354,7 +386,10 @@ module {
     ?(sliceChars(arr, valStart, j), j + 1);
   };
 
-  type LogParseResult = { #ok : { toAddr : Text; dataHex : Text }; #err : Text };
+  type LogParseResult = {
+    #ok : { fromAddr : Text; toAddr : Text; dataHex : Text };
+    #err : Text;
+  };
 
   /// Search the JSON logs array for a Transfer log from `tokenAddress` that burns tokens.
   /// Handles both `"key":"value"` and `"key": "value"` spacing variants.
@@ -468,7 +503,14 @@ module {
                               case null {
                                 return #err("Transfer topics missing topic[1] (from address)");
                               };
-                              case (?(_, after1)) {
+                              case (?(t1, after1)) {
+                                // W1B Bug-2 fix: capture the Transfer SENDER
+                                // (topic[1]) — the on-chain proof of who
+                                // burned, regardless of whether the burn tx
+                                // was sent directly or relayed (relayed
+                                // burns have tx.from = relayer, but the
+                                // Transfer log's from is the real owner).
+                                let fromAddr = topicToAddress(t1);
                                 switch (nextQuoted(logArr, after1)) {
                                   case null {
                                     return #err("Transfer topics missing topic[2] (to address)");
@@ -491,7 +533,7 @@ module {
                                         if (stripped == 0) {
                                           return #err("Transfer log data field is empty (no amount encoded)");
                                         };
-                                        return #ok({ toAddr; dataHex });
+                                        return #ok({ fromAddr; toAddr; dataHex });
                                       };
                                     };
                                   };
@@ -548,7 +590,7 @@ module {
 
     switch (findBurnTransferLog(arr, expectedToken)) {
       case (#err(msg)) { #err(msg) };
-      case (#ok({ toAddr; dataHex })) {
+      case (#ok({ fromAddr; toAddr; dataHex })) {
         let normTo = normAddr(toAddr);
         if (normTo != NULL_ADDRESS and normTo != DEAD_ADDRESS) {
           return #err("Transfer destination is not a valid burn address (got " # toAddr # ")");
@@ -557,9 +599,124 @@ module {
         if (amount == 0) {
           return #err("Burn amount is zero");
         };
-        #ok({ amountBurned = amount });
+        // W1B Bug-2 fix: the Transfer sender (topic[1]) is the on-chain
+        // burn owner — reliable even when the burn tx was relayed
+        // (embedded-wallet relayer), where tx.from names the relayer.
+        #ok({ amountBurned = amount; burnOwner = ?(normAddr(fromAddr)) });
       };
     };
+  };
+
+  // ── W1B Bug-2: burn-owner extraction from a receipt ────────────────────────
+  //
+  // The ERC-20 Transfer log's topic[1] is the SENDER — the wallet whose
+  // tokens actually moved to the burn destination. This is the reliable
+  // burn-owner proof even when the burn tx was RELAYED by an embedded-wallet
+  // relayer (where tx.from names the relayer, not the real owner — the user's
+  // kVCM BINDING_FAIL case, draft v328).
+  //
+  // Scans the receipt for the first Transfer log whose destination is the
+  // dead address (direct-token burns) or the Klima AAM (kVCM retirement) and
+  // returns its lowercase sender. Returns null when no such log is found —
+  // the caller then falls back to the strict tx.from rule (fail closed).
+  public func parseBurnOwnerFromReceipt(receiptJson : Text) : ?Text {
+    let arr = receiptJson.toArray();
+    let jsonLen = arr.size();
+
+    let logsNeedle1 = "\"logs\":[";
+    let logsNeedle2 = "\"logs\": [";
+    let logsStart : ?Nat = switch (indexOfText(arr, 0, logsNeedle1)) {
+      case (?pos) { ?(pos + logsNeedle1.size()) };
+      case null {
+        switch (indexOfText(arr, 0, logsNeedle2)) {
+          case (?pos) { ?(pos + logsNeedle2.size()) };
+          case null { null };
+        };
+      };
+    };
+    let logsBodyStart = switch (logsStart) { case null { 0 }; case (?s) { s } };
+
+    var searchFrom : Nat = logsBodyStart;
+
+    label search loop {
+      switch (indexOfText(arr, searchFrom, TRANSFER_TOPIC0)) {
+        case null { break search };
+        case (?topicPos) {
+          var logObjStart : Nat = topicPos;
+          var depth : Int = 0;
+          var i : Int = topicPos.toInt() - 1;
+          var found = false;
+          label walkBack while (i >= 0) {
+            let ch = arr[i.toNat()];
+            if (ch == '}') { depth += 1 } else if (ch == '{') {
+              if (depth == 0) {
+                logObjStart := i.toNat();
+                found := true;
+                i := -1;
+              } else { depth -= 1 };
+            };
+            i -= 1;
+          };
+          if (not found) {
+            searchFrom := topicPos + TRANSFER_TOPIC0.size();
+          } else {
+            var logObjEnd : Nat = jsonLen;
+            var depth2 : Nat = 0;
+            var j : Nat = logObjStart;
+            label walkFwd while (j < jsonLen) {
+              let ch = arr[j];
+              if (ch == '{') { depth2 += 1 } else if (ch == '}') {
+                if (depth2 == 1) { logObjEnd := j + 1; j := jsonLen } else { depth2 -= 1 };
+              };
+              j += 1;
+            };
+            let logArr = arr.sliceToArray(logObjStart, logObjEnd);
+
+            let tNeedle1 = "\"topics\":[";
+            let tNeedle2 = "\"topics\": [";
+            let tStart : ?Nat = switch (indexOfText(logArr, 0, tNeedle1)) {
+              case (?p) { ?(p + tNeedle1.size()) };
+              case null {
+                switch (indexOfText(logArr, 0, tNeedle2)) {
+                  case (?p) { ?(p + tNeedle2.size()) };
+                  case null { null };
+                };
+              };
+            };
+            switch (tStart) {
+              case null { searchFrom := topicPos + TRANSFER_TOPIC0.size(); };
+              case (?ts) {
+                switch (nextQuoted(logArr, ts)) {
+                  case null { searchFrom := topicPos + TRANSFER_TOPIC0.size(); };
+                  case (?(_, after0)) {
+                    switch (nextQuoted(logArr, after0)) {
+                      case null { searchFrom := topicPos + TRANSFER_TOPIC0.size(); };
+                      case (?(t1, after1)) {
+                        switch (nextQuoted(logArr, after1)) {
+                          case null { searchFrom := topicPos + TRANSFER_TOPIC0.size(); };
+                          case (?(t2, _)) {
+                            let toAddr = topicToAddress(t2);
+                            // Only accept burn-shaped transfers: to the dead
+                            // address (direct burns) or the Klima AAM (kVCM
+                            // retirement pulls). Other Transfers (pool
+                            // accounting etc.) don't identify the burner.
+                            if (normAddr(toAddr) == DEAD_ADDRESS or normAddr(toAddr) == normAddr(AAM_ADDRESS)) {
+                              return ?(topicToAddress(t1));
+                            };
+                            searchFrom := topicPos + TRANSFER_TOPIC0.size();
+                          };
+                        };
+                      };
+                    };
+                  };
+                };
+              };
+            };
+          };
+        };
+      };
+    };
+    null;
   };
 
   // ── AKK-4 / AKK-8 fee-binding verification ───────────────────────────────
@@ -674,33 +831,190 @@ module {
   /// Checks, in order:
   ///   1. fee tx status == success (via the standard receipt parse)
   ///   2. fee tx `to` == configured fee recipient
-  ///   3. fee tx sender == burn tx sender           (same wallet)
+  ///   3. fee tx sender == burn owner (burn tx sender OR — for RELAYED
+  ///      burns like kVCM retirement, where burnTx.from is the embedded-
+  ///      wallet relayer — the Transfer-log burn owner extracted from the
+  ///      burn receipt at claim verification)
   ///   4. fee tx calldata == (claimant principal, burn tx hash)
   /// Any mismatch is a definitive failure; only genuine PENDING states retry.
-  public func verifyFeeBinding(feeTx : TxByHash, burnTx : TxByHash, expectedTo : Text, expectedPrincipalText : Text, expectedBurnHash : Text) : { #ok; #err : Text } {
-    // 2. recipient must be the configured fee wallet
-    if (feeTx.to != normAddr(expectedTo)) {
+  public func verifyFeeBinding(
+    feeTx : TxByHash,
+    burnTx : TxByHash,
+    expectedTo : Text,
+    expectedPrincipalText : Text,
+    expectedBurnHash : Text,
+    eventBindingHex : ?Text,
+    burnOwner : ?Text,
+  ) : { #ok; #err : Text } {
+    // 2. recipient must be the configured fee wallet — UNLESS the collector's
+    //    own FeePaid event proves the payment reached it (wallet-relay case:
+    //    tx.to is the forwarder, but the collector emitted FeePaid with the
+    //    payer = tx.from; the event is the collector's own attestation of
+    //    receipt, validated 2026-09-03 against real relayed receipts).
+    //    Disarmed (null): the strict tx-level rule applies unchanged.
+    let eventProof = switch (eventBindingHex) {
+      case null { null };
+      case (?hex) {
+        if (feeTx.to != normAddr(expectedTo)) { ?hex } else { null };
+      };
+    };
+    let recipientOk = eventProof != null or feeTx.to == normAddr(expectedTo);
+    if (not recipientOk) {
       return #err("BINDING_FAIL: fee tx recipient is not the configured fee wallet");
     };
-    // 3. same wallet must have sent the burn
-    if (feeTx.from != burnTx.from) {
+    // 3. same wallet must have sent the burn — with a RELAYED-burn escape:
+    //    kVCM retirement burns are executed by the embedded-wallet RELAYER
+    //    (burnTx.from = relayer 0xb42f…), so raw tx.from equality fails for
+    //    every legitimate relayed burn (user's kVCM BINDING_FAIL, draft
+    //    v328). When the burn receipt's Transfer log names a burn owner
+    //    (the wallet whose tokens actually moved to dead/AAM), the fee
+    //    sender may match THAT instead. The anti-theft property holds:
+    //    the fee's calldata must still name the claimant principal + this
+    //    exact burn, and only the genuine claimant's fee can do that.
+    let senderOk =
+      feeTx.from == burnTx.from
+      or (switch (burnOwner) {
+        case (?owner) { owner != "" and normAddr(feeTx.from) == owner };
+        case null { false };
+      });
+    if (not senderOk) {
       return #err("BINDING_FAIL: fee tx sender differs from burn tx sender");
     };
-    // 4. calldata must name this claimant and this exact burn
-    switch (parseFeeBinding(feeTx.input)) {
+    // 4. calldata must name this claimant and this exact burn. For relayed txs
+    //    the input is forwarder calldata (no binding) — read the binding from
+    //    the event's bytes instead (the collector emitted msg.data verbatim).
+    let bindingSource = switch (eventProof) {
+      case (?hex) hex;
+      case null feeTx.input;
+    };
+    switch (parseFeeBinding(bindingSource)) {
       case null { return #err("BINDING_FAIL: fee tx carries no binding payload") };
       case (?binding) {
         if (binding.principalText != expectedPrincipalText) {
           return #err("BINDING_FAIL: fee tx principal does not match the claimant");
         };
-        if (binding.burnHash != (if (expectedBurnHash.size() >= 2 and expectedBurnHash.toArray()[0] == '0' and expectedBurnHash.toArray()[1] == 'x') {
+        // W1A review fix: compare in canonical form on BOTH sides. The
+        // binding payload carries the hash as spelled when the fee was
+        // built (often the wallet's mixed-case form); expected is now
+        // always the canonical lowercase hash after W1A. Lowercasing only
+        // the expected side (the old code) would reject every mixed-case-
+        // bound fee post-W1A. The 0x prefix folds on both sides too.
+        let expectedBody = if (expectedBurnHash.size() >= 2 and expectedBurnHash.toArray()[0] == '0' and expectedBurnHash.toArray()[1] == 'x') {
           sliceChars(expectedBurnHash.toArray(), 2, expectedBurnHash.size())
-        } else { expectedBurnHash }).toLower()) {
+        } else { expectedBurnHash };
+        let bindingBody = if (binding.burnHash.size() >= 2 and binding.burnHash.toArray()[0] == '0' and binding.burnHash.toArray()[1] == 'x') {
+          sliceChars(binding.burnHash.toArray(), 2, binding.burnHash.size())
+        } else { binding.burnHash };
+        if (bindingBody.toLower() != expectedBody.toLower()) {
           return #err("BINDING_FAIL: fee tx names a different burn transaction");
         };
       };
     };
     #ok;
+  };
+
+  // ── Miner-creation fee binding (MINE tag) ─────────────────────────────────
+  //
+  // The miner-creation fee rides the same FeeCollector payment rail as claim
+  // fees, but with a DIFFERENT payload shape so the two can never cross-use:
+  //   claim fee: 0x || byte(principalLen) || principalText || 32-byte burnHash
+  //   miner fee: 0x || byte(principalLen) || principalText || "MINE"
+  // parseFeeBinding (above) requires the exact 1+len+32 layout, so it rejects
+  // the MINE shape; this decoder requires the exact 1+len+4 layout, so it
+  // rejects the claim shape. A paid claim fee can never satisfy the creation
+  // gate, and vice versa.
+
+  /// Decode and validate a miner-creation fee binding payload.
+  /// `expectedPrincipal` is the CALLER's principal text, compared byte-exactly
+  /// (the same canonical-text rule as claims — no case folding).
+  public func decodeMinerFeeBinding(bindingHex : Text, expectedPrincipal : Text) : { #ok; #err : Text } {
+    let lower = bindingHex.toLower();
+    let hex = if (lower.size() >= 2 and lower.toArray()[0] == '0' and lower.toArray()[1] == 'x') {
+      sliceChars(lower.toArray(), 2, lower.size())
+    } else { lower };
+    if (hex.size() < 2) { return #err("MINER_FEE_BINDING: empty payload") };
+    // Per-character hex validity BEFORE decoding — 0xFF is a legitimate byte
+    // value (same lesson as the 2026-09-03 hexDigitVal fix), so validity is
+    // checked per character, never via a sentinel byte.
+    for (c in hex.chars()) {
+      switch (hexDigitVal(c)) {
+        case null { return #err("MINER_FEE_BINDING: invalid hex") };
+        case (?_) {};
+      };
+    };
+    let bytes = hexToBytes(hex);
+    if (bytes.size() < 1 + 5 + 4) { return #err("MINER_FEE_BINDING: payload too short") };
+    let len : Nat = bytes[0].toNat();
+    if (len < 5 or len > 63) { return #err("MINER_FEE_BINDING: implausible principal length") };
+    // Exact layout: 1 length byte + principal + 4-byte MINE tag. A claim-shaped
+    // payload (1+len+32) fails here with an actionable message.
+    if (bytes.size() != 1 + len + 4) {
+      return #err("MINER_FEE_BINDING: payload is not miner-shaped");
+    };
+    var principalText = "";
+    var i = 1;
+    while (i <= len) {
+      principalText #= Text.fromChar(Char.fromNat32(bytes[i].toNat32()));
+      i += 1;
+    };
+    if (principalText != expectedPrincipal) {
+      return #err("MINER_FEE_BINDING: payload names a different principal than the caller");
+    };
+    var tag = "";
+    while (i < bytes.size()) {
+      tag #= byteToHex(bytes[i]);
+      i += 1;
+    };
+    if (tag != "4d494e45") { // "MINE"
+      return #err("MINER_FEE_BINDING: wrong purpose tag");
+    };
+    #ok;
+  };
+
+  /// Amount decision for the miner-creation fee: a FIXED wei amount, so the
+  /// rule is exact-or-more — `null` iff paid >= required. paid == 0 on a
+  /// positive requirement shortfalls (never skips — the F1 lesson). Mirrors
+  /// FeeAmount.amountCheckFloor's contract: the decision is data, unit-testable.
+  public func minerFeeShortfall(paidWei : Nat, requiredWei : Nat) : ?Nat {
+    if (paidWei >= requiredWei) { null } else { ?(requiredWei - paidWei) };
+  };
+
+  /// Verify a miner-creation fee tx binds the CALLER — the mirror of
+  /// verifyFeeBinding minus the burn side: recipient must be the configured
+  /// fee wallet, and the calldata must decode as a MINE-tagged payload
+  /// naming the caller. No burn-tx comparison — a creation fee binds
+  /// (principal, MINE), never a burn, so claim-fee and creation-fee
+  /// verification cannot stand in for each other.
+  /// Scope note (review 2026-09-12): the eventProof relay branch below is
+  /// effectively unreachable for miner fees — the collector emits
+  /// payer = msg.sender while feeTx.from is always an EOA, and recipient ==
+  /// collector is enforced — so the shipped EOA→collector path is the only
+  /// live one. The claim-side verifyFeeBinding keeps true relay tolerance
+  /// because its fee check binds to a burn, not to an event.
+  public func verifyMinerFeeBinding(
+    feeTx : TxByHash,
+    expectedTo : Text,
+    expectedPrincipalText : Text,
+    eventBindingHex : ?Text,
+  ) : { #ok; #err : Text } {
+    // Recipient = the fee wallet, UNLESS the collector's own FeePaid event
+    // proves the payment reached it (wallet-relay case — same rule and same
+    // rationale as verifyFeeBinding above).
+    let eventProof = switch (eventBindingHex) {
+      case null { null };
+      case (?hex) { if (feeTx.to != normAddr(expectedTo)) { ?hex } else { null } };
+    };
+    let recipientOk = eventProof != null or feeTx.to == normAddr(expectedTo);
+    if (not recipientOk) {
+      return #err("MINER_FEE_BINDING: fee tx recipient is not the configured fee wallet");
+    };
+    // For relayed txs the input is forwarder calldata (no binding) — read the
+    // binding from the event's bytes (the collector emitted msg.data verbatim).
+    let bindingSource = switch (eventProof) {
+      case (?hex) hex;
+      case null feeTx.input;
+    };
+    decodeMinerFeeBinding(bindingSource, expectedPrincipalText);
   };
 
   // ── AKK-4 Option B: FeePaid event from the FeeCollector contract ──────────
@@ -715,12 +1029,76 @@ module {
   // — a phantom 4-param signature — which the parser could never match.)
   let FEEPAID_TOPIC0 : Text = "0x6306705606f6bb80eb21422af69622d33b086a84411f822776f54f64b5daa027";
 
-  /// Check whether the fee-tx receipt JSON contains a `FeePaid` log emitted BY
-  /// the collector contract (`collector` address field) with topic[1] (payer)
-  /// equal to `expectedPayer`. Both addresses compare case-insensitively.
-  /// Absent/ambiguous receipts simply return false — the caller decides
-  /// whether that is definitive (check armed) or ignorable (check off).
-  public func feePaidLogPresent(jsonResponse : Text, collector : Text, expectedPayer : Text) : Bool {
+  /// AKK-10 outcome of scanning a fee receipt for the FeePaid log.
+  /// #found: matching log (collector emitter + payer) with a decodable value
+  ///   AND the raw binding bytes from the event data:
+  ///   bindingHex = ?hex (bytes present) | ?"" (genuine empty binding — a
+  ///   plain receive() deposit, unbindable) | null (layout truncated —
+  ///   transient RPC artifact, retriable).
+  /// #missing: no matching log (same condition the old Bool false covered).
+  /// #unparseable: matching log but its data field is missing/short/non-hex.
+  public type FeePaidValueResult = {
+    #found : { valueWei : Nat; bindingHex : ?Text };
+    #missing;
+    #unparseable;
+  };
+
+  /// Does the fee receipt carry a FeePaid log whose payer topic equals
+  /// `expectedPayer`? (Payer re-validation after the tx fetch — the value/
+  /// binding scan runs earlier with an unfiltered payer.)
+  public func feePaidPayerMatches(jsonResponse : Text, collector : Text, expectedPayer : Text) : Bool {
+    switch (feePaidLogValue(jsonResponse, collector, expectedPayer)) {
+      case (#found(_)) true;
+      case _ false;
+    };
+  };
+
+  /// Extract the ABI-encoded `binding` bytes from a FeePaid log's data field:
+  /// data = [offset=0x40, value, bindingByteLen, ...binding bytes].
+  /// Returns null when the layout is truncated (transient), "" when the
+  /// binding length is genuinely 0 (plain deposit), ?hex for the bytes.
+  func extractBindingHex(dataHex : Text) : ?Text {
+    let lower = dataHex.toLower();
+    let arr = lower.toArray();
+    var start : Nat = 0;
+    if (arr.size() >= 2 and arr[0] == '0' and arr[1] == 'x') { start := 2 };
+    let hexLen = arr.size() - start;
+    if (hexLen < 192) { return null }; // need 3 head words minimum
+    // word 2 (chars 128..192) = binding length in bytes
+    var lenBytes : Nat = 0;
+    var i : Nat = start + 128;
+    label parseLen while (i < start + 192) {
+      let c = arr[i];
+      let d : ?Nat = switch (c) {
+        case ('0') ?0; case ('1') ?1; case ('2') ?2; case ('3') ?3;
+        case ('4') ?4; case ('5') ?5; case ('6') ?6; case ('7') ?7;
+        case ('8') ?8; case ('9') ?9;
+        case ('a') ?10; case ('b') ?11; case ('c') ?12;
+        case ('d') ?13; case ('e') ?14; case ('f') ?15;
+        case _ null;
+      };
+      switch (d) {
+        case null { return null };
+        case (?n) { lenBytes := lenBytes * 16 + n };
+      };
+      i += 1;
+    };
+    if (lenBytes == 0) { return ?"" };
+    let bindingChars = 2 * lenBytes;
+    if (hexLen < 192 + bindingChars) { return null }; // truncated tail
+    ?sliceChars(arr, start + 192, start + 192 + bindingChars);
+  };
+
+  /// Check the fee-tx receipt JSON for a `FeePaid` log emitted BY the collector
+  /// contract, and decode the paid amount (event `value` = ABI head word 1 of
+  /// the log data — see FeeAmountLib.decodeFeePaidValue) plus the binding bytes.
+  /// `expectedPayer` filters by payer topic; pass "" to accept ANY payer (the
+  /// mixin validates payer == feeTx.from itself once the tx object is fetched —
+  /// the scan must run BEFORE the tx fetch to avoid the feeTx definedness cycle).
+  /// Addresses compare case-insensitively. Absent/ambiguous receipts yield
+  /// #missing; a present-but-unreadable data field yields #unparseable —
+  /// callers treat both as retriable (PENDING), never definitive fraud.
+  public func feePaidLogValue(jsonResponse : Text, collector : Text, expectedPayer : Text) : FeePaidValueResult {
     let arr = jsonResponse.toArray();
     let normCollector = normAddr(collector);
     let normPayer = normAddr(expectedPayer);
@@ -816,8 +1194,21 @@ module {
                             searchFrom := topicPos + FEEPAID_TOPIC0.size();
                           };
                           case (?(t1, _)) {
-                            if (topicToAddress(t1) == normPayer) {
-                              return true;
+                            if (normPayer == "" or topicToAddress(t1) == normPayer) {
+                              // AKK-10: decode the paid amount — FeePaid's
+                              // `value` (wei) is the last 32-byte word of the
+                              // log's data field.
+                              switch (extractStringField(logArr, 0, "data")) {
+                                case null { return #unparseable };
+                                case (?dataHex) {
+                                  switch (FeeAmountLib.decodeFeePaidValue(dataHex)) {
+                                    case null { return #unparseable };
+                                    case (?v) {
+                                      return #found({ valueWei = v; bindingHex = extractBindingHex(dataHex) });
+                                    };
+                                  };
+                                };
+                              };
                             };
                             searchFrom := topicPos + FEEPAID_TOPIC0.size();
                           };
@@ -834,7 +1225,7 @@ module {
         };
       };
     };
-    false;
+    #missing;
   };
 
   type RetirementLogResult = { #ok : Nat; #err : Text };
@@ -942,7 +1333,10 @@ module {
   /// Sum all ERC-20 Transfer logs of `tokenAddress` whose destination is the
   /// Klima AAM (the contract that pulls the user's kVCM during retirement).
   /// Returns #ok(sum) when at least one such transfer exists.
-  func sumAamTransfers(arr : [Char], tokenAddress : Text) : { #ok : Nat; #err : Text } {
+    func sumAamTransfers(arr : [Char], tokenAddress : Text) : {
+    #ok : { total : Nat; burnOwner : Text };
+    #err : Text;
+  } {
     let jsonLen = arr.size();
     let normToken = normAddr(tokenAddress);
     let normAam = normAddr(AAM_ADDRESS);
@@ -962,6 +1356,10 @@ module {
 
     var searchFrom : Nat = logsBodyStart;
     var total : Nat = 0;
+    // W1B Bug-2 fix: capture the Transfer SENDER of the first user→AAM
+    // transfer — the on-chain burn owner (reliable even when the burn tx
+    // was relayed, where tx.from names the relayer).
+    var burnOwner : Text = "";
 
     label search loop {
       switch (indexOfText(arr, searchFrom, TRANSFER_TOPIC0)) {
@@ -1012,6 +1410,20 @@ module {
                   };
                 };
               };
+              let fromAddr : Text = switch (tStart) {
+                case null { "" };
+                case (?ts) {
+                  switch (nextQuoted(logArr, ts)) {
+                    case null { "" };
+                    case (?(_, after0)) {
+                      switch (nextQuoted(logArr, after0)) {
+                        case null { "" };
+                        case (?(t1, _)) { topicToAddress(t1) };
+                      };
+                    };
+                  };
+                };
+              };
               let toAddr : Text = switch (tStart) {
                 case null { "" };
                 case (?ts) {
@@ -1032,6 +1444,9 @@ module {
                 };
               };
               if (normAddr(toAddr) == normAam) {
+                if (burnOwner == "" and fromAddr != "") {
+                  burnOwner := normAddr(fromAddr);
+                };
                 let amount = switch (extractStringField(logArr, 0, "data")) {
                   case null { 0 };
                   case (?d) { hexToNat(d) };
@@ -1045,7 +1460,11 @@ module {
       };
     };
 
-    if (total > 0) { #ok(total) } else {
+    if (total > 0 and burnOwner != "") {
+      #ok({ total; burnOwner })
+    } else if (total > 0) {
+      #ok({ total; burnOwner = "" })
+    } else {
       #err("No " # tokenAddress # " transfer to AAM found in retirement receipt")
     };
   };
@@ -1094,7 +1513,14 @@ module {
         // user for the kVCM that was actually pulled from them.
         switch (sumAamTransfers(arr, expectedToken)) {
           case (#err(msg)) { #err(msg) };
-          case (#ok(amount)) { #ok({ amountBurned = amount }) };
+          // W1B Bug-2 fix: also return the burn owner (Transfer sender) —
+          // reliable even when the burn tx was relayed (tx.from = relayer).
+          case (#ok({ total; burnOwner })) {
+            #ok({
+              amountBurned = total;
+              burnOwner = if (burnOwner == "") { null } else { ?burnOwner };
+            });
+          };
         };
       };
     };

@@ -3,6 +3,7 @@ import Principal "mo:core/Principal";
 import AllowlistLib "../lib/allowlist";
 import AllowlistTypes "../types/allowlist";
 import FeeConfig "../lib/fee-config";
+import EvmAddress "../lib/evm-address";
 import Time "mo:core/Time";
 
 mixin (
@@ -65,11 +66,17 @@ mixin (
   };
 
   /// Admin: set the EVM wallet address that receives the platform fee.
+  /// W1B: validated (`0x` + 40 hex, stored lowercase). For the collector
+  /// configuration use `applySecureFeeConfig`, which validates the pair and
+  /// commits recipient + collector + arm together.
   public shared ({ caller }) func setFeeRecipient(address : Text) : async () {
     if (not AllowlistLib.isAdmin(admin, caller)) {
       Runtime.trap("Unauthorized: caller is not admin");
     };
-    admin.feeRecipient := ?address;
+    switch (EvmAddress.validate(address)) {
+      case (#ok(lower)) { admin.feeRecipient := ?lower };
+      case (#err(e)) { Runtime.trap("Invalid feeRecipient: " # e) };
+    };
   };
 
   /// Anyone: get the current fee recipient wallet address.
@@ -78,13 +85,16 @@ mixin (
   };
 
   /// Admin: set the EVM address of the FeeCollector contract (Option B).
-  /// Set this to the SAME address as feeRecipient once the collector is
-  /// deployed on every allowlisted chain.
+  /// W1B: validated and stored lowercase. Setting the collector alone does
+  /// NOT arm verification — use `applySecureFeeConfig` for that.
   public shared ({ caller }) func setFeeCollectorAddress(address : Text) : async () {
     if (not AllowlistLib.isAdmin(admin, caller)) {
       Runtime.trap("Unauthorized: caller is not admin");
     };
-    feeState.collectorAddress := address;
+    switch (EvmAddress.validate(address)) {
+      case (#ok(lower)) { feeState.collectorAddress := lower };
+      case (#err(e)) { Runtime.trap("Invalid collectorAddress: " # e) };
+    };
   };
 
   /// Anyone: get the configured FeeCollector contract address ("" = unset).
@@ -92,14 +102,32 @@ mixin (
     feeState.collectorAddress;
   };
 
-  /// Admin: arm/disarm the FeePaid-event-from-collector check.
-  /// Arm ONLY after the collector is deployed on every allowlisted chain AND
-  /// feeRecipient == collectorAddress — arming early fails every claim.
-  public shared ({ caller }) func setFeePaidCheckEnabled(enabled : Bool) : async () {
+  /// W1B: atomic secure fee configuration. Validates BOTH addresses
+  /// (`0x` + 40 hex), enforces recipient == collector, then commits
+  /// recipient + collector + FeePaid arm TOGETHER. A rejected call leaves
+  /// state completely untouched — no intermediate "armed but recipient
+  /// still an EOA" state (the one the old separate setters allowed, and
+  /// which fails every claim).
+  public shared ({ caller }) func applySecureFeeConfig(
+    feeRecipient : Text,
+    collectorAddress : Text,
+  ) : async { #ok; #err : Text } {
+    if (not AllowlistLib.isAdmin(admin, caller)) {
+      return #err("Unauthorized: admins only");
+    };
+    AllowlistLib.applySecureFeeConfig(admin, feeState, feeRecipient, collectorAddress);
+  };
+
+  /// Admin: DISARM the FeePaid-event-from-collector check (emergency only).
+  /// Arming happens exclusively through `applySecureFeeConfig` — the old
+  /// arm-anything single setter is deliberately gone. Disarming leaves
+  /// recipient/collector intact (deployment facts), so a re-arm is one
+  /// validated call.
+  public shared ({ caller }) func disarmFeePaidCheck() : async () {
     if (not AllowlistLib.isAdmin(admin, caller)) {
       Runtime.trap("Unauthorized: caller is not admin");
     };
-    feeState.requireFeePaidEvent := enabled;
+    FeeConfig.disarm(feeState);
   };
 
   /// Anyone: get the FeePaid-check toggle state.

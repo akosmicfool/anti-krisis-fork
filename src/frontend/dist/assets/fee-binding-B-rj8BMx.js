@@ -1,0 +1,11 @@
+import{D as s,i as f,C as i}from"./index-CBVhFjWG.js";/**
+ * @license lucide-react v0.511.0 - ISC
+ *
+ * This source code is licensed under the ISC license.
+ * See the LICENSE file in the root directory of this source tree.
+ */const c=[["path",{d:"M15 3h6v6",key:"1q9fwt"}],["path",{d:"M10 14 21 3",key:"gplh6r"}],["path",{d:"M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6",key:"a6xqqp"}]],p=s("external-link",c);/**
+ * @license lucide-react v0.511.0 - ISC
+ *
+ * This source code is licensed under the ISC license.
+ * See the LICENSE file in the root directory of this source tree.
+ */const h=[["path",{d:"M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z",key:"96xj49"}]],y=s("flame",h);function b(t){switch(t.status){case i.verified:return{kind:"earned",label:"GRIT Earned"};case i.failed:return t.amountBurned>0?{kind:"retry_claim",label:"Retry Claim"}:{kind:"retry_claim",label:"Retry Claim"};case i.pendingFee:return(t.feeTxHash??"").trim()===""?{kind:"pay_fee",label:"Pay Fee"}:{kind:"verifying_fee",label:"Confirming fee"};case i.pending:{const e=t.amountBurned>0;return(t.feeTxHash??"").trim()===""?{kind:"pay_fee",label:"Pay Fee"}:e?{kind:"verifying_fee",label:"Confirming fee"}:{kind:"verifying_burn",label:"Confirming burn"}}default:return f(t.status)?{kind:"verifying_fee",label:"Confirming fee"}:{kind:"none",label:""}}}const g="MINE";function x(t){const e=new TextEncoder().encode(t);if(e.length<5||e.length>63)throw new Error("Invalid principal length for fee binding payload");const a=new TextEncoder().encode(g),n=new Uint8Array(1+e.length+a.length);n[0]=e.length,n.set(e,1),n.set(a,1+e.length);let r="0x";for(const o of n)r+=o.toString(16).padStart(2,"0");return r}function k(t,e){const a=e.toLowerCase().replace(/^0x/,"");if(a.length!==64)throw new Error("Invalid burn tx hash length — expected 32 bytes");const n=new TextEncoder().encode(t);if(n.length<5||n.length>63)throw new Error("Invalid principal length for fee binding payload");const r=new Uint8Array(1+n.length+32);r[0]=n.length,r.set(n,1);const o=(a.match(/.{2}/g)??[]).map(l=>Number.parseInt(l,16));r.set(o,1+n.length);let d="0x";for(const l of r)d+=l.toString(16).padStart(2,"0");return d}export{p as E,y as F,x as a,k as b,b as d};
