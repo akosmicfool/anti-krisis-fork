@@ -11,13 +11,18 @@ import { motion } from "motion/react";
 import { Fragment, useEffect, useRef, useState } from "react";
 import { VideoSection } from "../components/VideoSection";
 import { useGetLaunchGateConfig } from "../hooks/use-backend";
+import {
+  type AkoreSection,
+  getLastAkoreSection,
+  setLastAkoreSection,
+} from "../lib/akore-section-store";
 import { BurnPage } from "./BurnPage";
 import { MiningPage } from "./MiningPage";
 
 export function AkorePage() {
-  const [activeSection, setActiveSection] = useState<
-    null | "acquire" | "burn" | "mine"
-  >(null);
+  const [activeSection, setActiveSection] = useState<AkoreSection | null>(() =>
+    getLastAkoreSection(),
+  );
   const expandedRef = useRef<HTMLDivElement>(null);
 
   // ── Launch Gate countdown at page level ───────────────────────────────────
@@ -60,20 +65,20 @@ export function AkorePage() {
     Date.now() < Number(launchGateData.launchTime ?? 0)
   );
 
-  function toggle(section: "acquire" | "burn" | "mine") {
-    setActiveSection((prev) => {
-      const isExpanding = prev !== section;
-      if (isExpanding) {
-        // Scroll to expanded content after animation begins
-        setTimeout(() => {
-          expandedRef.current?.scrollIntoView({
-            behavior: "smooth",
-            block: "start",
-          });
-        }, 300);
-      }
-      return isExpanding ? section : null;
-    });
+  function toggle(section: AkoreSection) {
+    const isExpanding = activeSection !== section;
+    const next = isExpanding ? section : null;
+    setLastAkoreSection(next);
+    setActiveSection(next);
+    if (isExpanding) {
+      // Scroll to expanded content after animation begins
+      setTimeout(() => {
+        expandedRef.current?.scrollIntoView({
+          behavior: "smooth",
+          block: "start",
+        });
+      }, 300);
+    }
   }
 
   const steps: {
@@ -122,8 +127,10 @@ export function AkorePage() {
           AKORE
         </h1>
         <p className="text-white text-sm mt-1 break-words">
-          The Schelling point of civilisational coordination.{" "}
-          <span className="text-accent">Mine $AKK, power Anti Krisis.</span>
+          The epicentre of coordination —{" "}
+          <span className="text-accent italic">
+            Mine $AKK, power Anti Krisis
+          </span>
         </p>
       </div>
 
@@ -150,9 +157,14 @@ export function AkorePage() {
       {/* 3 Steps */}
       <div className="space-y-4">
         {/* Section header */}
-        <div className="flex items-center gap-2 border-l-2 border-accent pl-3">
-          <span className="font-display font-bold text-3xl uppercase tracking-widest text-foreground">
-            STEPS
+        <div className="flex items-center gap-2">
+          <img
+            src="/assets/process_icon.png"
+            alt=""
+            className="h-5 w-5 sm:h-6 sm:w-6 object-contain"
+          />
+          <span className="font-display font-normal text-2xl sm:text-3xl uppercase tracking-widest text-foreground">
+            PROCESS
           </span>
         </div>
 
@@ -191,10 +203,10 @@ export function AkorePage() {
                       {step.icon}
                     </div>
                     <div className="flex flex-col items-center text-center mb-1">
-                      <span className="font-display text-[1.32rem] font-bold uppercase tracking-wider text-foreground leading-tight">
+                      <span className="font-display text-2xl font-bold uppercase tracking-wider text-foreground leading-tight">
                         {step.title}
                       </span>
-                      <span className="font-display text-[0.963rem] uppercase tracking-wide text-accent/70 leading-tight">
+                      <span className="font-display text-lg uppercase tracking-wide text-accent/70 leading-tight">
                         {step.subtitle}
                       </span>
                     </div>

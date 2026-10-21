@@ -1,3 +1,4 @@
+import { ProtocolStatsGrid } from "@/components/ProtocolStatsGrid";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ChevronDown, ChevronUp, Clock, Search, X } from "lucide-react";
@@ -9,6 +10,7 @@ import {
   useGetTotalBlockCount,
 } from "../hooks/use-backend";
 import type { BlockDetailView } from "../hooks/use-backend";
+import { formatGritSpent } from "../lib/format";
 
 function formatAkk(amount: bigint): string {
   const num = Number(amount) / 1e8;
@@ -41,20 +43,11 @@ function BlockDetailPanel({ blockNumber }: { blockNumber: bigint }) {
     );
   }
 
-  const vrfHex = detail.vrfValue.toString(16).toUpperCase().padStart(16, "0");
-  const gritByMiner = new Map(
-    detail.minerGritSpent.map(([id, g]) => [id.toString(), g]),
-  );
-  const weightByMiner = new Map(
-    detail.minerWeights.map(([id, w]) => [id.toString(), w]),
-  );
-  const noMinerData = detail.minerCount === 0n && detail.totalGritSpent === 0n;
-
   return (
     <div className="bg-muted/8 border-t border-border/40 px-3 py-3 space-y-3 text-xs font-mono">
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
         <div className="bg-card border border-border/50 px-2 py-1.5">
-          <div className="text-muted-foreground uppercase tracking-widest text-[9px] mb-0.5">
+          <div className="text-muted-foreground uppercase tracking-widest text-[10px] mb-0.5">
             Winner
           </div>
           <div className="text-foreground truncate">
@@ -66,7 +59,7 @@ function BlockDetailPanel({ blockNumber }: { blockNumber: bigint }) {
           </div>
         </div>
         <div className="bg-card border border-border/50 px-2 py-1.5">
-          <div className="text-muted-foreground uppercase tracking-widest text-[9px] mb-0.5">
+          <div className="text-muted-foreground uppercase tracking-widest text-[10px] mb-0.5">
             Total GRIT
           </div>
           <div className="text-accent font-bold">
@@ -76,7 +69,7 @@ function BlockDetailPanel({ blockNumber }: { blockNumber: bigint }) {
           </div>
         </div>
         <div className="bg-card border border-border/50 px-2 py-1.5">
-          <div className="text-muted-foreground uppercase tracking-widest text-[9px] mb-0.5">
+          <div className="text-muted-foreground uppercase tracking-widest text-[10px] mb-0.5">
             Miners
           </div>
           <div className="text-foreground">
@@ -84,76 +77,18 @@ function BlockDetailPanel({ blockNumber }: { blockNumber: bigint }) {
           </div>
         </div>
         <div className="bg-card border border-border/50 px-2 py-1.5">
-          <div className="text-muted-foreground uppercase tracking-widest text-[9px] mb-0.5">
+          <div className="text-muted-foreground uppercase tracking-widest text-[10px] mb-0.5">
             VRF Value
           </div>
-          <div className="text-[#00ff41]/80 truncate">
-            {detail.vrfValue === 0n ? "—" : vrfHex}
+          <div className="text-[#00ff41]/80 break-all tabular-nums">
+            {detail.vrfValue === 0n
+              ? "—"
+              : detail.vrfValue.toLocaleString("en-US")}
           </div>
         </div>
       </div>
-      {noMinerData ? (
-        <div className="text-muted-foreground text-[10px] uppercase tracking-widest">
-          No miner data available for this block.
-        </div>
-      ) : detail.minerParticipants.length > 0 ? (
-        <div>
-          <div className="text-muted-foreground uppercase tracking-widest text-[9px] mb-1.5">
-            Miner Breakdown
-          </div>
-          <div className="space-y-1">
-            {detail.minerParticipants.map(([minerId, principal]) => {
-              const grit = gritByMiner.get(minerId.toString()) ?? 0n;
-              const weight = weightByMiner.get(minerId.toString()) ?? 0;
-              const isWinner =
-                detail.winnerMinerId?.toString() === minerId.toString();
-              return (
-                <div
-                  key={minerId.toString()}
-                  className={[
-                    "grid grid-cols-[auto_1fr_auto_auto] gap-2 items-center px-2 py-1 border",
-                    isWinner
-                      ? "border-[#00ff41]/40 bg-[#00ff41]/5"
-                      : "border-border/30 bg-card",
-                  ].join(" ")}
-                >
-                  <span
-                    className={
-                      isWinner ? "text-[#00ff41]" : "text-muted-foreground"
-                    }
-                  >
-                    {isWinner ? "★" : "·"}
-                  </span>
-                  <span className="text-muted-foreground truncate">
-                    #{minerId.toString()} ·{" "}
-                    {truncateAddress(principal.toText(), 6)}
-                  </span>
-                  <span className="text-foreground tabular-nums">
-                    {(Number(grit) / 1_000_000_000).toLocaleString("en-US", {
-                      maximumFractionDigits: 2,
-                    })}{" "}
-                    B
-                  </span>
-                  <span className="text-[#00ff41]/70 tabular-nums w-10 text-right">
-                    {(weight * 100).toFixed(1)}%
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      ) : (
-        <div className="text-muted-foreground text-[10px] uppercase tracking-widest">
-          No miner data available for this block.
-        </div>
-      )}
     </div>
   );
-}
-
-function formatGritSpent(amount: bigint): string {
-  const num = Number(amount) / 1_000_000_000;
-  return num.toLocaleString("en-US", { maximumFractionDigits: 2 });
 }
 
 function formatTimestamp(ts: bigint): string {
@@ -173,32 +108,29 @@ function BlockRow({ block, index }: { block: BlockRecord; index: number }) {
         onClick={() => setExpanded((v) => !v)}
         className="w-full text-left grid grid-cols-[3.5rem_1fr_1fr_1fr_1fr_1.5rem] gap-2 px-3 sm:px-4 py-2.5 text-xs font-mono items-center hover:bg-muted/10 transition-colors min-w-[540px]"
       >
-        <span className="text-accent font-bold tabular-nums">
+        <span className="text-white font-bold tabular-nums text-center">
           #{Number(block.blockNumber)}
         </span>
-        <span
-          className="text-foreground truncate"
-          title={block.winnerOwner?.toText()}
-        >
-          {block.winnerOwner ? (
-            truncateAddress(block.winnerOwner.toText())
+        <span className="text-foreground truncate text-center">
+          {block.winnerMinerId !== undefined ? (
+            `#${block.winnerMinerId}`
           ) : (
-            <span className="text-muted-foreground">No winner</span>
+            <span className="text-muted-foreground">—</span>
           )}
         </span>
-        <span className="text-accent font-bold text-right">
+        <span className="text-accent font-bold text-center">
           {formatAkk(block.akkReward)} AKK
         </span>
-        <span className="text-white text-right">
+        <span className="text-white text-center">
           {formatGritSpent(block.totalGritSpent)} B
         </span>
-        <span className="text-muted-foreground text-right">
+        <span className="text-muted-foreground text-center">
           {formatTimestamp(block.timestamp)}
         </span>
         {expanded ? (
-          <ChevronUp className="h-3 w-3 text-muted-foreground ml-auto" />
+          <ChevronUp className="h-3 w-3 text-muted-foreground mx-auto" />
         ) : (
-          <ChevronDown className="h-3 w-3 text-muted-foreground ml-auto" />
+          <ChevronDown className="h-3 w-3 text-muted-foreground mx-auto" />
         )}
       </button>
       {expanded && <BlockDetailPanel blockNumber={block.blockNumber} />}
@@ -261,12 +193,20 @@ export function BlocksHistoryPage() {
         </p>
       </div>
 
+      {/* Protocol state */}
+      <div>
+        <h2 className="font-display text-2xl uppercase tracking-widest text-white mb-3">
+          OVERVIEW
+        </h2>
+        <ProtocolStatsGrid />
+      </div>
+
       {/* Table */}
       <Card className="bg-card border-border" data-ocid="blocks_history.card">
         <CardHeader className="pb-2">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-            <CardTitle className="font-display text-[1.3rem] uppercase tracking-widest text-white">
-              VIEW BLOCK DETAILS
+            <CardTitle className="font-display font-normal text-2xl uppercase tracking-widest text-white">
+              BLOCK DETAILS
             </CardTitle>
             {/* Search by block number — inside table border */}
             <form onSubmit={handleSearch} className="flex items-center gap-2">
@@ -331,12 +271,12 @@ export function BlocksHistoryPage() {
           {/* Scrollable table wrapper for mobile */}
           <div className="overflow-x-auto">
             {/* Header row */}
-            <div className="grid grid-cols-[3.5rem_1fr_1fr_1fr_1fr_1.5rem] gap-2 px-3 sm:px-4 py-2 border-b border-border text-xs font-mono uppercase tracking-widest text-white min-w-[540px]">
-              <span>Block</span>
-              <span>Winner</span>
-              <span className="text-right">AKK Reward</span>
-              <span className="text-right">GRIT Spent</span>
-              <span className="text-right">Time</span>
+            <div className="grid grid-cols-[3.5rem_1fr_1fr_1fr_1fr_1.5rem] gap-2 px-3 sm:px-4 py-2 border-b border-border text-xs font-mono uppercase tracking-widest text-accent min-w-[540px]">
+              <span className="text-center">Block</span>
+              <span className="text-center">Miner ID</span>
+              <span className="text-center">AKK Reward</span>
+              <span className="text-center">GRIT Spent</span>
+              <span className="text-center">Time</span>
             </div>
 
             {isLoading ? (

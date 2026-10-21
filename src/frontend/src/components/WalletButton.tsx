@@ -15,18 +15,11 @@ import {
 import { useState } from "react";
 import { useAuth } from "../hooks/use-auth";
 import { useAkkBalance, useGetTokens } from "../hooks/use-backend";
+import { useMyAk69Score } from "../hooks/use-score";
 import { useWallet } from "../hooks/use-wallet";
 import { truncateAddress } from "../types";
 import { WalletsAndBalances } from "./WalletsAndBalances";
 import { WithdrawModal } from "./WithdrawModal";
-
-function formatAkk(val: bigint): string {
-  const n = Number(val) / 100_000_000;
-  if (n === 0) return "0";
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(2)}k`;
-  return n.toLocaleString("en-US", { maximumFractionDigits: 2 });
-}
 
 export function WalletButton() {
   const {
@@ -42,11 +35,14 @@ export function WalletButton() {
   const { principal } = useAuth();
   const { data: tokens = [] } = useGetTokens();
   const { data: akkBalance } = useAkkBalance();
+  // Header chip shows the AK69 meta-score (same "playerScore" cache as the
+  // Wallets & Balances ICP row and the profile tiles)
+  const { data: ak69Score } = useMyAk69Score(principal);
 
   const [open, setOpen] = useState(false);
   const [showWithdraw, setShowWithdraw] = useState(false);
 
-  const akkDisplay = akkBalance !== undefined ? formatAkk(akkBalance) : null;
+  const ak69Display = ak69Score !== undefined ? ak69Score.toFixed(2) : null;
 
   // ── Connected state — show Wallets & Balances dropdown ────────────────────
   if (isConnected && address) {
@@ -68,9 +64,9 @@ export function WalletButton() {
                 data-ocid="wallet.dropdown_menu"
               >
                 <Wallet className="h-3 w-3 text-[#00ff41]" />
-                {akkDisplay !== null ? (
+                {ak69Display !== null ? (
                   <span className="text-[#00ff41] font-semibold">
-                    {akkDisplay} AKK
+                    {ak69Display} AK69
                   </span>
                 ) : (
                   <span className="text-foreground hidden sm:inline">

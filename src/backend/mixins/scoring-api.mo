@@ -21,6 +21,18 @@ mixin (
     ScoringLib.getTopTribes(state, tribeState, timescale);
   };
 
+  /// Total number of registered players (profiles with a non-empty username).
+  /// Not capped by the top-9 leaderboard window.
+  public shared query func getPlayerCount() : async Nat {
+    ScoringLib.playerCount(profileState);
+  };
+
+  /// Total number of tribes on the network (any member count).
+  /// Not capped by the top-6 leaderboard window.
+  public shared query func getTribeCount() : async Nat {
+    ScoringLib.tribeCount(tribeState);
+  };
+
   /// Return the AK69 score for a specific player and timescale.
   /// If a test override is active for this principal, the override is returned instead.
   public shared query ({ caller }) func getPlayerScore(principal : Principal, timescale : Text) : async Float {
@@ -34,11 +46,6 @@ mixin (
   /// Return the cumulative AK69 stockpile: sum of every player's all-time
   /// score (daily scores from genesis). Grows as days accrue.
   public shared query func getTotalAk69Score() : async Float {
-    ScoringLib.getTotalAk69Score(state);
-  };
-
-  /// Retained endpoint name (frontend compatibility). Same value as getTotalAk69Score.
-  public shared query func getHistoryBasedAk69Stockpile() : async Float {
     ScoringLib.getTotalAk69Score(state);
   };
 
@@ -61,6 +68,22 @@ mixin (
       case null  0.0;
       case (?tribe) {
         ScoringLib.tribeScore(state, tribe.id, timescale);
+      };
+    };
+  };
+
+  /// Membership-windowed by block-time attribution; unlike
+  /// getTribeLiveStats/getTribeAkkFromHistory which sum over CURRENT members only.
+  /// Sums the daily tribe raws (alltime) — a member who left still counts for the
+  /// blocks they mined while in the tribe, and a joiner's pre-join blocks do not.
+  /// Returns { totalGrit = 0; totalAkk = 0 } when the tribe does not exist.
+  public shared query func getTribeWindowedTotals(
+    tribeId : Text,
+  ) : async { totalGrit : Nat; totalAkk : Nat } {
+    switch (TribeLib.getTribe(tribeState, tribeId)) {
+      case null { { totalGrit = 0; totalAkk = 0 } };
+      case (?tribe) {
+        ScoringLib.tribeWindowedTotals(state, tribe.id);
       };
     };
   };

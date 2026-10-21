@@ -242,17 +242,39 @@ import ClaimStatusValue "types/ClaimStatusValue";
     seedVersion := 3;
   };
 
-  // 2026-09-11 owner config seeds (run on every boot, idempotent — plain
-  // assignments over the live values, NOT seedVersion-gated, so a draft
-  // reset OR an upgrade lands on these defaults; the admin panel can still
-  // override at runtime afterwards):
-  //   - GRIT issuance: 1,000,000,000,000 (1T) GRIT per $1.00 burned
+  // 2026-09-11 owner config seeds (run on every boot, idempotent):
+  //   - GRIT issuance: 100,000,000,000 (100B) GRIT per $1.00 burned — the
+  //     protocol default documented on AdminState. Seeded ONLY into a
+  //     pristine field: the old plain assignment reverted an admin override
+  //     on the next backend upgrade, and after setLaunched() had frozen the
+  //     owner's 100B value the next promotion silently rewrote it to 1T with
+  //     no way back (setGritIssuanceRate traps once isLaunched).
   //   - Miner-creation fees: ETH/Base/OP = 0.0000069 native (6.9e12 wei),
   //     Celo = 0.069 CELO (6.9e16 wei). Per-chain by owner decision (fees
   //     differ per chain token/rate); setting a fee ARMS the miner-creation
   //     gate on that chain (fee 0/unset = free). Seeded directly into
   //     miningState (same path the admin entrypoint uses).
-  adminState.gritIssuanceRate := 1_000_000_000_000;
+  //   - Platform fee percent: 0.69 — seeded ONLY when unset (see the guard
+  //     below), because unlike the others this is a live admin setting.
+  AllowlistLib.seedGritIssuanceRate(adminState);
+
+  // One-time value repair (seedVersion-gated, so exactly once per canister):
+  // the legacy boot seed forced 1T onto every canister, including ones the
+  // owner had locked at 100B. Replace that legacy value with the 100B launch
+  // value; any other admin-chosen rate is left untouched.
+  if (seedVersion < 4) {
+    ignore AllowlistLib.repairLegacyBootDefaultRate(adminState);
+    seedVersion := 4;
+  };
+  // D12: seed the owner-confirmed platform fee when it is still unset (0.0 is
+  // the unset default). Guarded (same rule as the issuance rate above):
+  // feePercent is overridable at runtime via setFeePercent, and an unguarded
+  // boot write would revert that override on every upgrade. A zero fee
+  // silently disables the AKK-10 amount floor and blocks the burn fee step
+  // ("Calculated fee is zero").
+  if (adminState.feePercent == 0.0) {
+    adminState.feePercent := 0.69;
+  };
   // Miner-creation fee seeds live BELOW (after miningState's declaration —
   // definedness rules forbid touching a stable field before it exists).
 
@@ -338,12 +360,16 @@ import ClaimStatusValue "types/ClaimStatusValue";
   // UTC-midnight-aligned daily rollover: refreshes mining streaks for the day
   // that just ended. Self-rescheduling one-shot timer stays aligned to true UTC
   // midnight across upgrades and drift.
-  func scheduleUtcRollover<system>() {
+  func scheduleUtcRollover<system>() : () {
     ignore Timer.setTimer<system>(
       #seconds (ScoringLib.secondsUntilNextUtcMidnight()),
       func() : async () {
-        ScoringLib.onUtcRollover(scoringState, profileState);
-        scheduleUtcRollover();
+        scheduleUtcRollover(); // re-arm FIRST — a trap below can't kill the chain
+        try {
+          ScoringLib.onUtcRollover(scoringState, profileState);
+        } catch (e) {
+          Debug.print("[scoring] utc rollover rejected: " # e.message());
+        };
       },
     );
   };
@@ -593,17 +619,21 @@ import ClaimStatusValue "types/ClaimStatusValue";
     };
   };
 
-  // Block processing callback — shared between the startup probe and the recurring timer.
+  // Block processing callback — shared between the startup probe and the block timer.
   // processBlock returns Bool: true means mining just resumed after a pause (timer reset).
-  // In that case we cancel the old recurring timer and start a fresh 690s one from now
-  // so the block window is properly aligned to when mining actually resumed.
+  // In that case the pending next fire is cancelled and a fresh 690s window is started
+  // from now, so the block window is aligned to when mining actually resumed.
   //
-  // AKK-5: recurring timers do NOT serialize async callbacks. With a pendingMints
+  // AKK-5: timer fires do NOT serialize async callbacks. With a pendingMints
   // backlog a cycle can outlast the 690s interval and overlap the next fire,
   // double-draining GRIT and voiding the second winner's reward. The guard makes
   // overlapping fires no-ops: the skipped fire does nothing and the next aligned
   // one picks up the work. The guard is released even when a child await rejects
   // (try/catch), so one bad outcall can never latch mining off.
+  //
+  // An idle/paused fire is a no-op by construction: when no active miner is
+  // spending GRIT, processBlock marks the block empty and returns before charging
+  // anything or recording a block — a fire landing during/after a pause costs nothing.
   func runBlockCycle() : async () {
     // Overlapping fire while a cycle is still running — skip entirely.
     // STRICT (F3 review): there is deliberately no staleness bypass. An
@@ -614,8 +644,8 @@ import ClaimStatusValue "types/ClaimStatusValue";
     try {
       // Attempt to drain any pending retry-mint queue before the new block processes
       ignore await MiningLib.drainPendingMints(miningState, tryLedgerMint);
-      // Clean up expired pending burn claims before processing the new block
-      GritLib.cleanupExpiredClaims(gritState, Time.now());
+      // (D20 removed GritLib.cleanupExpiredClaims — the no-op call site with it:
+      // claims are never expired under the no-expiry policy.)
       // Capture the block id BEFORE any await so the record carries this cycle's
       // own block number even if another mutation advances the counter (AKK-5).
       let thisBlockId = miningState.blockNumber;
@@ -630,75 +660,107 @@ import ClaimStatusValue "types/ClaimStatusValue";
         }),
       );
       if (timerReset) {
-        // Mining just resumed after a pause — cancel the old recurring timer (if any)
-        // and start a fresh one aligned to this moment so the 690s window starts from now.
-        switch (blockTimerState.timerId) {
-          case null {};
-          case (?tid) { Timer.cancelTimer(tid) };
-        };
-        blockTimerState.timerId := ?Timer.recurringTimer<system>(
-          #seconds 690,
-          func() : async () { await runBlockCycle() },
-        );
+        // Mining just resumed after a pause — cancel the NEXT fire (already
+        // scheduled by the re-arm at the top of this fire) and start a fresh 690s
+        // window from now, so it is aligned to the resumption moment rather than
+        // to the idle period.
+        cancelBlockTimer();
+        scheduleBlockTimer();
       };
     } catch (e) {
-      // Guard stays correct even when a child await rejected mid-cycle.
-      // Re-raise so the timer framework still observes the failure.
+      // Guard stays correct even when a child await rejected mid-cycle. The error
+      // is LOGGED, never re-thrown (AKK-FIX-17): a rejection escaping the fire is
+      // exactly what used to kill the timer chain permanently — the next fire
+      // simply retries the cycle.
       CycleGuard.release(blockCycleGuard);
-      throw e;
+      Debug.print("[block-cycle] cycle rejected: " # e.message());
+      return;
     };
     CycleGuard.release(blockCycleGuard);
   };
 
-  // Install or reinstall the 690s recurring block timer, cancelling any existing one first.
-  // Called from the startup probe to ensure the timer is always running after a deploy/upgrade.
-  func installRecurringBlockTimer<system>() {
+  // Cancel the tracked pending block-timer fire — a no-op when none is tracked
+  // or the id has already fired. Used by the startup probe and by the resume
+  // path above before installing a fresh 690s window.
+  func cancelBlockTimer() : () {
     switch (blockTimerState.timerId) {
       case null {};
       case (?tid) { Timer.cancelTimer(tid) };
     };
-    blockTimerState.timerId := ?Timer.recurringTimer<system>(
+    blockTimerState.timerId := null;
+  };
+
+  // Fire-once block timer with RE-ARM-FIRST (AKK-FIX-17) — the same proven
+  // pattern as the claim-recheck timer below (scheduleRecheck). The old shape
+  // (a recurring timer) died PERMANENTLY if its async body trapped: nothing
+  // rescheduled, and block production + AKK minting halted silently until a
+  // redeploy (finding #17, knowledge/burn-to-mine-flow-map.md). Here each fire
+  // schedules its own successor and stores the NEW id BEFORE running the cycle,
+  // then runs the body under try/catch — a trap in the body defers work to the
+  // next fire instead of ending the chain.
+  //
+  // Every exit path of a fire leaves exactly ONE pending fire scheduled:
+  //   normal completion    → successor pending
+  //   resumed-after-pause  → successor cancelled, fresh window installed
+  //   skipped (guard busy) → successor pending
+  //   rejected cycle       → successor pending (logged, not re-thrown)
+  //   startup probe        → cancel + reinstall
+  // Honest limits, matching the claim timer: (a) a trap in the SYNCHRONOUS
+  // prefix of a fire — before the cycle's first await — would roll back the
+  // re-arm made in that same segment; no such trap exists on that path (guard
+  // enter and the drain prefix are map reads/arithmetic), and every upgrade's
+  // startup probe re-installs the timer. (b) Fires are not serialized: a body
+  // longer than 690s lets the next fire start early — it re-arms again and the
+  // cycle guard turns it into a no-op, so the cadence self-corrects.
+  func scheduleBlockTimer<system>() : () {
+    blockTimerState.timerId := ?Timer.setTimer<system>(
       #seconds 690,
-      func() : async () { await runBlockCycle() },
+      func() : async () {
+        scheduleBlockTimer(); // re-arm FIRST — a trap below can't kill the chain
+        try {
+          await runBlockCycle();
+        } catch (e) {
+          Debug.print("[block-cycle] fire rejected: " # e.message());
+        };
+      },
     );
   };
 
   // Block timer — on every startup/upgrade:
-  //   1. Cancel the previously stored recurring timer (if any) to prevent ghost timer
+  //   1. Cancel the previously stored timer (if any) to prevent ghost timer
   //      accumulation across upgrades.
   //   2. Fire a one-shot probe immediately that:
-  //      a. Runs runBlockCycle() to process any pending block (mines if miners are active,
-  //         resets the timer alignment if mining just resumed from a pause).
-  //      b. UNCONDITIONALLY installs a fresh 690s recurring timer.
-  //         This is the critical fix: previously the recurring timer was only installed
+  //      a. Runs runBlockCycle() to process any pending block (mines if miners are
+  //         active, resets the timer alignment if mining just resumed from a pause).
+  //      b. UNCONDITIONALLY installs a fresh 690s fire-once timer.
+  //         This is the critical guarantee: previously the timer was only installed
   //         when runBlockCycle() did NOT install one (i.e. when timerReset=false).
   //         But if a miner was created while the canister was idle, or if the canister
   //         was upgraded and the timer ID was stale, the timer would never restart.
   //         Installing unconditionally costs nothing when no miners are active
-  //         (processBlock() returns immediately for empty blocks) and guarantees
-  //         the timer is always running regardless of mining state at startup.
-  switch (blockTimerState.timerId) {
-    case null {};
-    case (?tid) {
-      Timer.cancelTimer(tid);
-      blockTimerState.timerId := null;
-    };
-  };
+  //         (an empty cycle is a no-op) and guarantees the timer is always running
+  //         regardless of mining state at startup. The probe body is under
+  //         try/catch (AKK-FIX-17) so a rejected cycle can never skip the install.
+  cancelBlockTimer();
   ignore Timer.setTimer<system>(
     #seconds 0,
     func() : async () {
-      await runBlockCycle();
-      // UNCONDITIONALLY install the recurring 690s block timer.
-      // runBlockCycle() may have already installed one (timerReset path), but we
+      try {
+        await runBlockCycle();
+      } catch (e) {
+        Debug.print("[block-cycle] startup probe rejected: " # e.message());
+      };
+      // runBlockCycle() may have already installed one (the resume path), but we
       // cancel and reinstall here to guarantee a clean, correctly-aligned timer
       // regardless of what state the canister was in before this startup probe.
-      installRecurringBlockTimer();
+      cancelBlockTimer();
+      scheduleBlockTimer();
     },
   );
 
   // Pending-claim re-check timer — SELF-HEALING re-schedule loop (2026-09-12).
   //
-  // The old form used Timer.recurringTimer, whose fire DIES PERMANENTLY if
+  // The old form used a recurring timer, whose fire DIES PERMANENTLY if
   // the async body traps (a single malformed RPC response or an unexpected
   // trap anywhere in recheckClaim/recheckFeeClaim permanently stopped all
   // background claim verification — observed live 2026-09-11: the timer
@@ -728,7 +790,7 @@ import ClaimStatusValue "types/ClaimStatusValue";
         try {
           await recheckPendingClaims();
         } catch (e) {
-          Debug.print("[grit-api] recheckPendingClaims fire rejected: " # Error.message(e));
+          Debug.print("[grit-api] recheckPendingClaims fire rejected: " # e.message());
         };
       },
     );

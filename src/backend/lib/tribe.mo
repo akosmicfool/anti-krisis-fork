@@ -429,6 +429,27 @@ module {
           };
         };
 
+        // Rewrite membershipHistory events that referenced the old tribeId.
+        // Every consumer keys on the event's tribeId: tribeIdAt (block
+        // attribution), closeMembershipEvent (leave), and getTribeBurnSummary.
+        // Leaving old-id events behind would freeze the renamed tribe's
+        // score/rank at the rename value, keep attributing post-leave blocks
+        // to the old id, and drop every pre-rename burn.
+        state.membershipHistory.mapInPlace(func(event : TribeTypes.MembershipEvent) : TribeTypes.MembershipEvent {
+          if (event.tribeId == tribeId) {
+            {
+              member       = event.member;
+              tribeId      = finalId;
+              joinDay      = event.joinDay;
+              var leaveDay = event.leaveDay;
+              joinAt       = event.joinAt;
+              var leaveAt  = event.leaveAt;
+            };
+          } else {
+            event;
+          };
+        });
+
         #ok(toView(migrated));
       };
     };

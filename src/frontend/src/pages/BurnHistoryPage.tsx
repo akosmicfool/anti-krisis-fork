@@ -10,9 +10,18 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { ExternalLink, Flame, RefreshCw, Search, Zap } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { ChainLogo } from "../components/ChainLogo";
 import { useAuth } from "../hooks/use-auth";
 import {
+  GRIT_ISSUANCE_RATE_FALLBACK,
   useGetFeePercent,
   useGetFeeRecipient,
   useGetGritIssuanceRate,
@@ -24,38 +33,28 @@ import {
   useRetryFeeClaim,
 } from "../hooks/use-backend";
 import { useWallet } from "../hooks/use-wallet";
-import { deriveClaimAction } from "../lib/claim-recovery";
+import {
+  LIVE_PRICE_UNAVAILABLE_MSG,
+  deriveClaimAction,
+  liveBurnValueUsd,
+} from "../lib/claim-recovery";
 import { buildFeeBindingData } from "../lib/fee-binding";
+import { formatGrit, formatGritRateWords } from "../lib/format";
 import {
   type AllowlistedToken,
   CHAIN_LABELS,
   type ClaimRecord,
-  ClaimStatus,
-  formatGrit,
+  UNSUPPORTED_CHAIN_MSG,
+  explorerUrl,
   formatUSDValue,
+  getChainId,
   getClaimStatus,
   isPendingFee,
   truncateAddress,
 } from "../types";
 
-// ─── Block explorer URLs ──────────────────────────────────────────────────────
-const EXPLORER_BASE: Record<string, string> = {
-  ethereum: "https://etherscan.io/tx",
-  arbitrum: "https://arbiscan.io/tx",
-  polygon: "https://polygonscan.com/tx",
-  optimism: "https://optimistic.etherscan.io/tx",
-  base: "https://basescan.org/tx",
-  celo: "https://celoscan.io/tx", // was missing — Celo txs linked to Etherscan
-};
-
-function explorerUrl(chain: string, txHash: string) {
-  const base = EXPLORER_BASE[chain] ?? "https://basescan.org/tx";
-  return `${base}/${txHash}`;
-}
-
-function formatGritFull(amount: bigint): string {
-  return Number(amount).toLocaleString("en-US");
-}
+// Block explorer URLs are single-sourced in types.ts (`explorerUrl`) — the
+// local duplicate map here disagreed with it on the fallback.
 
 // ─── Status Badge ─────────────────────────────────────────────────────────────
 function StatusBadge({ claim }: { claim: ClaimRecord }) {
@@ -102,29 +101,41 @@ function StatusBadge({ claim }: { claim: ClaimRecord }) {
 }
 
 // ─── Stat Card ────────────────────────────────────────────────────────────────
+// One equal box: label / value / caption. `value` is a node so a box can swap
+// in its own loading placeholder without losing its data-ocid hooks.
 function StatCard({
   label,
   value,
   sub,
-  accent,
+  className,
+  valueClass,
+  ocid,
+  valueOcid,
 }: {
   label: string;
-  value: string;
+  value: ReactNode;
   sub?: string;
-  accent?: boolean;
+  className?: string;
+  valueClass?: string;
+  ocid?: string;
+  valueOcid?: string;
 }) {
   return (
     <div
-      className={`bg-card border ${accent ? "border-accent/40" : "border-border"} p-4 flex flex-col gap-1`}
+      className={`bg-card border border-border p-3 sm:p-4 flex flex-col gap-1 ${className ?? ""}`}
+      data-ocid={ocid}
     >
-      <span className="font-mono text-[10px] uppercase tracking-widest text-white">
+      <span className="font-mono text-xs uppercase tracking-widest text-white whitespace-nowrap">
         {label}
       </span>
-      <span
-        className={`font-mono text-xl font-bold ${accent ? "text-accent" : "text-foreground"}`}
+      <div
+        className={
+          valueClass ?? "font-display text-[25px] font-bold text-foreground"
+        }
+        data-ocid={valueOcid}
       >
         {value}
-      </span>
+      </div>
       {sub && (
         <span className="font-mono text-[10px] text-muted-foreground">
           {sub}
@@ -139,7 +150,7 @@ function RowSkeleton() {
   return (
     <tr className="border-b border-border">
       {Array.from({ length: 7 }, (_, i) => (
-        <td key={`skeleton-cell-col${i + 1}`} className="px-3 py-3">
+        <td key={`skeleton-cell-col${i + 1}`} className="px-2 py-3">
           <Skeleton className="h-4 w-full bg-muted/60" />
         </td>
       ))}
@@ -163,7 +174,7 @@ function EmptyState() {
             <p className="font-display font-semibold text-foreground mb-1">
               No burns recorded yet
             </p>
-            <p className="font-body text-sm text-muted-foreground">
+            <p className="font-body text-sm md:text-base text-muted-foreground">
               Burn your first ERC-20 tokens to earn GRIT
             </p>
           </div>
@@ -199,7 +210,7 @@ function LoginPrompt() {
         <h2 className="font-display font-semibold text-xl text-foreground mb-2">
           Authentication Required
         </h2>
-        <p className="font-body text-sm text-muted-foreground">
+        <p className="font-body text-sm md:text-base text-muted-foreground">
           Connect your Internet Identity to view your GRIT balance and claim
           history.
         </p>
@@ -243,12 +254,12 @@ function ClaimRow({
   // AKK-4: the claimant's own principal goes into the replacement fee tx payload
   const { principal } = useAuth();
   const date = new Date(Number(claim.timestamp / BigInt(1_000_000)));
-  const dateStr = date.toLocaleDateString("en-US", {
+  const datePart = date.toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
     year: "numeric",
   });
-  const timeStr = date.toLocaleTimeString("en-US", {
+  const timePart = date.toLocaleTimeString("en-US", {
     hour: "2-digit",
     minute: "2-digit",
   });
@@ -315,48 +326,6 @@ function ClaimRow({
     }
   }
 
-  async function handleRetryFee() {
-    if (!feeRecipient || !wallet.isConnected) return;
-    setRetrying(true);
-    setRetryError("");
-    try {
-      const chainId =
-        claim.chain === "celo"
-          ? 42220
-          : claim.chain === "optimism"
-            ? 10
-            : claim.chain === "base"
-              ? 8453
-              : 1;
-      const newFeeHash = await wallet.sendPlatformFee(
-        Number(claim.amountBurned),
-        chainId,
-        feeRecipient,
-        feeRate,
-        // AKK-4: replacement fee tx binds to this claim's burn + this user
-        buildFeeBindingData(principal ?? "", claim.txHash),
-      );
-      await retryFeeClaim.mutateAsync({
-        txHash: claim.txHash,
-        feeTxHash: newFeeHash,
-      });
-      setRetrySuccess(true);
-    } catch (err) {
-      // Bug-1: "not yet confirmed" = the fee tx was sent and the backend
-      // has STORED it (#pendingFee) — the 15s timer verifies + credits.
-      // Show it as in-progress success, not an error.
-      const msg = err instanceof Error ? err.message : "";
-      if (msg.includes("Fee transaction not yet confirmed")) {
-        setRetrySuccess(true);
-        setRetryError("");
-      } else {
-        setRetryError(err instanceof Error ? err.message : "Fee retry failed.");
-      }
-    } finally {
-      setRetrying(false);
-    }
-  }
-
   // A #failed claim (e.g. transient price-deviation rejection) credited
   // nothing but used to be a dead end — the duplicate guard bricked the
   // burn's txHash forever. The backend now resurrects failed records in
@@ -401,16 +370,24 @@ function ClaimRow({
     setRetrying(true);
     setRetryError("");
     try {
-      const chainId =
-        claim.chain === "celo"
-          ? 42220
-          : claim.chain === "optimism"
-            ? 10
-            : claim.chain === "base"
-              ? 8453
-              : 1;
+      // AKK-CRIT-10: fee sizing rule — the fee is
+      // burnValueUsd * feeRate, sized from the LIVE oracle-priced value
+      // (amountBurned × current price), never the stored claim-time usdValue.
+      const burnValueUsd = await liveBurnValueUsd(claim);
+      if (burnValueUsd === null) {
+        // No live price = the backend cannot size-check the fee. Never send.
+        setRetryError(LIVE_PRICE_UNAVAILABLE_MSG);
+        return;
+      }
+      const chainId = getChainId(claim.chain);
+      if (chainId === null) {
+        // Finding #18: never send this claim's fee on a guessed chain — the
+        // old ladder defaulted unknown chains to Ethereum (chain 1).
+        setRetryError(UNSUPPORTED_CHAIN_MSG);
+        return;
+      }
       const newFeeHash = await wallet.sendPlatformFee(
-        Number(claim.amountBurned),
+        burnValueUsd,
         chainId,
         feeRecipient,
         feeRate,
@@ -429,13 +406,16 @@ function ClaimRow({
     }
   }
 
+  // "" when the chain has no known explorer — the tx link is hidden then.
+  const explorerHref = explorerUrl(claim.chain, claim.txHash);
+
   return (
     <tr
       className="border-b border-border hover:bg-muted/20 transition-colors duration-150"
       data-ocid={`dashboard.claims.item.${pos}`}
     >
-      <td className="px-3 py-3 whitespace-nowrap">
-        <div className="flex flex-col gap-0.5">
+      <td className="px-2 py-3 whitespace-nowrap text-center">
+        <div className="flex flex-col gap-0.5 items-center">
           <span className="font-mono text-xs text-foreground font-semibold">
             {tokenLabel}
           </span>
@@ -444,21 +424,21 @@ function ClaimRow({
           </span>
         </div>
       </td>
-      <td className="px-3 py-3 whitespace-nowrap">
+      <td className="px-2 py-3 whitespace-nowrap text-center">
         <span className="font-mono text-xs text-foreground">{humanAmount}</span>
       </td>
-      <td className="px-3 py-3 whitespace-nowrap">
+      <td className="px-2 py-3 whitespace-nowrap text-center">
         <span className="font-mono text-xs text-foreground">
           {formatUSDValue(claim.usdValue ?? 0)}
         </span>
       </td>
-      <td className="px-3 py-3 whitespace-nowrap">
+      <td className="px-2 py-3 whitespace-nowrap text-center">
         <span className="font-mono text-xs text-accent font-bold">
           +{formatGrit(claim.gritMinted)}
         </span>
       </td>
-      <td className="px-3 py-3">
-        <div className="flex flex-col gap-1.5">
+      <td className="px-2 py-3 text-center">
+        <div className="flex flex-col gap-1.5 items-center">
           {/* W1B UX: ONE status + ONE action per row, derived from the
               claim's exact state (see lib/claim-recovery.ts). The old
               independent flags could stack 2-3 actions inviting the user
@@ -504,28 +484,6 @@ function ClaimRow({
                     Fee paid ✓ — verifying
                   </span>
                 ) : null;
-              case "retry_fee":
-                return (
-                  <>
-                    <button
-                      type="button"
-                      onClick={handleRetryFee}
-                      disabled={disabled}
-                      className="inline-flex items-center gap-1 px-2 py-1 border border-amber-500/50 bg-amber-500/10 text-amber-300 font-mono text-[10px] uppercase tracking-widest hover:bg-amber-500/20 transition-colors disabled:opacity-50"
-                      data-ocid={`dashboard.claims.retry_fee_button.${pos}`}
-                    >
-                      {retrying ? "Sending…" : "Retry Fee"}
-                    </button>
-                    {retryError && (
-                      <p
-                        className="font-mono text-[10px] text-red-400"
-                        data-ocid={`dashboard.claims.retry_fee_error.${pos}`}
-                      >
-                        {retryError}
-                      </p>
-                    )}
-                  </>
-                );
               case "retry_claim":
                 return (
                   <>
@@ -593,25 +551,33 @@ function ClaimRow({
           })()}
         </div>
       </td>
-      <td className="px-3 py-3 whitespace-nowrap">
-        <div className="flex flex-col gap-0.5">
-          <span className="font-mono text-xs text-foreground">{dateStr}</span>
-          <span className="font-mono text-[10px] text-muted-foreground">
-            {timeStr}
+      <td className="px-2 py-3 whitespace-nowrap text-center">
+        <div className="flex flex-col leading-tight items-center">
+          <span className="font-mono text-xs text-foreground whitespace-nowrap">
+            {datePart}
+          </span>
+          <span className="font-mono text-[10px] text-muted-foreground whitespace-nowrap">
+            {timePart}
           </span>
         </div>
       </td>
-      <td className="px-3 py-3 whitespace-nowrap">
-        <a
-          href={explorerUrl(claim.chain, claim.txHash)}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-flex items-center gap-1 font-mono text-xs text-accent hover:text-accent/80 transition-smooth"
-          data-ocid={`dashboard.claims.tx_link.${pos}`}
-        >
-          {truncateAddress(claim.txHash, 8)}
-          <ExternalLink className="h-3 w-3 shrink-0" />
-        </a>
+      <td className="px-2 py-3 whitespace-nowrap text-center">
+        {explorerHref ? (
+          <a
+            href={explorerHref}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 font-mono text-xs text-accent hover:text-accent/80 transition-smooth"
+            data-ocid={`dashboard.claims.tx_link.${pos}`}
+          >
+            {truncateAddress(claim.txHash, 8)}
+            <ExternalLink className="h-3 w-3 shrink-0" />
+          </a>
+        ) : (
+          <span className="font-mono text-xs text-muted-foreground">
+            {truncateAddress(claim.txHash, 8)}
+          </span>
+        )}
       </td>
     </tr>
   );
@@ -632,7 +598,7 @@ export function BurnHistoryPage() {
     isLoading: claimsLoading,
     refetch: refetchClaims,
   } = useMyClaimHistory();
-  const { data: tokens } = useGetTokens();
+  const { data: tokens, refetch: refetchTokens } = useGetTokens();
   const { data: gritIssuanceRate, isLoading: issuanceLoading } =
     useGetGritIssuanceRate();
 
@@ -722,15 +688,6 @@ export function BurnHistoryPage() {
     }
   }, [isAuthenticated, authLoading, navigate]);
 
-  // Track pending/pendingFee claims for the "Live Updating" badge.
-  const hasPending = useMemo(
-    () =>
-      (claims ?? []).some(
-        (c) => c.status === ClaimStatus.pending || isPendingFee(c.status),
-      ),
-    [claims],
-  );
-
   // Always poll claims every 10s so the dashboard stays live after a burn
   // regardless of whether the user has pending claims when the page loads.
   // The balance is already polled by useMyBalance's own refetchInterval.
@@ -744,7 +701,7 @@ export function BurnHistoryPage() {
 
   async function handleRefresh() {
     setRefreshing(true);
-    await Promise.all([refetchBalance(), refetchClaims()]);
+    await Promise.all([refetchBalance(), refetchClaims(), refetchTokens()]);
     setRefreshing(false);
   }
 
@@ -785,9 +742,6 @@ export function BurnHistoryPage() {
     [claims],
   );
   const totalBurnsCount = (claims ?? []).length;
-  const pendingCount = (claims ?? []).filter(
-    (c) => c.status === ClaimStatus.pending || isPendingFee(c.status),
-  ).length;
   const totalUsdBurned = useMemo(
     () => (claims ?? []).reduce((acc, c) => acc + (c.usdValue ?? 0), 0),
     [claims],
@@ -795,7 +749,7 @@ export function BurnHistoryPage() {
 
   if (!isAuthenticated && !authLoading) {
     return (
-      <div className="max-w-7xl mx-auto px-4 py-8" data-ocid="dashboard.page">
+      <div className="max-w-4xl mx-auto px-4 py-8" data-ocid="dashboard.page">
         <LoginPrompt />
       </div>
     );
@@ -803,7 +757,7 @@ export function BurnHistoryPage() {
 
   return (
     <div
-      className="max-w-7xl mx-auto px-4 py-8 space-y-6"
+      className="max-w-4xl mx-auto px-4 py-8 space-y-6"
       data-ocid="dashboard.page"
     >
       {/* ── Page Header ── */}
@@ -813,113 +767,81 @@ export function BurnHistoryPage() {
             <Flame className="h-7 w-7 sm:h-8 sm:w-8 text-accent" />
             BURN HISTORY
           </h1>
-          <p className="text-white text-sm mt-1 break-words">
+          <p className="text-white text-sm md:text-base mt-1 break-words">
             Your GRIT balance and burn history
           </p>
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={handleRefresh}
-          disabled={refreshing || claimsLoading}
-          className="gap-1.5 border-border font-mono text-xs text-muted-foreground hover:text-foreground hover:border-accent/40 transition-smooth"
-          data-ocid="dashboard.refresh_button"
+      </div>
+
+      {/* ── Overview ── section header mirrors BLOCK HISTORY's stats section */}
+      <div>
+        <h2 className="font-display text-2xl uppercase tracking-widest text-white mb-3">
+          OVERVIEW
+        </h2>
+
+        {/* ── Stat Boxes ── one equal row: label / value / caption. Labels are
+            authored Title Case and uppercased by the label style, as elsewhere
+            on this page. */}
+        <div
+          className="grid grid-cols-2 sm:grid-cols-3 gap-2 sm:gap-3"
+          data-ocid="dashboard.stats.section"
         >
-          <RefreshCw
-            className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`}
-          />
-          Refresh
-        </Button>
-      </div>
-
-      {/* ── GRIT Balance Hero ── */}
-      <div
-        className="bg-card border border-accent/40 p-6 relative overflow-hidden"
-        data-ocid="dashboard.balance.card"
-      >
-        {/* Scanline decoration */}
-        <div className="absolute inset-0 pointer-events-none opacity-[0.03] bg-[repeating-linear-gradient(0deg,transparent,transparent_2px,white_2px,white_3px)]" />
-        <div className="relative z-10 flex flex-col sm:flex-row sm:items-center gap-6">
-          <div className="flex-1">
-            <div className="flex items-center gap-2 mb-3">
-              <Zap className="h-4 w-4 text-accent energy-pulse" />
-              <span className="font-mono text-[10px] uppercase tracking-widest text-white">
-                GRIT Balance
-              </span>
-              {hasPending && (
-                <span className="font-mono text-[10px] uppercase tracking-widest text-yellow-400 animate-pulse border border-yellow-500/30 px-1.5 py-0.5">
-                  Live Updating
-                </span>
-              )}
-            </div>
-            {balanceLoading ? (
+          {claimsLoading ? (
+            Array.from({ length: 5 }, (_, i) => (
               <Skeleton
-                className="h-12 w-64 bg-muted/60"
-                data-ocid="dashboard.balance.loading_state"
+                key={`stat-skeleton-${i + 1}`}
+                className="h-20 bg-muted/60"
               />
-            ) : (
-              <div
-                className="font-mono font-bold leading-none"
-                data-ocid="dashboard.balance.value"
-              >
-                <span className="text-[1.18rem] sm:text-[1.47rem] text-accent">
-                  {formatGritFull(balance ?? BigInt(0))}
-                </span>
-                <span className="text-2xl text-accent/60 ml-2">GRIT</span>
-              </div>
-            )}
-          </div>
-          {/* Rate reference */}
-          <div className="border border-border bg-background/60 p-3 shrink-0">
-            <p className="font-mono text-[10px] uppercase tracking-widest text-white">
-              Issuance Rate
-            </p>
-            <p className="font-mono text-sm text-foreground font-bold mt-1">
-              {issuanceLoading ? (
-                <span className="text-muted-foreground">…</span>
-              ) : (
-                `${Number(gritIssuanceRate ?? BigInt(100_000_000_000)).toLocaleString("en-US")} GRIT`
-              )}
-            </p>
-            <p className="font-mono text-[10px] text-muted-foreground mt-0.5">
-              per $1.00 of token burned
-            </p>
-          </div>
+            ))
+          ) : (
+            <>
+              <StatCard
+                label="GRIT Balance"
+                ocid="dashboard.balance.card"
+                valueOcid="dashboard.balance.value"
+                valueClass="font-display text-[25px] font-bold text-accent"
+                value={
+                  balanceLoading ? (
+                    <Skeleton
+                      className="h-6 w-24 bg-muted/60"
+                      data-ocid="dashboard.balance.loading_state"
+                    />
+                  ) : (
+                    formatGrit(balance ?? BigInt(0))
+                  )
+                }
+                sub="Current"
+              />
+              <StatCard
+                label="Number of Burns"
+                value={totalBurnsCount.toString()}
+                sub="All Time"
+              />
+              <StatCard
+                label="GRIT Earned"
+                value={formatGrit(totalGrit)}
+                sub="All Time"
+              />
+              <StatCard
+                label="Burn Value"
+                value={formatUSDValue(totalUsdBurned)}
+                sub="All Time"
+              />
+              <StatCard
+                label="GRIT Issuance Rate"
+                className="col-span-2 sm:col-span-1"
+                value={
+                  issuanceLoading
+                    ? "…"
+                    : formatGritRateWords(
+                        gritIssuanceRate ?? GRIT_ISSUANCE_RATE_FALLBACK,
+                      )
+                }
+                sub="per $1.00 of token burned"
+              />
+            </>
+          )}
         </div>
-      </div>
-
-      {/* ── Stats Row ── */}
-      <div
-        className="grid grid-cols-2 sm:grid-cols-3 gap-3"
-        data-ocid="dashboard.stats.section"
-      >
-        {claimsLoading ? (
-          Array.from({ length: 3 }, (_, i) => (
-            <Skeleton
-              key={`stat-skeleton-${i + 1}`}
-              className="h-20 bg-muted/60"
-            />
-          ))
-        ) : (
-          <>
-            <StatCard
-              label="Total Burn Claims"
-              value={totalBurnsCount.toString()}
-              sub={pendingCount > 0 ? `${pendingCount} verifying` : "all time"}
-            />
-            <StatCard
-              label="Total GRIT Earned"
-              value={formatGrit(totalGrit)}
-              sub="cumulative"
-              accent
-            />
-            <StatCard
-              label="USD Value Burned"
-              value={formatUSDValue(totalUsdBurned)}
-              sub="approximate"
-            />
-          </>
-        )}
       </div>
 
       {/* ── Claim History ── */}
@@ -927,21 +849,38 @@ export function BurnHistoryPage() {
         className="bg-card border border-border"
         data-ocid="dashboard.claims.section"
       >
-        {/* Table controls */}
-        <div className="border-b border-border px-4 py-3 flex flex-col sm:flex-row sm:items-center gap-3">
-          <h2 className="font-mono text-xs uppercase tracking-widest text-foreground">
+        {/* Table controls — ONE block with no divider line inside: title left,
+            then refresh, search, chain and status filters in that order to its
+            right (owner layout, the pre-wave-13 arrangement). On mobile/tablet
+            the controls wrap down below the title in the same order. */}
+        <div className="border-b border-border px-4 py-3 flex flex-wrap items-center gap-2">
+          <h2 className="font-display font-normal text-2xl uppercase tracking-widest text-white">
             Claim History
           </h2>
-          <div className="flex items-center gap-2 sm:ml-auto flex-wrap">
+          <div className="flex w-full flex-wrap items-center gap-2 sm:ml-auto sm:w-auto">
+            {/* Refresh */}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleRefresh}
+              disabled={refreshing || claimsLoading}
+              className="shrink-0 h-7 px-2.5 gap-1.5 border-border font-mono text-xs text-muted-foreground bg-background hover:text-foreground hover:border-accent/40 transition-smooth"
+              data-ocid="dashboard.refresh_button"
+            >
+              <RefreshCw
+                className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`}
+              />
+              Refresh
+            </Button>
             {/* Search */}
-            <div className="relative">
+            <div className="relative min-w-[160px] flex-1 sm:w-44 sm:flex-none">
               <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground pointer-events-none" />
               <Input
                 type="text"
                 placeholder="Search tx hash…"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-7 h-7 w-full sm:w-44 font-mono text-xs bg-background border-border focus-visible:ring-accent"
+                className="pl-7 h-7 w-full font-mono text-xs bg-background border-border focus-visible:ring-accent"
                 data-ocid="dashboard.search_input"
               />
             </div>
@@ -957,7 +896,10 @@ export function BurnHistoryPage() {
                 <SelectItem value="all">All chains</SelectItem>
                 {Object.entries(CHAIN_LABELS).map(([key, label]) => (
                   <SelectItem key={key} value={key}>
-                    {label}
+                    <span className="flex items-center gap-2 whitespace-nowrap">
+                      <ChainLogo id={key} className="w-4 h-4 object-contain" />
+                      {label}
+                    </span>
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -987,19 +929,23 @@ export function BurnHistoryPage() {
             <thead>
               <tr className="border-b border-border bg-background/40">
                 {[
-                  "Token",
-                  "Amount Burned",
-                  "USD Value",
-                  "GRIT Received",
-                  "Status",
-                  "Date",
-                  "Tx Hash",
-                ].map((col) => (
+                  ["Token"],
+                  ["Amount", "Burned"],
+                  ["USD", "Value"],
+                  ["GRIT", "Received"],
+                  ["Status"],
+                  ["Date"],
+                  ["Tx Hash"],
+                ].map((lines) => (
                   <th
-                    key={col}
-                    className="text-left px-3 py-2 font-mono text-[10px] uppercase tracking-widest text-white whitespace-nowrap"
+                    key={lines.join(" ")}
+                    className="text-center px-2 py-2 font-mono font-normal text-xs uppercase tracking-widest text-accent"
                   >
-                    {col}
+                    <span className="flex flex-col leading-tight items-center">
+                      {lines.map((line) => (
+                        <span key={line}>{line}</span>
+                      ))}
+                    </span>
                   </th>
                 ))}
               </tr>
@@ -1028,44 +974,49 @@ export function BurnHistoryPage() {
           </table>
         </div>
 
-        {/* Pagination */}
-        {!claimsLoading && filtered.length > 0 && (
-          <div className="border-t border-border px-4 py-3 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-0">
-            <span className="font-mono text-[10px] text-muted-foreground sm:flex-1">
-              {filtered.length} record{filtered.length !== 1 ? "s" : ""}
-              {filtered.length !== totalBurnsCount &&
-                ` (filtered from ${totalBurnsCount})`}
-            </span>
-            <div
-              className="flex items-center justify-between sm:justify-end gap-4"
-              data-ocid="burn_history.pagination"
-            >
-              <button
-                type="button"
-                onClick={() => setCurrentPage((p) => Math.max(0, p - 1))}
-                disabled={currentPage === 0}
-                className="text-xs font-mono uppercase tracking-wider text-muted-foreground hover:text-foreground disabled:opacity-30 disabled:cursor-not-allowed transition-smooth"
-                data-ocid="burn_history.pagination_prev"
-              >
-                ← PREV
-              </button>
-              <span className="text-xs font-mono text-muted-foreground">
-                PAGE {currentPage + 1} OF {totalPages}
+        {/* ── Bottom controls ── record count and pagination; stacked on
+            mobile. The filters live between the search controls and the
+            table (owner layout). */}
+        <div className="border-t border-border px-4 py-3 flex flex-col gap-3">
+          {/* Records + pagination */}
+          {!claimsLoading && filtered.length > 0 && (
+            <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between md:gap-4">
+              <span className="font-mono text-[10px] text-muted-foreground">
+                {filtered.length} record{filtered.length !== 1 ? "s" : ""}
+                {filtered.length !== totalBurnsCount &&
+                  ` (filtered from ${totalBurnsCount})`}
               </span>
-              <button
-                type="button"
-                onClick={() =>
-                  setCurrentPage((p) => Math.min(totalPages - 1, p + 1))
-                }
-                disabled={currentPage >= totalPages - 1}
-                className="text-xs font-mono uppercase tracking-wider text-muted-foreground hover:text-foreground disabled:opacity-30 disabled:cursor-not-allowed transition-smooth"
-                data-ocid="burn_history.pagination_next"
+              <div
+                className="flex items-center justify-between md:justify-end gap-4"
+                data-ocid="burn_history.pagination"
               >
-                NEXT →
-              </button>
+                <button
+                  type="button"
+                  onClick={() => setCurrentPage((p) => Math.max(0, p - 1))}
+                  disabled={currentPage === 0}
+                  className="text-xs font-mono uppercase tracking-wider text-muted-foreground hover:text-foreground disabled:opacity-30 disabled:cursor-not-allowed transition-smooth"
+                  data-ocid="burn_history.pagination_prev"
+                >
+                  ← PREV
+                </button>
+                <span className="text-xs font-mono text-muted-foreground">
+                  PAGE {currentPage + 1} OF {totalPages}
+                </span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setCurrentPage((p) => Math.min(totalPages - 1, p + 1))
+                  }
+                  disabled={currentPage >= totalPages - 1}
+                  className="text-xs font-mono uppercase tracking-wider text-muted-foreground hover:text-foreground disabled:opacity-30 disabled:cursor-not-allowed transition-smooth"
+                  data-ocid="burn_history.pagination_next"
+                >
+                  NEXT →
+                </button>
+              </div>
             </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
     </div>
   );

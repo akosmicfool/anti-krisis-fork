@@ -74,6 +74,18 @@ export default {
         accent: ["'Handjet'", "sans-serif"],
         pixel: ["'Handjet'", "sans-serif"],
       },
+      // Themed pixel-art cursors (green set, 32x32 .cur in
+      // public/assets/cursors/). The vars are defined in src/index.css;
+      // mapping them into the cursor scale means EVERY utility variant
+      // (cursor-pointer, disabled:cursor-not-allowed, peer-disabled:*, …)
+      // ships the themed image instead of the native keyword.
+      cursor: {
+        default: "var(--cursor-arrow)",
+        pointer: "var(--cursor-hand)",
+        text: "var(--cursor-text)",
+        crosshair: "var(--cursor-target)",
+        "not-allowed": "var(--cursor-block)",
+      },
       borderRadius: {
         lg: "0px",
         md: "0px",

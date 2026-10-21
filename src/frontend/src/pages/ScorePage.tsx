@@ -204,7 +204,15 @@ function PlayerCard({
         className="font-display text-2xl tabular-nums w-10 shrink-0 text-center"
         style={rankStyle(rank)}
       >
-        {rank}
+        {rank <= 3 ? (
+          <img
+            src={`/assets/ranks/rank-${rank}.png`}
+            alt={`Rank ${rank}`}
+            className="h-7 w-7 object-contain"
+          />
+        ) : (
+          rank
+        )}
       </span>
 
       {/* Avatar */}
@@ -243,7 +251,10 @@ function PlayerCard({
 
       {/* Score */}
       <div className="text-right shrink-0">
-        <p className="font-mono font-bold text-lg" style={rankStyle(rank)}>
+        <p
+          className="font-display font-bold text-[22.5px]"
+          style={rankStyle(rank)}
+        >
           {entry.score.toFixed(2)}
         </p>
         <p className="font-accent text-sm uppercase tracking-widest text-white">
@@ -298,7 +309,15 @@ function TribeCard({
           className="font-display text-2xl tabular-nums w-10 shrink-0 text-center"
           style={rankStyle(rank)}
         >
-          {rank}
+          {rank <= 3 ? (
+            <img
+              src={`/assets/ranks/rank-${rank}.png`}
+              alt={`Rank ${rank}`}
+              className="h-7 w-7 object-contain"
+            />
+          ) : (
+            rank
+          )}
         </span>
 
         {/* Tribe photo */}
@@ -326,18 +345,21 @@ function TribeCard({
           <p className="font-display text-xl text-foreground truncate group-hover:text-accent transition-smooth">
             {entry.tribeName}
           </p>
-          <p className="font-accent text-sm uppercase tracking-widest text-muted-foreground mt-0.5">
+          <p className="font-mono text-xs text-accent truncate mt-0.5">
             <Users className="inline h-2.5 w-2.5 mr-1" />
-            {entry.memberCount} {entry.memberCount === 1 ? "member" : "members"}
+            {entry.memberCount} {entry.memberCount === 1 ? "Member" : "Members"}
           </p>
         </div>
 
         {/* Score */}
         <div className="text-right shrink-0">
-          <p className="font-mono font-bold text-lg" style={rankStyle(rank)}>
+          <p
+            className="font-display font-bold text-[22.5px]"
+            style={rankStyle(rank)}
+          >
             {entry.score.toFixed(2)}
           </p>
-          <p className="font-accent text-sm uppercase tracking-widest text-muted-foreground">
+          <p className="font-accent text-sm uppercase tracking-widest text-white">
             AK69
           </p>
         </div>
@@ -405,7 +427,7 @@ export function ScorePage() {
         <p className="text-white text-sm mt-1 break-words">
           Top players and tribes ranked by{" "}
           <span className="text-accent font-mono">AK69</span> — a composite of
-          GRIT burned and AKK won.
+          GRIT spent and AKK won over a timescale
         </p>
       </div>
 

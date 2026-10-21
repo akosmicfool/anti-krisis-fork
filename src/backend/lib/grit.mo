@@ -63,12 +63,43 @@ module {
     state.claims.add(record);
   };
 
+  /// ── FIX-6 (audit v341): per-caller cap on claims awaiting verification ──
+  /// initiateClaim stores a record for ANY 64-hex hash BEFORE any proof and
+  /// claims never expire, so free unauthenticated spam grew state without
+  /// bound and kept the 15s recheck sweep verifying the spammer's records
+  /// forever. A caller may hold at most PENDING_CLAIMS_PER_CALLER claims in
+  /// an awaiting state (#pending / #pendingFee) at a time.
+  ///
+  /// Lives here, NOT in main.mo: --enhanced-migration turns every actor-level
+  /// binding into a stable field fed by the migration chain, so initializers
+  /// on them are banned (M0250).
+  public let PENDING_CLAIMS_PER_CALLER : Nat = 10;
+
+  /// Count the caller's claims still awaiting resolution — BOTH #pending and
+  /// #pendingFee count (a fee-less claim's continuation is #pendingFee).
+  /// Terminal records (#verified / #failed) never count: they consumed their
+  /// slot by resolving, and #failed stays recoverable through
+  /// resurrectFailedClaim, which rewrites the EXISTING row without storing a
+  /// new one.
+  public func countAwaitingClaims(state : State, caller : Principal) : Nat {
+    var count = 0;
+    for (r in state.claims.values()) {
+      if (r.claimant == caller) {
+        switch (r.status) {
+          case (#pending or #pendingFee) { count += 1 };
+          case (_) {};
+        };
+      };
+    };
+    count;
+  };
+
   /// Retry semantics (AKK-4 era): a #failed claim is terminal-but-worthless —
   /// it credited nothing (gritMinted is 0 by construction) and blocks the
   /// duplicate guard from ever re-attempting the same burn. Resurrection
   /// mutates that record in place back to #pending with the NEW feeTxHash and
-  /// a fresh timestamp (restarting the 35-min age window), letting the same
-  /// burn retry fee binding and pricing. Only the ORIGINAL claimant may
+  /// a fresh timestamp (restarting the adaptive recheck cadence), letting the
+  /// same burn retry fee binding and pricing. Only the ORIGINAL claimant may
   /// resurrect, and only #failed records — #verified keeps its CAS-protected
   /// credit, #pending/#pendingFee have their own retry loops.
   public func resurrectFailedClaim(state : State, txHash : Text, caller : Principal, feeTxHash : Text, now : Int) : Bool {
@@ -125,6 +156,15 @@ module {
     amountBurned : ?Float,
     usdValue : ?Float,
     feeTxHash : ?Text,
+    // AKK-CRIT-1: the principal whose fee binding was just verified — the
+    // "proof-passing claimant". EVERY #verified transition must pass it: the
+    // balance credit pays THIS principal and the record's claimant is
+    // re-pinned to them, so the credit can never follow a claimant that an
+    // adoption (adoptUncreditedClaim) rebound while the verification's awaits
+    // were in flight. null = fall back to the stored claimant — the legacy
+    // behaviour for non-credit transitions (#failed, #pendingFee, fee-less
+    // #pending commits) where no fee proof was established.
+    creditedClaimant : ?Principal,
   ) {
     // CAS step 1: re-read the authoritative record right before mutating. No await may
     // occur between this find and the balance writes below (this function body has none),
@@ -133,11 +173,25 @@ module {
       case null {}; // unknown claim — nothing to update
       case (?authoritative) {
         // CAS step 2: only claims still awaiting resolution may transition.
+        // AKK-CRIT-7: #failed is no longer unconditionally terminal. A claim
+        // whose BURN verified (amountBurned committed > 0) but whose fee stage
+        // failed definitively holds gritMinted == 0 (every #failed write
+        // passes credit 0) and used to be a dead end: every recovery re-sent
+        // the SAME doomed fee hash. The one sanctioned escape is the
+        // post-verify terminalization of a RESCUED fee stage (#verified with
+        // the credit). A burn-failed claim (amountBurned == 0) has nothing to
+        // rescue, and no other target may rewrite a #failed record (the
+        // #pendingFee door is updateClaimToPendingFee's, with the same guard).
         let mayTransition = switch (authoritative.status) {
           case (#pending) true;
           case (#pendingFee) true;
           case (#verified) false;
-          case (#failed) false;
+          case (#failed) {
+            switch (status) {
+              case (#verified) { authoritative.amountBurned > 0.0 };
+              case (_) { false };
+            }
+          };
         };
         // W4 review fix (F2): a claim whose BURN was never verified (the
         // transient "not yet indexed" paths in initiateClaim leave amountBurned
@@ -159,6 +213,15 @@ module {
           case (_) { false };
         };
         if (mayTransition and not creditlessVerified) {
+          // AKK-CRIT-1: the payee is fixed ONCE, before the write, and drives
+          // both the record re-pin and the balance credit — no second read of
+          // a record an adoption may have rebound while the caller's awaits
+          // were in flight. With creditedClaimant unset this is the stored
+          // claimant, i.e. the pre-fix behaviour.
+          let payee = switch (creditedClaimant) {
+            case (?c) { c };
+            case null { authoritative.claimant };
+          };
           state.claims.mapInPlace(func(r : Types.ClaimRecord) : Types.ClaimRecord {
             if (r.txHash == txHash) {
               {
@@ -167,32 +230,28 @@ module {
                 amountBurned = switch (amountBurned) { case null { r.amountBurned }; case (?a) { a } };
                 usdValue = switch (usdValue) { case null { r.usdValue }; case (?u) { u } };
                 feeTxHash = switch (feeTxHash) { case null { r.feeTxHash }; case (?f) { ?f } };
+                claimant = payee;
               }
             } else {
               r
             }
           });
           if (gritToCredit > 0) {
-            switch (state.claims.find(func(r : Types.ClaimRecord) : Bool { r.txHash == txHash })) {
+            let prev = switch (state.balances.get(payee)) {
+              case null  { 0 };
+              case (?b)  { b };
+            };
+            let newBalance = prev + gritToCredit;
+            state.balances.add(payee, newBalance);
+            // Also accumulate into the all-time earned tracker (never decremented)
+            let prevEarned = switch (state.totalEarned.get(payee)) {
+              case null  { 0 };
+              case (?e)  { e };
+            };
+            state.totalEarned.add(payee, prevEarned + gritToCredit);
+            switch (onGritCredited) {
               case null {};
-              case (?updated) {
-                let prev = switch (state.balances.get(updated.claimant)) {
-                  case null  { 0 };
-                  case (?b)  { b };
-                };
-                let newBalance = prev + gritToCredit;
-                state.balances.add(updated.claimant, newBalance);
-                // Also accumulate into the all-time earned tracker (never decremented)
-                let prevEarned = switch (state.totalEarned.get(updated.claimant)) {
-                  case null  { 0 };
-                  case (?e)  { e };
-                };
-                state.totalEarned.add(updated.claimant, prevEarned + gritToCredit);
-                switch (onGritCredited) {
-                  case null {};
-                  case (?cb) cb(updated.claimant, newBalance);
-                };
-              };
+              case (?cb) cb(payee, newBalance);
             };
           };
         };
@@ -200,7 +259,7 @@ module {
     };
   };
 
-  /// W4/F4 fix — CLAIM SQUATTING RELIEF.
+  /// W4/F4 fix — CLAIM SQUATTING RELIEF.  FIX-9: the paid-fee evidence survives.
   ///
   /// `initiateClaim` stores `claimant = caller` on first sight of a burn hash,
   /// before anything proves who owns the burn. Ownership is only PROVEN later, by
@@ -214,12 +273,40 @@ module {
   /// destruction of value.
   ///
   /// Fix: an UNCREDITED claim (never `#verified`, `gritMinted == 0`) may be
-  /// adopted by a different caller. Adoption rebinds the claimant, drops any fee
-  /// hash the squatter supplied (so the adopter pays their own), and resets the
+  /// adopted by a different caller. Adoption rebinds the claimant and resets the
   /// status to `#pending` so the normal Pay Fee flow resumes. This gives away
   /// nothing: the adopter still has to pass the SAME fee-binding proof as
   /// before, which only the burn's own wallet can produce — so the GRIT can only
   /// ever go to the true burner.
+  ///
+  /// FIX-9 (audit v341) — the fee EVIDENCE. Adoption used to wipe `feeTxHash`
+  /// unconditionally. That is right for a squatter's UNPROVEN hash, but when the
+  /// claim already carried a PAID, burn-VERIFIED fee (amountBurned > 0.0) the
+  /// wipe destroyed the victim's payment evidence: the credit could no longer be
+  /// stolen (AKK-CRIT-1), yet the victim still had to pay a second fee. Adoption
+  /// now PRESERVES the stored hash when the burn verified and wipes it only when
+  /// it did not. Each case:
+  ///   1. Squatting relief (primary purpose, unchanged): the squatter filed the
+  ///      burn hash with NO fee → amountBurned == 0.0 → hash (null anyway) wiped
+  ///      → the adopter's Pay Fee flow runs exactly as before.
+  ///   2. Fabricated-hash squat: the squatter filed the victim's burn hash plus a
+  ///      fake fee hash → burn unverified (amountBurned == 0.0) → the fake hash
+  ///      is STILL WIPED on adoption → the victim proceeds clean. No regression
+  ///      vs the pre-FIX-9 behaviour — this case is WHY the wipe exists.
+  ///   3. Griefer adopts a PAID, burn-verified claim (amountBurned > 0.0): the
+  ///      hash is preserved and claimant = the griefer. The 15s timer then
+  ///      re-verifies the fee against the griefer as claimant → the binding
+  ///      payload names the burn owner's principal, not the griefer's →
+  ///      structural mismatch → #failed (amountBurned > 0). The griefer can
+  ///      never rescue it: a valid fee must be signed by the burn owner's wallet
+  ///      AND name the claimant principal (sender check + payload check).
+  ///   4. The victim re-adopts that #failed claim (uncredited → allowed):
+  ///      claimant = the victim, hash preserved, status #pending → the timer
+  ///      re-verifies the ORIGINAL fee against the victim → binding matches →
+  ///      credited WITHOUT re-paying. The victim is made whole; the grief
+  ///      achieved nothing. (If the victim pays a NEW fee instead,
+  ///      retryFeeClaim overwrites the stored hash — a preserved stale hash can
+  ///      never block a fresh payment.)
   ///
   /// Returns false (no change) when the claim is unknown, already credited, or
   /// already belongs to the caller.
@@ -234,7 +321,14 @@ module {
         if (r.claimant == caller) { return false };
         state.claims.mapInPlace(func(x : Types.ClaimRecord) : Types.ClaimRecord {
           if (x.txHash == txHash) {
-            { x with claimant = caller; feeTxHash = null; status = #pending; gritMinted = 0 }
+            {
+              x with claimant = caller;
+              // FIX-9: keep the paid fee evidence when the burn verified; wipe
+              // only a hash the burn never justified (squatter junk).
+              feeTxHash = if (r.amountBurned > 0.0) { r.feeTxHash } else { null };
+              status = #pending;
+              gritMinted = 0;
+            }
           } else { x }
         });
         true;
@@ -247,6 +341,13 @@ module {
   /// (#verified / #failed) must not be rewritten. Without this, a stale caller that
   /// finished late could flip a verified (already credited) claim back to #pendingFee,
   /// re-opening the double-credit door for a subsequent verify pass.
+  /// AKK-CRIT-7: the #failed half of that rule now admits ONE rescue shape — a
+  /// claim whose BURN verified (amountBurned > 0) but whose fee stage failed
+  /// definitively may accept a NEW fee hash (retryFeeClaim stores it here
+  /// before verification). Every recovery otherwise re-sent the same doomed
+  /// hash through a terminal record, a deterministic failure loop. A
+  /// burn-failed claim (amountBurned == 0) stays terminal: re-initiating the
+  /// claim is its only path, and a fee on it could never be priced.
   public func updateClaimToPendingFee(state : State, txHash : Text, feeTxHash : Text) {
     switch (state.claims.find(func(r : Types.ClaimRecord) : Bool { r.txHash == txHash })) {
       case null {};
@@ -255,7 +356,7 @@ module {
           case (#pending) true;
           case (#pendingFee) true;
           case (#verified) false;
-          case (#failed) false;
+          case (#failed) { authoritative.amountBurned > 0.0 };
         };
         if (mayTransition) {
           state.claims.mapInPlace(func(r : Types.ClaimRecord) : Types.ClaimRecord {
@@ -358,17 +459,6 @@ module {
       results.add((sym, total));
     };
     results.toArray();
-  };
-
-  /// Remove #pending burn claims older than 1 hour (3,600,000,000,000 ns).
-  /// Calls this at the start of processBlock to prevent unbounded claim accumulation.
-  public func cleanupExpiredClaims(state : State, now : Int) {
-    // User decision (2026-08-28): NEVER expire or delete claims. Failed and
-    // abandoned claims stay in Burn History forever — failed ones are
-    // recoverable via Retry Claim (same-burn resurrection), and history is
-    // the user's audit trail. This function is kept as a no-op so the
-    // call site in main.mo survives; deletion would orphan real burns and
-    // make retry paths impossible.
   };
 
   /// Convert a nanosecond timestamp to "YYYY-MM-DD" UTC dayKey.

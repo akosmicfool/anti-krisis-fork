@@ -3,6 +3,7 @@ import { useActor } from "@caffeineai/core-infrastructure";
 import type { Principal } from "@icp-sdk/core/principal";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
+import { useTopTribesAlltime } from "../hooks/use-score";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -43,37 +44,17 @@ interface HighlightsSectionProps {
 
 /**
  * Returns true if the given principal is the owner of ANY tribe in the
- * all-time top-6 tribes leaderboard. Refreshes every 60 seconds.
+ * all-time top-6 tribes leaderboard. Derived from the ONE shared all-time
+ * leaderboard cache (use-score.ts::useTopTribesAlltime) so the badge and the
+ * Skoreboard can never disagree about who is in the top 6.
  */
 function useTopTribeBadge(profileOwnerPrincipal?: Principal): boolean {
-  const { actor, isFetching } = useActor(createActor);
+  const { data } = useTopTribesAlltime();
 
-  const { data } = useQuery<boolean>({
-    queryKey: ["topTribeBadge", profileOwnerPrincipal?.toText()],
-    queryFn: async (): Promise<boolean> => {
-      if (!actor || !profileOwnerPrincipal) return false;
+  if (!data || !profileOwnerPrincipal) return false;
 
-      // Fetch the all-time top tribes (capped at 6 by backend)
-      const topTribes = await actor.getTopTribes("alltime");
-      if (!topTribes || topTribes.length === 0) return false;
-
-      const ownerText = profileOwnerPrincipal.toText();
-
-      // TribeScoreEntry doesn't include ownerId — fetch each tribe in parallel
-      const tribeDetails = await Promise.all(
-        topTribes.map((entry) => actor.getTribe(entry.tribeId)),
-      );
-
-      return tribeDetails.some(
-        (tribe) => tribe && tribe.ownerId.toText() === ownerText,
-      );
-    },
-    enabled: !!actor && !isFetching && !!profileOwnerPrincipal,
-    staleTime: 30_000,
-    refetchInterval: 60_000,
-  });
-
-  return data === true;
+  const ownerText = profileOwnerPrincipal.toText();
+  return data.some((entry) => entry.ownerId === ownerText);
 }
 
 // ─── Waffle grid helpers ──────────────────────────────────────────────────────
@@ -178,7 +159,7 @@ export function WaffleGrid({
                 height: cellSize,
                 background: cell.color,
                 opacity: cell.color === "#111" ? 0.18 : 0.9,
-                cursor: token ? "crosshair" : "default",
+                cursor: token ? "var(--cursor-target)" : "var(--cursor-arrow)",
               }}
             />
           );
@@ -552,7 +533,7 @@ export function HighlightsSection({
       <div className="flex flex-col sm:flex-row gap-3 items-start flex-wrap">
         {/* Burn allo waffle card */}
         <div className="w-full sm:flex-1 flex flex-col gap-1 min-w-0">
-          <h3 className="font-display text-xl text-white tracking-widest uppercase border-b border-border pb-1 mb-0">
+          <h3 className="font-display text-xl text-white tracking-widest uppercase mb-0">
             BURN ALLO
           </h3>
           <BurnWaffleCard type={type} principal={principal} tribeId={tribeId} />
@@ -561,7 +542,7 @@ export function HighlightsSection({
         {/* Badges — only rendered when there is at least one badge */}
         {showBadgesSection && (
           <div className="w-full sm:flex-1 flex flex-col gap-1 min-w-0">
-            <span className="font-display text-xl text-white tracking-widest uppercase border-b border-border pb-1 mb-0 block">
+            <span className="font-display text-xl text-white tracking-widest uppercase mb-0 block">
               BADGES
             </span>
             <div

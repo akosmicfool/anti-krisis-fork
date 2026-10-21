@@ -20,7 +20,7 @@ import { toast } from "sonner";
 import type { MinerView } from "../backend";
 import { MinerStatus } from "../backend";
 import { useEditMiner, useMyBalance } from "../hooks/use-backend";
-import { formatGrit } from "../types";
+import { formatGrit } from "../lib/format";
 
 interface EditMinerModalProps {
   miner: MinerView;
@@ -134,7 +134,10 @@ export function EditMinerModal({ miner, open, onClose }: EditMinerModalProps) {
         data-ocid="mining.edit_miner_dialog"
       >
         <DialogHeader>
-          <DialogTitle className="font-display font-black uppercase tracking-widest flex items-center gap-2">
+          <DialogTitle
+            className="font-display font-black uppercase tracking-widest flex items-center gap-2"
+            style={{ fontSize: "22px" }}
+          >
             <Cpu className="h-5 w-5 text-accent" />
             Edit Miner
           </DialogTitle>

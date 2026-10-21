@@ -28,10 +28,12 @@ import { http, createPublicClient, formatUnits } from "viem";
 import { mainnet } from "viem/chains";
 import { useReadContracts } from "wagmi";
 import { BurnProgressModal } from "../components/BurnProgressModal";
+import { ChainLogo } from "../components/ChainLogo";
 import { ClaimStatusBadge } from "../components/ClaimStatusBadge";
 import { WalletButton } from "../components/WalletButton";
 import { useAuth } from "../hooks/use-auth";
 import {
+  GRIT_ISSUANCE_RATE_FALLBACK,
   useGetFeePercent,
   useGetFeeRecipient,
   useGetGritIssuanceRate,
@@ -44,8 +46,13 @@ import {
   useRetryFeeClaim,
 } from "../hooks/use-backend";
 import { type PlatformFeeInfo, useWallet } from "../hooks/use-wallet";
-import { deriveClaimAction } from "../lib/claim-recovery";
+import {
+  LIVE_PRICE_UNAVAILABLE_MSG,
+  deriveClaimAction,
+  liveBurnValueUsd,
+} from "../lib/claim-recovery";
 import { buildFeeBindingData } from "../lib/fee-binding";
+import { formatGrit, formatGritRate } from "../lib/format";
 import {
   KVCM_RETIREMENT,
   retireKvcm,
@@ -54,11 +61,11 @@ import {
 import {
   CHAIN_LABELS,
   ClaimStatus,
-  formatGrit,
+  UNSUPPORTED_CHAIN_MSG,
+  explorerUrl,
   formatUSDValue,
   getChainId,
   getClaimStatus,
-  getExplorerUrl,
   isPendingFee,
   truncateAddress,
 } from "../types";
@@ -106,8 +113,7 @@ function AuthGate({ onLogin }: { onLogin: () => void }) {
         Identity Required
       </h2>
       <p className="text-muted-foreground text-sm max-w-sm mb-8">
-        Connect your Internet Identity to begin burning tokens and accumulating
-        GRIT fuel.
+        Login with Internet Identity to burn tokens and mine $AKK
       </p>
       <Button
         onClick={onLogin}
@@ -260,15 +266,18 @@ function TokenBalanceDisplay({
     };
   }, [isEthereum, selectedToken, walletAddress]);
 
+  // Unsupported chain → null: no chain to read against (finding #18).
+  const chainId = selectedToken ? getChainId(selectedToken.chain) : null;
+
   const contracts =
-    !isEthereum && selectedToken && walletAddress
+    !isEthereum && selectedToken && walletAddress && chainId !== null
       ? [
           {
             address: selectedToken.tokenAddress as `0x${string}`,
             abi: ERC20_BALANCE_ABI,
             functionName: "balanceOf" as const,
             args: [walletAddress],
-            chainId: getChainId(selectedToken.chain),
+            chainId,
           },
         ]
       : [];
@@ -279,6 +288,18 @@ function TokenBalanceDisplay({
   });
 
   if (!selectedToken || !walletAddress) return null;
+
+  if (chainId === null) {
+    // Never show a fabricated 0 balance for a chain this build can't read.
+    return (
+      <p
+        className="text-xs text-amber-400 font-mono mt-1"
+        data-ocid="burn.token_balance_display"
+      >
+        {UNSUPPORTED_CHAIN_MSG}
+      </p>
+    );
+  }
 
   const rawValue = isEthereum
     ? (ethBalance ?? BigInt(0))
@@ -342,7 +363,7 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
     setStep(s);
     stepRef.current = s;
   }, []);
-  const [txHash, setTxHash] = useState<string | null>(null);
+  const [_txHash, setTxHash] = useState<string | null>(null);
   // When the claim first entered #pendingFee during this run. pendingFee
   // means "burn verified, fee not yet credited" — usually the fee tx is
   // simply still confirming and the backend's recheck credits it
@@ -375,6 +396,13 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
   const [modalOpen, setModalOpen] = useState<boolean>(false);
   const [priceNote, setPriceNote] = useState<string | null>(null);
   const [userRejected, setUserRejected] = useState<boolean>(false);
+  // Finding #3 guard: when a Recent Burns Pay Fee is refused because the
+  // claim has no priced usdValue yet, the reason must be visible in the row
+  // (the inline handler's only other surface is a swallowed catch).
+  const [payFeeNotice, setPayFeeNotice] = useState<{
+    txHash: string;
+    text: string;
+  } | null>(null);
   const burnChainIdRef = useRef<number>(1);
   const burnValueUsdRef = useRef<number>(0);
 
@@ -513,16 +541,9 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
   // Formula: floor(amount * tokenPriceUSD * gritIssuanceRate)
   //   amount * tokenPriceUSD  → USD value burned
   //   * gritIssuanceRate      → GRIT per $1 burned
-  // Format issuance rate as short form: 100_000_000_000 -> "100B", 1_000_000_000 -> "1B"
-  function formatGritRate(rate: bigint): string {
-    const n = Number(rate);
-    if (n >= 1_000_000_000_000) return `${n / 1_000_000_000_000}T`;
-    if (n >= 1_000_000_000) return `${n / 1_000_000_000}B`;
-    if (n >= 1_000_000) return `${n / 1_000_000}M`;
-    return n.toLocaleString("en-US");
-  }
+  // Issuance-rate display comes from lib/format (formatGritRate).
   const { data: gritIssuanceRate } = useGetGritIssuanceRate();
-  const effectiveRate = gritIssuanceRate ?? BigInt(100_000_000_000);
+  const effectiveRate = gritIssuanceRate ?? GRIT_ISSUANCE_RATE_FALLBACK;
   const parsedAmount = amount.trim() ? Number.parseFloat(amount.trim()) : 0;
   const priceLoaded = !priceLoading && !!livePrice && livePrice > 0;
   const gritEstimate = (() => {
@@ -667,6 +688,11 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
   async function handleSwitchChain() {
     if (!selectedToken) return;
     const targetChainId = getChainId(selectedToken.chain);
+    if (targetChainId === null) {
+      // Never guess a network to switch to for an unsupported chain.
+      setErrorMsg(UNSUPPORTED_CHAIN_MSG);
+      return;
+    }
     const targetLabel =
       CHAIN_LABELS[selectedToken.chain] ?? selectedToken.chain;
     try {
@@ -703,6 +729,14 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
       return;
     }
 
+    // Guard (finding #18): an unknown chain used to silently become Ethereum
+    // — abort BEFORE anything is signed/broadcast, never guess a chain.
+    const targetChainId = getChainId(selectedToken.chain);
+    if (targetChainId === null) {
+      setErrorMsg(UNSUPPORTED_CHAIN_MSG);
+      return;
+    }
+
     setErrorMsg(null);
     setFeeInfo(null);
     setFeeTxHash(null);
@@ -712,7 +746,6 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
 
     try {
       const tokenDecimals = Number(selectedToken.decimals);
-      const targetChainId = getChainId(selectedToken.chain);
 
       setStepAndRef("awaiting_confirm");
 
@@ -1247,37 +1280,6 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
       return () => clearTimeout(t);
     }
   }, [step, modalOpen]);
-  // handleRetryFee: kept for potential future use from Burn History page
-  async function _handleRetryFee() {
-    if (!txHash || !feeRecipient) return;
-    setRetryingFee(true);
-    setRetryFeeMsg("");
-    try {
-      const newFeeHash = await wallet.sendPlatformFee(
-        burnValueUsdRef.current,
-        burnChainIdRef.current,
-        feeRecipient,
-        feeRate,
-        // AKK-4: the replacement fee tx must carry the same binding
-        buildFeeBindingData(principal ?? "", txHash),
-      );
-      setFeeTxHash(newFeeHash);
-      await retryFeeClaim.mutateAsync({ txHash, feeTxHash: newFeeHash });
-      setTimeout(() => {
-        qc.invalidateQueries({ queryKey: ["myBalance"] });
-        qc.refetchQueries({ queryKey: ["myBalance"] });
-      }, 1_500);
-      setStepAndRef("verified");
-    } catch (err) {
-      setRetryFeeMsg(
-        err instanceof Error
-          ? err.message
-          : "Fee retry failed. Please try again.",
-      );
-    } finally {
-      setRetryingFee(false);
-    }
-  }
 
   // ── Gate screens ─────────────────────────────────────────────────────────
   if (authLoading) {
@@ -1309,8 +1311,12 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
     );
   }
 
+  const selectedChainId = selectedToken
+    ? getChainId(selectedToken.chain)
+    : null;
   const isOnTargetChain =
-    !selectedToken || wallet.chainId === getChainId(selectedToken.chain);
+    !selectedToken ||
+    (selectedChainId !== null && wallet.chainId === selectedChainId);
 
   const canBurn =
     step === "idle" &&
@@ -1338,12 +1344,12 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
       {/* Header */}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0">
-          <h1 className="text-[2.4rem] sm:text-[3rem] font-display font-black tracking-tighter text-foreground uppercase flex items-center gap-2.5">
+          <h1 className="text-4xl sm:text-5xl font-display font-black tracking-tighter text-foreground uppercase flex items-center gap-2.5">
             <Flame className="h-[1.53rem] w-[1.53rem] text-accent" />
             BURN
           </h1>
           <p className="text-white text-sm mt-0.5 break-words">
-            Permanently burn RegNet tokens on supported chains and earn GRIT (
+            Burn any RegNet token to earn GRIT (
             <span className="text-accent font-mono font-bold">
               {formatGritRate(effectiveRate)} per $1
             </span>{" "}
@@ -1353,8 +1359,8 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
       </div>
 
       {/* Burn form */}
-      <Card className="bg-card border-border" data-ocid="burn.form_card">
-        <CardContent className="space-y-5 pt-6">
+      <Card className="bg-card border-border pt-4" data-ocid="burn.form_card">
+        <CardContent className="space-y-5 pt-0">
           {/* Launch countdown */}
           {isLaunchTimeBlocked && (
             <motion.div
@@ -1411,14 +1417,26 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
                       : "Unknown"}
                   </Badge>
                 </div>
-                {selectedToken && !isOnTargetChain && (
-                  <WrongChainBanner
-                    chainLabel={
-                      CHAIN_LABELS[selectedToken.chain] ?? selectedToken.chain
-                    }
-                    onSwitch={handleSwitchChain}
-                  />
+                {selectedToken && selectedChainId === null && (
+                  <div
+                    className="rounded border border-amber-500/40 bg-amber-500/10 px-4 py-3"
+                    data-ocid="burn.unsupported_chain_banner"
+                  >
+                    <p className="text-xs text-amber-200">
+                      {UNSUPPORTED_CHAIN_MSG}
+                    </p>
+                  </div>
                 )}
+                {selectedToken &&
+                  selectedChainId !== null &&
+                  !isOnTargetChain && (
+                    <WrongChainBanner
+                      chainLabel={
+                        CHAIN_LABELS[selectedToken.chain] ?? selectedToken.chain
+                      }
+                      onSwitch={handleSwitchChain}
+                    />
+                  )}
                 {/* WrongChainBanner is a fallback for manual chain changes; token selection auto-switches via onValueChange */}
               </div>
 
@@ -1439,7 +1457,13 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
                     setAmount("");
                     if (val !== "all") {
                       const targetChainId = getChainId(val);
-                      if (targetChainId && wallet.chainId !== targetChainId) {
+                      if (targetChainId === null) {
+                        // A chain this build can't burn on has no network to
+                        // switch to — surface it instead of guessing.
+                        setErrorMsg(UNSUPPORTED_CHAIN_MSG);
+                        return;
+                      }
+                      if (wallet.chainId !== targetChainId) {
                         try {
                           await wallet.switchToChain(targetChainId);
                         } catch {
@@ -1469,7 +1493,13 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
                         value={chain}
                         className="font-mono text-sm text-gray-400"
                       >
-                        {CHAIN_LABELS[chain] ?? chain}
+                        <span className="flex items-center gap-2 whitespace-nowrap">
+                          <ChainLogo
+                            id={chain}
+                            className="w-4 h-4 object-contain"
+                          />
+                          {CHAIN_LABELS[chain] ?? chain}
+                        </span>
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -1503,10 +1533,13 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
                           setAmount("");
                           if (tok) {
                             const targetChainId = getChainId(tok.chain);
-                            if (
-                              targetChainId &&
-                              wallet.chainId !== targetChainId
-                            ) {
+                            if (targetChainId === null) {
+                              // Unsupported chain: no network to switch to.
+                              // The burn path refuses this token (banner).
+                              setErrorMsg(UNSUPPORTED_CHAIN_MSG);
+                              return;
+                            }
+                            if (wallet.chainId !== targetChainId) {
                               try {
                                 await wallet.switchToChain(targetChainId);
                               } catch {
@@ -1538,12 +1571,12 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
                               <SelectItem
                                 key={`${t.chain}-${t.tokenAddress}`}
                                 value={`${t.chain}::${t.tokenAddress}`}
-                                className="font-mono text-sm"
+                                className="font-mono text-sm group"
                               >
-                                <span className="font-bold text-accent">
+                                <span className="font-bold text-accent group-focus:text-accent-foreground">
                                   {t.symbol}
                                 </span>
-                                <span className="text-muted-foreground ml-2 text-xs">
+                                <span className="text-muted-foreground ml-2 text-xs group-focus:text-accent-foreground">
                                   {CHAIN_LABELS[t.chain] ?? t.chain}
                                 </span>
                               </SelectItem>
@@ -1830,7 +1863,7 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
 
       {/* Claim history */}
       <Card className="bg-card border-border" data-ocid="claim_history.card">
-        <CardHeader className="pb-3">
+        <CardHeader className="pb-0">
           <CardTitle className="font-display text-xl sm:text-3xl uppercase tracking-widest text-white flex items-center gap-2">
             <Zap className="h-5 w-5 text-accent" />
             RECENT BURNS
@@ -1845,145 +1878,200 @@ export function BurnPage({ embedded = false }: { embedded?: boolean }) {
               No claims yet. Burn tokens above to get started.
             </div>
           ) : (
-            <div className="space-y-0" data-ocid="claim_history.list">
-              {(claimHistory ?? []).slice(0, 5).map((record, i) => (
-                <div
-                  key={record.txHash}
-                  className="flex flex-col sm:grid sm:grid-cols-[1fr_auto_auto] gap-1.5 sm:gap-3 items-start sm:items-center py-2.5 border-b border-border/50 last:border-0"
-                  data-ocid={`claim_history.item.${i + 1}`}
-                >
-                  {/* Mobile/tablet top row: tx hash + GRIT amount */}
-                  <div className="flex items-center justify-between gap-2 w-full sm:contents">
-                    <div className="min-w-0 flex-1">
-                      <a
-                        href={getExplorerUrl(record.txHash, record.chain)}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="font-mono text-xs text-accent hover:underline flex items-center gap-1 group"
-                        data-ocid={`claim_history.tx_link.${i + 1}`}
-                      >
-                        {truncateAddress(record.txHash, 10)}
-                        <ExternalLink className="h-3 w-3 opacity-0 group-hover:opacity-100 transition-smooth" />
-                      </a>
-                      <p className="text-xs text-muted-foreground mt-0.5">
+            <div className="space-y-0 -mt-2" data-ocid="claim_history.list">
+              {(claimHistory ?? []).slice(0, 5).map((record, i) => {
+                // "" when the chain has no known explorer — the link hides.
+                const explorerHref = explorerUrl(record.chain, record.txHash);
+                return (
+                  <div
+                    key={record.txHash}
+                    className="flex flex-col gap-1.5 py-2.5 border-b border-border/50 last:border-0"
+                    data-ocid={`claim_history.item.${i + 1}`}
+                  >
+                    {/* One grid at EVERY screen size: the left column holds the
+                        two text lines and the right column mirrors them —
+                        amount on the address line, badge on the chain·token
+                        line, rows only 2px apart. Items are explicitly placed
+                        so DOM order stays address → chain·token → amount →
+                        badge. */}
+                    <div className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-0.5 sm:gap-x-3">
+                      {explorerHref ? (
+                        <a
+                          href={explorerHref}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="min-w-0 font-mono text-xs text-accent hover:underline flex items-center gap-1 group"
+                          data-ocid={`claim_history.tx_link.${i + 1}`}
+                        >
+                          {truncateAddress(record.txHash, 10)}
+                          <ExternalLink className="h-3 w-3 opacity-0 group-hover:opacity-100 transition-smooth" />
+                        </a>
+                      ) : (
+                        <span className="min-w-0 font-mono text-xs text-muted-foreground">
+                          {truncateAddress(record.txHash, 10)}
+                        </span>
+                      )}
+                      <p className="min-w-0 text-xs text-muted-foreground">
                         {CHAIN_LABELS[record.chain] ?? record.chain} ·{" "}
-                        {record.tokenSymbol ||
-                          truncateAddress(record.tokenAddress)}
+                        <span className="text-white">
+                          {record.tokenSymbol ||
+                            truncateAddress(record.tokenAddress)}
+                        </span>
                       </p>
+                      {/* GRIT amount: right column, row 1 — same visual line as
+                          the address. */}
+                      <span className="col-start-2 row-start-1 justify-self-end font-mono text-sm text-foreground">
+                        {formatGrit(record.gritMinted)} GRIT
+                      </span>
+                      {/* Status badge: right column, row 2 — same visual line
+                          as the chain·token text. `flex` keeps the wrapper at
+                          the badge's own height (a plain block adds the 24px
+                          body line-height strut and widens the gap). */}
+                      <div className="col-start-2 row-start-2 flex justify-self-end">
+                        <ClaimStatusBadge status={record.status} />
+                      </div>
                     </div>
-                    {/* GRIT: visible inline on mobile/tablet, hidden on desktop (desktop uses grid col) */}
-                    <span className="font-mono text-sm text-foreground sm:hidden">
-                      {formatGrit(record.gritMinted)} GRIT
-                    </span>
-                  </div>
-                  {/* Desktop-only GRIT cell (grid col 2) */}
-                  <span className="hidden sm:block font-mono text-sm text-foreground">
-                    {formatGrit(record.gritMinted)} GRIT
-                  </span>
-                  {/* Status badge: right-aligned under GRIT on mobile/tablet, grid col 3 on desktop */}
-                  <div className="sm:hidden w-full flex justify-end">
-                    <ClaimStatusBadge status={record.status} />
-                  </div>
-                  <div className="hidden sm:block">
-                    <ClaimStatusBadge status={record.status} />
-                  </div>
-                  {/* W1B UX: single recovery action per row (same mapping as
+                    {/* W1B UX: single recovery action per row (same mapping as
                       Burn History), placed DIRECTLY UNDER the status badge —
-                      same size, right-aligned on mobile, centered in the
-                      desktop grid column. Pay Fee / Retry Claim run inline. */}
-                  {(() => {
-                    const action = deriveClaimAction(record);
-                    const badgeSized =
-                      "inline-flex items-center px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-widest transition-colors disabled:opacity-50";
-                    if (action.kind === "none") return null;
-                    if (action.kind === "pay_fee") {
-                      return (
-                        <div className="sm:hidden w-full flex justify-end">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (!feeRecipient || !wallet.isConnected) return;
-                              void wallet
-                                .sendPlatformFee(
-                                  Number(record.amountBurned),
-                                  getChainId(record.chain),
-                                  feeRecipient,
-                                  feeRate,
-                                  buildFeeBindingData(
-                                    principal ?? "",
-                                    record.txHash,
-                                  ),
-                                )
-                                .then((feeHash) =>
-                                  retryFeeClaim.mutateAsync({
+                      same size, right-aligned. Pay Fee / Retry Claim run
+                      inline. */}
+                    {(() => {
+                      const action = deriveClaimAction(record);
+                      const badgeSized =
+                        "inline-flex items-center px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-widest transition-colors disabled:opacity-50";
+                      if (action.kind === "none") return null;
+                      if (action.kind === "pay_fee") {
+                        return (
+                          <>
+                            <div className="sm:hidden w-full flex justify-end">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (!feeRecipient || !wallet.isConnected)
+                                    return;
+                                  setPayFeeNotice(null);
+                                  void (async () => {
+                                    // AKK-CRIT-10: size the fee from the LIVE
+                                    // oracle-priced value (amountBurned ×
+                                    // current price) — the comparator the
+                                    // backend's retryFeeClaim floors against.
+                                    // The stored claim-time usdValue is stale
+                                    // after any price move and mis-sizes the fee
+                                    // (a >7% rise fails the underpaid floor).
+                                    const burnValueUsd =
+                                      await liveBurnValueUsd(record);
+                                    if (burnValueUsd === null) {
+                                      // No live price = the backend cannot
+                                      // size-check the fee. Never send.
+                                      setPayFeeNotice({
+                                        txHash: record.txHash,
+                                        text: LIVE_PRICE_UNAVAILABLE_MSG,
+                                      });
+                                      return;
+                                    }
+                                    const recordChainId = getChainId(
+                                      record.chain,
+                                    );
+                                    if (recordChainId === null) {
+                                      // Finding #18: never send this fee as
+                                      // Ethereum — unsupported chain, no send.
+                                      setPayFeeNotice({
+                                        txHash: record.txHash,
+                                        text: UNSUPPORTED_CHAIN_MSG,
+                                      });
+                                      return;
+                                    }
+                                    try {
+                                      const feeHash =
+                                        await wallet.sendPlatformFee(
+                                          burnValueUsd,
+                                          recordChainId,
+                                          feeRecipient,
+                                          feeRate,
+                                          buildFeeBindingData(
+                                            principal ?? "",
+                                            record.txHash,
+                                          ),
+                                        );
+                                      await retryFeeClaim.mutateAsync({
+                                        txHash: record.txHash,
+                                        feeTxHash: feeHash,
+                                      });
+                                      qc.invalidateQueries({
+                                        queryKey: ["myBalance"],
+                                      });
+                                      qc.invalidateQueries({
+                                        queryKey: ["myClaimHistory"],
+                                      });
+                                    } catch {
+                                      // surfaced via Burn History — the claim is
+                                      // already saved and recoverable there.
+                                    }
+                                  })();
+                                }}
+                                disabled={
+                                  !wallet.isConnected || retryFeeClaim.isPending
+                                }
+                                className={`${badgeSized} border border-amber-500/50 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20`}
+                                data-ocid={`claim_history.pay_fee_button.${i + 1}`}
+                              >
+                                {retryFeeClaim.isPending
+                                  ? "Sending…"
+                                  : "Pay Fee"}
+                              </button>
+                            </div>
+                            {payFeeNotice?.txHash === record.txHash && (
+                              <p
+                                className="sm:hidden w-full text-right font-mono text-[10px] text-red-400"
+                                data-ocid={`claim_history.pay_fee_notice.${i + 1}`}
+                              >
+                                {payFeeNotice.text}
+                              </p>
+                            )}
+                          </>
+                        );
+                      }
+                      if (action.kind === "retry_claim") {
+                        return (
+                          <div className="sm:hidden w-full flex justify-end">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                void initiateClaim
+                                  .mutateAsync({
                                     txHash: record.txHash,
-                                    feeTxHash: feeHash,
-                                  }),
-                                )
-                                .then(() => {
-                                  qc.invalidateQueries({
-                                    queryKey: ["myBalance"],
+                                    feeTxHash: record.feeTxHash ?? "",
+                                    tokenAddress: record.tokenAddress,
+                                    chain: record.chain,
+                                    frontendPrice: 0,
+                                  })
+                                  .then(() => {
+                                    qc.invalidateQueries({
+                                      queryKey: ["myClaimHistory"],
+                                    });
+                                  })
+                                  .catch(() => {
+                                    // Burn History re-check retries later
                                   });
-                                  qc.invalidateQueries({
-                                    queryKey: ["myClaimHistory"],
-                                  });
-                                })
-                                .catch(() => {
-                                  // surfaced via Burn History — the claim is
-                                  // already saved and recoverable there.
-                                });
-                            }}
-                            disabled={
-                              !wallet.isConnected || retryFeeClaim.isPending
-                            }
-                            className={`${badgeSized} border border-amber-500/50 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20`}
-                            data-ocid={`claim_history.pay_fee_button.${i + 1}`}
-                          >
-                            {retryFeeClaim.isPending ? "Sending…" : "Pay Fee"}
-                          </button>
-                        </div>
-                      );
-                    }
-                    if (action.kind === "retry_claim") {
-                      return (
-                        <div className="sm:hidden w-full flex justify-end">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              void initiateClaim
-                                .mutateAsync({
-                                  txHash: record.txHash,
-                                  feeTxHash: record.feeTxHash ?? "",
-                                  tokenAddress: record.tokenAddress,
-                                  chain: record.chain,
-                                  frontendPrice: 0,
-                                })
-                                .then(() => {
-                                  qc.invalidateQueries({
-                                    queryKey: ["myClaimHistory"],
-                                  });
-                                })
-                                .catch(() => {
-                                  // Burn History re-check retries later
-                                });
-                            }}
-                            disabled={initiateClaim.isPending}
-                            className={`${badgeSized} border border-sky-500/50 bg-sky-500/10 text-sky-300 hover:bg-sky-500/20`}
-                            data-ocid={`claim_history.retry_claim_button.${i + 1}`}
-                          >
-                            {initiateClaim.isPending
-                              ? "Submitting…"
-                              : "Retry Claim"}
-                          </button>
-                        </div>
-                      );
-                    }
-                    // verifying_burn / verifying_fee: no action — status
-                    // badge already communicates the in-flight state.
-                    return null;
-                  })()}
-                </div>
-              ))}
+                              }}
+                              disabled={initiateClaim.isPending}
+                              className={`${badgeSized} border border-sky-500/50 bg-sky-500/10 text-sky-300 hover:bg-sky-500/20`}
+                              data-ocid={`claim_history.retry_claim_button.${i + 1}`}
+                            >
+                              {initiateClaim.isPending
+                                ? "Submitting…"
+                                : "Retry Claim"}
+                            </button>
+                          </div>
+                        );
+                      }
+                      // verifying_burn / verifying_fee: no action — status
+                      // badge already communicates the in-flight state.
+                      return null;
+                    })()}
+                  </div>
+                );
+              })}
               <div className="pt-3 text-center">
                 <Link
                   to="/dashboard"

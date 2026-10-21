@@ -70,7 +70,10 @@ mixin (
   /// Miner-creation fee gate (miner-creation-fee-plan): when a fee is
   /// configured for `feeChain` (decision 1: fee 0 / unset = FREE), the caller
   /// must present a paid fee tx to the fee wallet — a FeeCollector payment
-  /// whose calldata binds (caller principal, "MINE"). Single-use: one fee tx
+  /// whose calldata binds (caller principal, "MINE"). The collector's own
+  /// FeePaid event is the authenticity anchor: acceptance never compares the
+  /// event's payer against tx.from (finding #12), so contract wallets
+  /// (Safe/multisig) can create miners. Single-use: one fee tx
   /// creates exactly one miner (consumed-fee map, W1A-canonical keys).
   ///
   /// Ordering (reentrancy): ALL awaits (RPC verification) run BEFORE any
@@ -96,6 +99,14 @@ mixin (
       };
     };
 
+    // --- Burn time-window gate (FIX-16) ---
+    // Same window the claim path enforces. Checked BEFORE any fee
+    // verification, so a closed window never consumes the caller's paid
+    // fee — the frontend's retry loop re-attempts once the window opens.
+    if (not AllowlistLib.burnWindowOpen(gate, Time.now())) {
+      return #err("BURN_WINDOW_CLOSED: miner creation is only allowed during the configured time window.");
+    };
+
     // --- Fee verification phase (RPC outcalls only — no state writes) ---
     // D1: the gate is NOT caller-elected. When ANY chain carries an armed fee
     // (a minerCreationFees entry > 0), creation is never free: feeChain must
@@ -117,9 +128,19 @@ mixin (
         };
         case (?f) { f };
       };
-      let txHash = switch (feeTxHash) {
+      let txHashRaw = switch (feeTxHash) {
         case null { return #err("MINER_FEE_TX_REQUIRED: a fee is configured for this chain — pay it in Step 1, then retry with the tx hash") };
         case (?h) { h };
+      };
+      // W1A boundary rule (audit finding #4): canonicalize the caller-supplied
+      // fee hash HERE — before any RPC body interpolates it and before the
+      // replay key is derived — and reject unspellable hashes outright. A
+      // malformed spelling can then neither reach an RPC nor dodge the
+      // consumed-set by re-spelling. The raw string is used exactly ONCE
+      // (by this validation); every use below is the canonical value.
+      let txHashCanon = switch (MiningLib.canonicalMinerFeeHash(txHashRaw)) {
+        case (#ok(c)) { c };
+        case (#err(e)) { return #err(e) };
       };
       // Empty-config guard (never silently skip): a configured fee with a
       // missing collector/event arm is an admin error, not a bypass.
@@ -134,48 +155,42 @@ mixin (
 
       // 1. tx status == success + receipt fetch (one outcall, reused for
       //    the FeePaid event check).
-      let receipt = switch (await verifyFeeWithReceipt(txHash, chain)) {
+      let receipt = switch (await verifyFeeWithReceipt(txHashCanon, chain)) {
         case (#err("PENDING")) { return #err("PENDING: fee tx not yet indexed — retry in a moment") };
         case (#err("TX_FAILED")) { return #err("MINER_FEE_TX_FAILED: the fee transaction reverted on-chain") };
         case (#err(e)) { return #err("MINER_FEE_TX_ERROR: " # e) };
         case (#ok(json)) { json };
       };
 
-      // 2. collector FeePaid event: value + binding bytes. PENDING outcomes
-      //    are retriable (same recovery model as claims); #missing with a
-      //    tx.to == collector means a plain transfer (no event) — the
-      //    binding then comes from the tx calldata, which the collector
-      //    requires anyway.
-      var paidValueWei : ?Nat = null;
-      var eventBindingHex : ?Text = null;
-      switch (VerifyLib.feePaidLogValue(receipt, collector, "")) {
-        case (#found(r)) {
-          paidValueWei := ?r.valueWei;
-          eventBindingHex := r.bindingHex;
-        };
+      // 2. collector FeePaid event: value + binding bytes — the authenticity
+      //    anchor of the whole gate (finding #12). #found requires a log
+      //    emitted BY the collector whose value decodes; #missing /
+      //    #unparseable mean a stale/partial RPC receipt — retriable, the
+      //    same recovery model as claims. FeePaid is emitted on every
+      //    accepted payment, so a no-event receipt can never pass this gate.
+      let (paidValueWei, eventBindingHex) = switch (VerifyLib.feePaidLogValue(receipt, collector, "")) {
+        case (#found(r)) { (r.valueWei, r.bindingHex) };
         case (#unparseable) { return #err("PENDING: fee event unreadable — retry in a moment") };
-        case (#missing) {
-          // NOT a usable fallback (review 2026-09-12): with recipient ==
-          // collector enforced and FeePaid emitted on every accepted
-          // payment, #missing here means a stale/partial RPC receipt —
-          // the payer-match check below correctly returns PENDING and the
-          // claim retried. A genuine plain transfer (no event) can never
-          // pass this gate, so no value/binding is read on this path.
-        };
+        case (#missing) { return #err("PENDING: fee event not found in the receipt — stale or partial receipt, retry") };
       };
 
-      // 3. fetch the fee tx (from / to / input).
-      let feeTx = switch (await VerifyLib.fetchTxByHash(txHash, chain, transformFn)) {
+      // 3. fetch the fee tx (to / input feed the binding check below).
+      let feeTx = switch (await VerifyLib.fetchTxByHash(txHashCanon, chain, transformFn)) {
         case (#err("PENDING")) { return #err("PENDING: fee tx not yet indexed — retry in a moment") };
         case (#err(e)) { return #err("MINER_FEE_TX_ERROR: " # e) };
         case (#ok(t)) { t };
       };
 
-      // 4. the event's payer must be THIS tx's sender (binds event to tx).
-      switch (VerifyLib.feePaidPayerMatches(receipt, collector, feeTx.from)) {
-        case true {};
-        case false { return #err("PENDING: fee event payer mismatch — stale or partial receipt, retry") };
-      };
+      // 4. NO payer == tx.from equality (finding #12): a Safe/multisig (any
+      //    contract wallet) pays with msg.sender = the wallet contract while
+      //    tx.from is the executing EOA — legitimately different — so the old
+      //    equality check returned PENDING forever and stranded the fee. The
+      //    #found event is the collector's own attestation that it received
+      //    the payment (same principle as the claim-side relay tolerance in
+      //    verifyFeeBinding), and acceptance still requires the binding to
+      //    name the CALLER's principal (step 5) plus the value floor
+      //    (step 6). Sender-equality adds nothing on the miner path: there is
+      //    no burn to bind, and the MINE payload is itself the authorization.
 
       // 5. binding: recipient wallet + MINE payload naming the caller.
       switch (VerifyLib.verifyMinerFeeBinding(feeTx, recipient, caller.toText(), eventBindingHex)) {
@@ -183,28 +198,22 @@ mixin (
         case (#err(e)) { return #err(e) };
       };
 
-      // 6. amount: exact-or-more against the configured fixed fee — only
-      //    on the event path (paidValueWei != null). Reachability note
-      //    (review 2026-09-12): the no-event path cannot reach this point
-      //    (payer-match fails on #missing → PENDING above), so the amount
-      //    floor is ALWAYS enforced for any payment that gets here —
-      //    there is no underpayment bypass through a missing event.
-      switch (paidValueWei) {
-        case null {}; // plain-transfer path — see comment above
-        case (?paid) {
-          switch (VerifyLib.minerFeeShortfall(paid, requiredWei)) {
-            case null {};
-            case (?missing) {
-              let paidEth = Float.fromInt(paid) / 1e18;
-              let reqEth = Float.fromInt(requiredWei) / 1e18;
-              return #err("MINER_FEE_UNDERPAID: paid " # paidEth.toText() # " native, required ≥ " # reqEth.toText());
-            };
-          };
+      // 6. amount: exact-or-more against the configured fixed fee. Every
+      //    path reaching this point carries the #found event's value (the
+      //    no-event shapes returned PENDING at step 2), so the floor is
+      //    always enforced — no underpayment bypass through a missing event.
+      switch (VerifyLib.minerFeeShortfall(paidValueWei, requiredWei)) {
+        case null {};
+        case (?missing) {
+          let paidEth = Float.fromInt(paidValueWei) / 1e18;
+          let reqEth = Float.fromInt(requiredWei) / 1e18;
+          return #err("MINER_FEE_UNDERPAID: paid " # paidEth.toText() # " native, required ≥ " # reqEth.toText());
         };
       };
 
-      // Remember the verified fee facts for the atomic tail below.
-      feeCheck := ?{ chain = chain; txHash = txHash };
+      // Remember the verified fee facts for the atomic tail below (canonical
+      // hash — the same identity the consumed-set keys on).
+      feeCheck := ?{ chain = chain; txHash = txHashCanon };
     };
 
     // --- Atomic tail (await-free): replay check → create → consume ---
@@ -272,6 +281,29 @@ mixin (
         };
         let ledger : AkkLedgerTypes.IcrcLedger = actor (ledgerId.toText());
         await ledger.icrc1_balance_of({ owner = caller; subaccount = null });
+      };
+    };
+  };
+
+  /// Current AKK supply for the Overview page (D11).
+  ///
+  /// When a ledger is armed, supply is the LEDGER's truth: getProtocolStats
+  /// reports the internal `totalAkkMined` counter, which counts rewards
+  /// CREDITED before their mint attempt while the real payout is re-clamped at
+  /// mint time against the ledger's `icrc1_total_supply` (lib/ledger-mint.mo) —
+  /// the two disagree after draft-mode operation, abandoned mints, or any mint
+  /// by another authority.
+  ///
+  /// An UPDATE call, not a query: a cross-canister call cannot run inside a
+  /// query (same reason getAkkBalance is an update; getProtocolStats itself is
+  /// a query and stays untouched). Draft mode (no ledger armed) falls back to
+  /// the internal counter so the UI has one call that always works.
+  public shared func getLedgerAkkSupply() : async Nat {
+    switch (state.akkLedgerId) {
+      case null { state.totalAkkMined };
+      case (?ledgerId) {
+        let ledger : AkkLedgerTypes.IcrcLedger = actor (ledgerId.toText());
+        await ledger.icrc1_total_supply();
       };
     };
   };

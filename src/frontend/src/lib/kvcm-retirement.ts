@@ -811,8 +811,16 @@ export function formatTonnes(tonnesWei: bigint): string {
 
 // ─── Dropped-transaction guard ───────────────────────────────────────────────
 
-/** Public RPC fallbacks per chain (mirrors the backend's rpcUrlForChain sets). */
-const TX_INDEX_RPCS: Record<number, string[]> = {
+/**
+ * Public RPC fallbacks per chain — the canonical frontend set, aligned with
+ * the backend's rpcUrlForChain (verification.mo). Exported as the SINGLE
+ * source for every frontend RPC list: evm-rpc.ts ETH_RPC_ENDPOINTS,
+ * useNftOwnership, and the AcquireSection token lists. The retired
+ * llamarpc/publicnode/ankr/cloudflare-eth set is gone — ankr is key-gated
+ * (result:null), publicnode 403s canister-adjacent traffic, and
+ * cloudflare-eth serves result:null for calls other nodes answer.
+ */
+export const TX_INDEX_RPCS: Record<number, string[]> = {
   8453: [
     "https://mainnet.base.org",
     "https://1rpc.io/base",
@@ -853,7 +861,9 @@ const TX_INDEX_RPCS: Record<number, string[]> = {
  *     claim without a fee and let it finish from Burn History (the tx may
  *     still be in the wallet relay's queue; declaring it dead risks a
  *     double burn).
- * Unknown chains return settled=true (don't block the flow).
+ * Chains with no receipt coverage in this build return settled=false —
+ * fail CLOSED: the old settled=true/success=true faked a mined burn, so a
+ * fee was sent for a burn nobody verified (finding #18). Never fake success.
  *
  * pollMs controls the re-probe interval; callers tuning for a short
  * confirmation window (miner creation) pass a tighter interval.
@@ -865,7 +875,11 @@ export async function waitBurnReceipt(
   pollMs = 10_000,
 ): Promise<{ settled: boolean; success: boolean }> {
   const urls = TX_INDEX_RPCS[chainId];
-  if (!urls || urls.length === 0) return { settled: true, success: true };
+  if (!urls || urls.length === 0) {
+    // No receipt coverage for this chain: defer to the claim-first slow
+    // path instead of pretending the burn settled.
+    return { settled: false, success: false };
+  }
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     for (const url of urls) {

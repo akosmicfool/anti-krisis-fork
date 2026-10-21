@@ -4,6 +4,7 @@
 import Test "mo:test/async";
 import GritLib "../lib/grit";
 import GritTypes "../types/grit";
+import FeeAmount "../lib/fee-amount";
 import Principal "mo:core/Principal";
 
 func require(cond : Bool, msg : Text) {
@@ -36,7 +37,7 @@ await Test.test("atomic: status + metadata + credit commit together", func() : a
   let state = GritLib.newState();
   GritLib.storePendingClaim(state, pendingRecord());
 
-  GritLib.updateClaimStatus(state, CLAIM_HASH, #verified, 5_000, null, ?0.5, ?12.34, ?"0xfee");
+  GritLib.updateClaimStatus(state, CLAIM_HASH, #verified, 5_000, null, ?0.5, ?12.34, ?"0xfee", null);
 
   let r = switch (state.claims.find(func(x : GritTypes.ClaimRecord) : Bool { x.txHash == CLAIM_HASH })) {
     case (?r) { r };
@@ -59,7 +60,7 @@ await Test.test("atomic: null metadata fields leave existing values untouched", 
   rec := { rec with usdValue = 99.0 };
   GritLib.storePendingClaim(state, rec);
 
-  GritLib.updateClaimStatus(state, CLAIM_HASH, #verified, 1_000, null, null, null, null);
+  GritLib.updateClaimStatus(state, CLAIM_HASH, #verified, 1_000, null, null, null, null, null);
 
   let r = switch (state.claims.find(func(x : GritTypes.ClaimRecord) : Bool { x.txHash == CLAIM_HASH })) {
     case (?r) { r };
@@ -73,11 +74,11 @@ await Test.test("atomic: losing concurrent caller cannot rewrite settled metadat
   GritLib.storePendingClaim(state, pendingRecord());
 
   // Path A settles first with authoritative metadata.
-  GritLib.updateClaimStatus(state, CLAIM_HASH, #verified, 5_000, null, ?0.5, ?12.34, ?"0xfee");
+  GritLib.updateClaimStatus(state, CLAIM_HASH, #verified, 5_000, null, ?0.5, ?12.34, ?"0xfee", null);
 
   // Path B arrives stale (thinks the claim is still pending) with its own
   // locally computed metadata — must be a complete no-op.
-  GritLib.updateClaimStatus(state, CLAIM_HASH, #verified, 9_999, null, ?999.0, ?999.0, ?"0xstale");
+  GritLib.updateClaimStatus(state, CLAIM_HASH, #verified, 9_999, null, ?999.0, ?999.0, ?"0xstale", null);
 
   let r = switch (state.claims.find(func(x : GritTypes.ClaimRecord) : Bool { x.txHash == CLAIM_HASH })) {
     case (?r) { r };
@@ -104,7 +105,7 @@ await Test.test("F2: a zero-credit #verified on an unverified burn is refused", 
   GritLib.storePendingClaim(state, pendingRecord()); // amountBurned = 0.0
 
   // The fee-verification path's exact call shape: credit 0, no metadata update.
-  GritLib.updateClaimStatus(state, CLAIM_HASH, #verified, 0, null, null, null, null);
+  GritLib.updateClaimStatus(state, CLAIM_HASH, #verified, 0, null, null, null, null, null);
 
   let r = switch (state.claims.find(func(x : GritTypes.ClaimRecord) : Bool { x.txHash == CLAIM_HASH })) {
     case (?r) { r };
@@ -119,7 +120,7 @@ await Test.test("F2: a verified burn may still terminalize with a zero credit", 
   let state = GritLib.newState();
   GritLib.storePendingClaim(state, pendingRecord());
   // A real (if tiny) burn commits its amount in the same guarded write.
-  GritLib.updateClaimStatus(state, CLAIM_HASH, #verified, 0, null, ?0.0000001, ?0.01, ?"0xfee");
+  GritLib.updateClaimStatus(state, CLAIM_HASH, #verified, 0, null, ?0.0000001, ?0.01, ?"0xfee", null);
   let r = switch (state.claims.find(func(x : GritTypes.ClaimRecord) : Bool { x.txHash == CLAIM_HASH })) {
     case (?r) { r };
     case null { Runtime.trap("claim missing") };
@@ -167,9 +168,15 @@ await Test.test("F4: the real burner can adopt a squatted, uncredited claim", fu
   require(r.status == #pending, "back to #pending so the Pay Fee flow resumes");
 });
 
-await Test.test("F4: a squatter's junk fee hash is dropped on adoption", func() : async () {
+await Test.test("F4: a squatter's junk fee hash on an UNVERIFIED burn is dropped on adoption", func() : async () {
   let state = GritLib.newState();
-  GritLib.storePendingClaim(state, recordFor(CLAIM_HASH, SQUATTER, #pendingFee, 0, ?"0xjunk"));
+  // FIX-9: the drop is conditional — it applies when the burn never verified
+  // (amountBurned == 0.0), which is the squat this wipe exists for. recordFor
+  // defaults amountBurned to 1.5 (a verified burn), so zero it explicitly; a
+  // verified burn PRESERVES the stored hash for its owner instead (see the
+  // FIX-9 section below).
+  let base = recordFor(CLAIM_HASH, SQUATTER, #pendingFee, 0, ?"0xjunk");
+  GritLib.storePendingClaim(state, { base with amountBurned = 0.0; usdValue = 0.0 });
   let ok = GritLib.adoptUncreditedClaim(state, CLAIM_HASH, VICTIM);
   require(ok, "adoption must clear a squatter-supplied fee hash");
   let r = switch (state.claims.find(func(x : GritTypes.ClaimRecord) : Bool { x.txHash == CLAIM_HASH })) {
@@ -204,4 +211,327 @@ await Test.test("F4: adoption is a no-op for the existing claimant and unknown h
   GritLib.storePendingClaim(state, recordFor(CLAIM_HASH, VICTIM, #pending, 0, null));
   require(not GritLib.adoptUncreditedClaim(state, CLAIM_HASH, VICTIM), "same caller: nothing to adopt");
   require(not GritLib.adoptUncreditedClaim(state, "0xdeadbeef", VICTIM), "unknown hash: false");
+});
+
+// ── AKK-CRIT-1: adoption race — the credit binds to the fee prover ─────────
+// The GRIT credit used to pay whatever `claimant` the record held at CAS-write
+// time, and adoption (adoptUncreditedClaim) rebinds claimant on any UNCREDITED
+// claim. Adoption runs synchronously while a victim's verifyFeeBinding awaits
+// are in flight, so a third party adopting inside that window redirected the
+// FULL credit to themselves — the fee prover paid, the adopter collected.
+// Fix: every transition to #verified passes `creditedClaimant` — the principal
+// whose fee binding was just verified. The balance credit pays THAT principal
+// and the record's claimant is re-pinned to them (record stays coherent: the
+// fee prover owns the credit). null keeps the legacy stored-claimant behavior
+// for non-credit / legacy call sites.
+let ATTACKER = Principal.fromText("y6f5k-y5eji-aaaaa-aaaap-yai");
+
+await Test.test("AKK-CRIT-1: an adoption mid-flight cannot steal the in-flight credit", func() : async () {
+  let state = GritLib.newState();
+  GritLib.storePendingClaim(state, recordFor(CLAIM_HASH, VICTIM, #pending, 0, ?"0xfee"));
+  // The victim is mid-verification (fee binding just proven for VICTIM).
+  // Meanwhile an attacker adopts the still-uncredited claim.
+  require(GritLib.adoptUncreditedClaim(state, CLAIM_HASH, ATTACKER), "attacker adopts mid-flight");
+  // The victim's late CAS write arrives carrying the proof-passing principal.
+  GritLib.updateClaimStatus(state, CLAIM_HASH, #verified, 5_000, null, ?1.5, ?3.0, ?"0xfee", ?VICTIM);
+
+  let r = switch (state.claims.find(func(x : GritTypes.ClaimRecord) : Bool { x.txHash == CLAIM_HASH })) {
+    case (?r) { r };
+    case null { Runtime.trap("claim missing") };
+  };
+  require(r.claimant == VICTIM, "claimant re-pinned to the fee prover");
+  require(r.status == #verified, "status verified");
+  require(r.gritMinted == 5_000, "grit recorded");
+  require(GritLib.getBalance(state, VICTIM) == 5_000, "the fee prover is credited");
+  require(GritLib.getBalance(state, ATTACKER) == 0, "the adopter is credited NOTHING");
+  require(GritLib.getTotalEarned(state, ATTACKER) == 0, "the adopter earns nothing");
+  require(GritLib.getTotalEarned(state, VICTIM) == 5_000, "the fee prover's all-time earned is credited");
+});
+
+await Test.test("AKK-CRIT-1: null creditedClaimant keeps the legacy stored-claimant credit", func() : async () {
+  let state = GritLib.newState();
+  GritLib.storePendingClaim(state, recordFor(CLAIM_HASH, VICTIM, #pending, 0, ?"0xfee"));
+  require(GritLib.adoptUncreditedClaim(state, CLAIM_HASH, ATTACKER), "adoption");
+  // Legacy call shape (non-credit transitions and pre-fix callers): null falls
+  // back to the claimant stored in the record at CAS-write time.
+  GritLib.updateClaimStatus(state, CLAIM_HASH, #verified, 7_000, null, ?1.5, ?3.0, ?"0xfee", null);
+
+  require(GritLib.getBalance(state, ATTACKER) == 7_000, "stored claimant credited (legacy semantics)");
+  require(GritLib.getBalance(state, VICTIM) == 0, "no credit to any other principal");
+});
+
+await Test.test("AKK-CRIT-1: the credit callback receives the proof-passing claimant", func() : async () {
+  let state = GritLib.newState();
+  GritLib.storePendingClaim(state, recordFor(CLAIM_HASH, VICTIM, #pending, 0, ?"0xfee"));
+  require(GritLib.adoptUncreditedClaim(state, CLAIM_HASH, ATTACKER), "attacker adopts mid-flight");
+  // Tribe-stats sync reads (user, newBalance) from this callback — it must see
+  // the SAME principal the balance was credited to, never the rebound claimant.
+  var cbUser : ?Principal = null;
+  var cbBalance : Nat = 0;
+  let cb = func(u : Principal, b : Nat) { cbUser := ?u; cbBalance := b };
+  GritLib.updateClaimStatus(state, CLAIM_HASH, #verified, 4_000, ?cb, ?1.5, ?3.0, ?"0xfee", ?VICTIM);
+
+  switch (cbUser) {
+    case (?u) { require(u == VICTIM, "callback user is the fee prover") };
+    case null { Runtime.trap("credit callback never fired") };
+  };
+  require(cbBalance == 4_000, "callback balance is the credited balance");
+});
+
+// ── AKK-CRIT-2: AKK-10 floor on the timer path — the FRESH comparator ──────
+// initiateClaim stores `usdValue = 0.0` on a record that ALSO carries a fee
+// hash (combined path: burn + fee submitted together, grit-api.mo:472-488).
+// When that burn later verifies via the background timer, recheckClaim's fee
+// branch passed the stale zero into verifyFeeBinding — and the AKK-10 floor is
+// gated on `usd > 0.0` (fee-amount.mo:149-161), so the amount check was
+// SKIPPED and full GRIT credited with no fee floor at all. The fix passes the
+// fresh comparator computed on that path (`humanAmount × currentPrice`,
+// grit-api.mo:811) — the same freshness rule retryFeeClaim already uses. These
+// tests pin the floor decision those inputs produce (FeeAmount.amountCheckFloor
+// semantics, the exact function the call site uses).
+let FEE_BPS : Nat = 69;          // 0.69 % platform fee
+let NATIVE_USD : Float = 2_400.0; // native-token price used for the wei floor
+let TOLERANCE_BPS : Nat = 700;   // 7 % — mirrors the frontend-price gate
+
+await Test.test("AKK-CRIT-2: the stale stored zero skips the floor (the bypass)", func() : async () {
+  // The exact combined-path record initiateClaim stores: fee hash set, the
+  // burn not yet verified/priced (amountBurned and usdValue still 0.0).
+  let base = recordFor(CLAIM_HASH, VICTIM, #pending, 0, ?"0xfee");
+  let combined : GritTypes.ClaimRecord = { base with amountBurned = 0.0; usdValue = 0.0 };
+  require(combined.usdValue == 0.0, "combined-path record stores a zero USD value");
+  require(
+    FeeAmount.amountCheckFloor(combined.usdValue, FEE_BPS, NATIVE_USD, TOLERANCE_BPS) == null,
+    "the stored zero comparator returns no floor — the amount check is skipped",
+  );
+});
+
+await Test.test("AKK-CRIT-2: the fresh comparator makes the underpaid floor reject", func() : async () {
+  // What the timer path computes after re-verifying the burn: the burn amount
+  // times the CURRENT oracle price (grit-api.mo:807-811). Both factors are
+  // positive on any reachable call (verifyBurn rejects zero-amount burns, the
+  // price fetch must have succeeded).
+  let humanAmount : Float = 1.5;
+  let effectivePrice : Float = 2.0;
+  let usdValueRecheckBurn : Float = humanAmount * effectivePrice;
+  require(usdValueRecheckBurn > 0.0, "the recheck comparator is positive whenever the burn verified");
+
+  let floor = switch (FeeAmount.amountCheckFloor(usdValueRecheckBurn, FEE_BPS, NATIVE_USD, TOLERANCE_BPS)) {
+    case (?f) { f };
+    case null { Runtime.trap("the fresh comparator must produce a floor") };
+  };
+  require(floor > 0, "the floor is positive");
+  // The call site's comparison is `paid < floor` (grit-api.mo:359).
+  let isUnderpaid = func(paid : Nat) : Bool { paid < floor };
+  require(isUnderpaid(0), "a zero-value fee is underpaid (the zero-FeePaid bypass)");
+  require(isUnderpaid(floor - 1), "a one-wei-short fee is underpaid");
+  require(not isUnderpaid(floor), "paying exactly the floor is accepted");
+});
+
+// ── AKK-CRIT-7: the fee-stage dead end — a NEW fee escapes a #failed claim ─
+// A claim whose BURN verified but whose FEE stage failed definitively (binding
+// mismatch, replaced/rejected replacement, ...) lands in #failed with
+// amountBurned > 0 and gritMinted == 0 by construction. Before this fix every
+// recovery re-sent the SAME doomed fee hash — Retry Claim re-submitted
+// claim.feeTxHash ?? "" and retryFeeClaim refused every non-#pendingFee status
+// — a deterministic failure loop whose only exit was a fresh burn. The escape:
+// a NEW fee hash may lift such a record back to #pendingFee and, once that
+// fee's binding verifies, terminalize it as #verified with the credit. A
+// record whose BURN never verified (amountBurned == 0) stays terminal — there
+// is nothing to rescue and its only recovery is a re-initiated claim.
+func failedFeeStageRecord() : GritTypes.ClaimRecord {
+  let base = recordFor(CLAIM_HASH, VICTIM, #failed, 0, ?"0xdoomedfee");
+  { base with amountBurned = 1.5; usdValue = 3.0 }
+};
+
+func failedBurnStageRecord() : GritTypes.ClaimRecord {
+  let base = recordFor(CLAIM_HASH, VICTIM, #failed, 0, null);
+  { base with amountBurned = 0.0; usdValue = 0.0 }
+};
+
+func readRecord(state : GritLib.State) : GritTypes.ClaimRecord {
+  switch (state.claims.find(func(x : GritTypes.ClaimRecord) : Bool { x.txHash == CLAIM_HASH })) {
+    case (?r) { r };
+    case null { Runtime.trap("claim missing") };
+  };
+};
+
+await Test.test("AKK-CRIT-7: a burn-verified #failed claim accepts a NEW fee hash", func() : async () {
+  let state = GritLib.newState();
+  GritLib.storePendingClaim(state, failedFeeStageRecord());
+  // retryFeeClaim's exact first write: store the NEW hash before verification.
+  GritLib.updateClaimToPendingFee(state, CLAIM_HASH, "0xnewfee");
+
+  let r = readRecord(state);
+  require(r.status == #pendingFee, "the new fee lifts the claim back to #pendingFee");
+  switch (r.feeTxHash) {
+    case (?f) { require(f == "0xnewfee", "the NEW fee hash replaces the doomed one") };
+    case null { Runtime.trap("fee hash missing") };
+  };
+  require(r.gritMinted == 0, "still uncredited — the fee has not verified yet");
+});
+
+await Test.test("AKK-CRIT-7: a burn-failed #failed claim stays terminal (no fee escape)", func() : async () {
+  let state = GritLib.newState();
+  GritLib.storePendingClaim(state, failedBurnStageRecord());
+  GritLib.updateClaimToPendingFee(state, CLAIM_HASH, "0xnewfee");
+
+  let r = readRecord(state);
+  require(r.status == #failed, "the burn never verified — no fee can rescue it");
+  require(r.feeTxHash == null, "no fee hash may be stored on a burn-failed claim");
+  require(state.balances.get(VICTIM) == null, "no balance created");
+});
+
+await Test.test("AKK-CRIT-7: the verified NEW fee terminalizes the escaped claim with the credit", func() : async () {
+  let state = GritLib.newState();
+  GritLib.storePendingClaim(state, failedFeeStageRecord());
+  GritLib.updateClaimToPendingFee(state, CLAIM_HASH, "0xnewfee");
+  // retryFeeClaim's final write once the new fee's binding verifies.
+  GritLib.updateClaimStatus(state, CLAIM_HASH, #verified, 5_000, null, ?1.5, ?3.0, ?"0xnewfee", ?VICTIM);
+
+  let r = readRecord(state);
+  require(r.status == #verified, "the escaped claim resolves #verified");
+  require(r.gritMinted == 5_000, "the credit is recorded");
+  require(GritLib.getBalance(state, VICTIM) == 5_000, "the fee prover is credited once");
+});
+
+await Test.test("AKK-CRIT-7: a burn-failed #failed claim cannot be terminalized as #verified", func() : async () {
+  let state = GritLib.newState();
+  GritLib.storePendingClaim(state, failedBurnStageRecord());
+  // The creditlessVerified guard alone cannot catch this shape: a positive
+  // credit arrives from a stale caller while amountBurned is still 0.0.
+  GritLib.updateClaimStatus(state, CLAIM_HASH, #verified, 5_000, null, ?0.0, ?0.0, ?"0xnewfee", ?VICTIM);
+
+  let r = readRecord(state);
+  require(r.status == #failed, "the CAS must refuse #failed → #verified without a verified burn");
+  require(r.gritMinted == 0, "no credit recorded");
+  require(state.balances.get(VICTIM) == null, "no balance created");
+});
+
+await Test.test("AKK-CRIT-7: a burn-verified #failed claim cannot be rewritten to an awaiting status", func() : async () {
+  let state = GritLib.newState();
+  GritLib.storePendingClaim(state, failedFeeStageRecord());
+  // Only the two sanctioned doors may move a #failed record: the #pendingFee
+  // write (above) and the post-verify #verified terminalization. A call that
+  // tries to park it back in #pending must be refused.
+  GritLib.updateClaimStatus(state, CLAIM_HASH, #pending, 0, null, ?1.5, ?3.0, null, null);
+
+  let r = readRecord(state);
+  require(r.status == #failed, "no awaiting-state rewrite through the status CAS");
+});
+
+await Test.test("AKK-CRIT-7: the widened #failed gate cannot rewrite a settled #verified record", func() : async () {
+  let state = GritLib.newState();
+  GritLib.storePendingClaim(state, failedFeeStageRecord());
+  // Settle the rescue path for real — the credit lands once.
+  GritLib.updateClaimToPendingFee(state, CLAIM_HASH, "0xfee");
+  GritLib.updateClaimStatus(state, CLAIM_HASH, #verified, 9_000, null, ?1.5, ?3.0, ?"0xfee", ?VICTIM);
+  require(GritLib.getBalance(state, VICTIM) == 9_000, "the rescue credited once");
+  // Both widened doors against the already-credited record: complete no-ops.
+  GritLib.updateClaimToPendingFee(state, CLAIM_HASH, "0xjunk");
+  GritLib.updateClaimStatus(state, CLAIM_HASH, #failed, 0, null, null, null, null, null);
+
+  let r = readRecord(state);
+  require(r.status == #verified, "#verified is sticky against the fee-retry doors");
+  require(r.gritMinted == 9_000, "the credit is untouched");
+  switch (r.feeTxHash) {
+    case (?f) { require(f == "0xfee", "the settled fee hash is not overwritten") };
+    case null { Runtime.trap("feeTxHash missing") };
+  };
+  require(GritLib.getBalance(state, VICTIM) == 9_000, "no second credit");
+  require(GritLib.getTotalEarned(state, VICTIM) == 9_000, "no double earn");
+});
+
+// ── FIX-9 (audit v341): adoption preserves the PAID fee evidence ────────────
+// adoptUncreditedClaim used to wipe feeTxHash on EVERY adoption. A griefer who
+// adopted a victim's claim carrying a PAID, burn-verified fee destroyed the
+// payment evidence: post-AKK-CRIT-1 the credit can no longer be stolen, but the
+// victim still had to pay a second fee. The fix keeps the stored hash when the
+// burn verified (amountBurned > 0.0) and wipes it only when it did not — the
+// wipe's original purpose (dropping a squatter's fabricated hash on an
+// UNVERIFIED burn) is unchanged.
+//
+// The adopter-facing pipelines this interacts with, at their current call
+// sites: the timer re-verifies the STORED hash against record.claimant
+// (recheckClaim, grit-api.mo:875) and credits that same principal (:907); a
+// structural binding mismatch terminalizes via updateClaimStatus(#failed, …,
+// feeTxHash null) (:899, recheckFeeClaim :1035) which leaves the stored hash in
+// place; and retryFeeClaim OVERWRITES the stored hash with the caller's new
+// one before its own verify+credit (:1211), so a stale preserved hash can
+// never block a fresh payment.
+let GRIEFER = ATTACKER;
+
+await Test.test("FIX-9: adoption of a burn-verified claim preserves the paid fee hash", func() : async () {
+  let state = GritLib.newState();
+  // A paid claim: the burn verified (amountBurned > 0), the victim's fee tx
+  // hash is stored, nothing credited yet.
+  GritLib.storePendingClaim(state, recordFor(CLAIM_HASH, VICTIM, #pendingFee, 0, ?"0xpaidfee"));
+
+  require(GritLib.adoptUncreditedClaim(state, CLAIM_HASH, GRIEFER), "the grief adopt succeeds");
+
+  let r = readRecord(state);
+  require(r.claimant == GRIEFER, "claimant rebound to the griefer");
+  require(r.status == #pending, "back to #pending");
+  switch (r.feeTxHash) {
+    case (?f) { require(f == "0xpaidfee", "the PAID fee hash survives the adoption") };
+    case null { Runtime.trap("the PAID fee hash was destroyed by adoption — the victim must re-pay") };
+  };
+  require(r.amountBurned > 0.0, "burn evidence untouched");
+});
+
+await Test.test("FIX-9: adoption of an UNVERIFIED burn still wipes the hash (fabricated-hash squat)", func() : async () {
+  let state = GritLib.newState();
+  // The fabricated-hash squat the wipe exists for: the squatter filed the
+  // victim's burn hash plus a junk fee hash before the burn ever verified
+  // (amountBurned == 0.0). Adoption must drop the junk so the victim's own
+  // Pay Fee flow starts clean — the pre-fix behaviour, pinned.
+  let base = recordFor(CLAIM_HASH, SQUATTER, #pending, 0, ?"0xjunk");
+  let squatted : GritTypes.ClaimRecord = { base with amountBurned = 0.0; usdValue = 0.0 };
+  GritLib.storePendingClaim(state, squatted);
+
+  require(GritLib.adoptUncreditedClaim(state, CLAIM_HASH, VICTIM), "the victim adopts");
+
+  let r = readRecord(state);
+  require(r.claimant == VICTIM, "claimant rebound to the victim");
+  require(r.feeTxHash == null, "unverified burn: the junk hash is still wiped");
+  require(r.status == #pending, "back to #pending");
+});
+
+await Test.test("FIX-9: grief self-destructs — victim re-adopts and is credited on the ORIGINAL fee", func() : async () {
+  let state = GritLib.newState();
+  GritLib.storePendingClaim(state, recordFor(CLAIM_HASH, VICTIM, #pendingFee, 0, ?"0xpaidfee"));
+
+  // 1) The griefer adopts the paid claim — the evidence must survive.
+  require(GritLib.adoptUncreditedClaim(state, CLAIM_HASH, GRIEFER), "the griefer adopts");
+  switch (readRecord(state).feeTxHash) {
+    case (?f) { require(f == "0xpaidfee", "paid evidence survives the grief adoption") };
+    case null { Runtime.trap("paid evidence destroyed — the grief works") };
+  };
+
+  // 2) The timer re-verifies the stored fee against the griefer as claimant
+  //    (recheckClaim :875). The binding payload names the burn owner, so this
+  //    is a structural mismatch → the exact #failed write the timer performs
+  //    (grit-api.mo:899): feeTxHash null = the stored evidence stays.
+  GritLib.updateClaimStatus(state, CLAIM_HASH, #failed, 0, null, null, null, null, null);
+  let failedRec = readRecord(state);
+  require(failedRec.status == #failed, "the grief self-destructs to #failed");
+  require(failedRec.feeTxHash == ?"0xpaidfee", "evidence survives the #failed terminalization");
+
+  // 3) The victim re-adopts the uncredited #failed claim (gritMinted == 0).
+  require(GritLib.adoptUncreditedClaim(state, CLAIM_HASH, VICTIM), "the victim re-adopts");
+  let readopted = readRecord(state);
+  require(readopted.claimant == VICTIM, "claimant back to the burn's owner");
+  require(readopted.status == #pending, "re-verification window re-opened");
+  require(readopted.feeTxHash == ?"0xpaidfee", "the ORIGINAL fee hash is still the stored evidence");
+
+  // 4) The timer re-verifies the ORIGINAL fee against the victim as claimant:
+  //    the binding payload now names them → #ok → the credit write at
+  //    grit-api.mo:907 with creditedClaimant = record.claimant = VICTIM.
+  GritLib.updateClaimStatus(state, CLAIM_HASH, #verified, 5_000, null, ?1.5, ?3.0, ?"0xpaidfee", ?VICTIM);
+
+  let r = readRecord(state);
+  require(r.status == #verified, "credited WITHOUT a second payment");
+  require(r.gritMinted == 5_000, "GRIT recorded");
+  require(GritLib.getBalance(state, VICTIM) == 5_000, "the victim is made whole on the original fee");
+  require(GritLib.getBalance(state, GRIEFER) == 0, "the griefer is credited nothing");
+  require(GritLib.getTotalEarned(state, GRIEFER) == 0, "the griefer earns nothing");
 });

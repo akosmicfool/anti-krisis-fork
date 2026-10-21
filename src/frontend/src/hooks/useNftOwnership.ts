@@ -1,16 +1,10 @@
 import { Contract, JsonRpcProvider } from "ethers";
 import { useEffect, useState } from "react";
 import { useAccount } from "wagmi";
+import { ETH_RPC_ENDPOINTS } from "../utils/evm-rpc";
 
 const NFT_CONTRACT_A = "0x48e727F3052ea0497e5d939B9B52a1B601F166bb";
 const NFT_CONTRACT_B = "0x9c4642e8456e05BCF3da1922eE9ee5868A602cbA";
-
-const ETH_RPC_ENDPOINTS = [
-  "https://eth.llamarpc.com",
-  "https://cloudflare-eth.com",
-  "https://rpc.ankr.com/eth",
-  "https://ethereum.publicnode.com",
-];
 
 const ERC721_ABI = ["function balanceOf(address owner) view returns (uint256)"];
 

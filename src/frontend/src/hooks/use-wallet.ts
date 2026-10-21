@@ -6,8 +6,9 @@
  * No module-level state, no custom mutex, no direct window.ethereum calls.
  *
  * wagmi's useConnect serializes concurrent connector requests internally.
- * useSwitchChain is called automatically before burnToken to ensure the wallet
- * is on Base (8453) — the only chain where the allowlisted tokens live.
+ * useSwitchChain is called automatically before burns and fee sends to put
+ * the wallet on the TARGET chain (default Base, 8453) — allowlisted tokens
+ * live on Ethereum, Optimism, Base, and Celo.
  */
 import { useCallback } from "react";
 import { getAddress, parseUnits } from "viem";
@@ -23,26 +24,65 @@ import {
   useWriteContract,
 } from "wagmi";
 import { CHAIN_IDS } from "../types";
+import { fetchDexScreenerPrice } from "../utils/dexscreener";
 
 const BASE_CHAIN_ID = 8453;
 
 /** Default platform fee rate: 0.69% — used as fallback if backend value is unavailable. */
 const DEFAULT_PLATFORM_FEE_RATE = 0.0069;
 
-/** Fetch the USD price of the native token for a given chain ID.
+/**
+ * Canonical wrapped-native ERC-20 per chain, mirroring the backend oracle
+ * (src/backend/mixins/grit-api.mo `nativeWrappedAddress`). DexScreener prices
+ * a native token through its wrapped ERC-20 pool, and the AKK-10 fee floor
+ * prices the SAME wrapped token — the fee must be sized from this source, not
+ * from a third-party price feed: a >700bps divergence between the two
+ * sources fails an honestly-sized fee with "BINDING_FAIL: fee underpaid"
+ * after the money is already sent.
+ */
+const NATIVE_WRAPPED_TOKENS: Record<
+  number,
+  { chainId: string; address: string }
+> = {
+  // WETH
+  1: {
+    chainId: "ethereum",
+    address: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+  },
+  // WETH (same address on Optimism and Base)
+  10: {
+    chainId: "optimism",
+    address: "0x4200000000000000000000000000000000000006",
+  },
+  8453: {
+    chainId: "base",
+    address: "0x4200000000000000000000000000000000000006",
+  },
+  // CELO as ERC-20
+  42220: {
+    chainId: "celo",
+    address: "0x471EcE3750Da237f93B8E339c536989b8978a438",
+  },
+};
+
+/** Fetch the USD price of the native token for a given chain ID, via the
+ *  chain's wrapped-native ERC-20 pool on DexScreener (same oracle and same
+ *  parser as the backend's fee floor):
  *  ETH  → chains 1, 10 (Optimism), 8453 (Base)
  *  CELO → chain 42220 (Celo)
+ *  Throws when the chain has no verified wrapped-native address or no price —
+ *  callers must treat that as "no price" and abort (never guess a fee).
  */
 async function fetchNativeTokenPriceUsd(chainId: number): Promise<number> {
-  const isCelo = chainId === 42220;
-  const coinId = isCelo ? "celo" : "ethereum";
-  const url = `https://api.coingecko.com/api/v3/simple/price?ids=${coinId}&vs_currencies=usd`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Native price fetch failed: ${res.status}`);
-  const json = (await res.json()) as Record<string, { usd?: number }>;
-  const price = json[coinId]?.usd;
-  if (!price || price <= 0)
-    throw new Error(`Invalid native token price received for ${coinId}`);
+  const wrapped = NATIVE_WRAPPED_TOKENS[chainId];
+  if (!wrapped) {
+    throw new Error(
+      `Native token price unavailable for chain ${chainId} — unsupported chain`,
+    );
+  }
+  const price = await fetchDexScreenerPrice(wrapped.address, wrapped.chainId);
+  if (price === null || !(price > 0))
+    throw new Error(`Invalid native token price received for chain ${chainId}`);
   return price;
 }
 
@@ -142,14 +182,18 @@ export interface UseWalletReturn {
   ) => Promise<string>;
   /**
    * Calculates and sends the platform fee as a native token transfer.
-   * feeUsd: the USD value of (feeRate * 100)% of the burn.
+   * burnValueUsd: the USD value of the FULL burn — the fee charged is
+   *   burnValueUsd * feeRate. Pass the burn's dollar value (the claim's
+   *   stored usdValue, or parsedAmt * price for a fresh burn) — never a
+   *   token count: this hook multiplies by feeRate and divides by the
+   *   native price, so a token count mis-sizes the fee by the token price.
    * chainId: the chain the burn happened on.
    * recipientAddress: the EVM wallet address to receive the fee (from backend config).
    * feeRate: decimal fee rate (e.g. 0.0042 for 0.42%). Defaults to DEFAULT_PLATFORM_FEE_RATE.
    * Returns the fee transfer tx hash.
    */
   sendPlatformFee: (
-    feeUsd: number,
+    burnValueUsd: number,
     chainId: number,
     recipientAddress: string,
     feeRate?: number,
@@ -329,7 +373,8 @@ export function useWallet(): UseWalletReturn {
    * - amount: decimal string, e.g. "1.5" — must be a trimmed string, not a float
    * - decimals: token decimals (number)
    *
-   * The chainId is ALWAYS 8453 (Base) — all allowlisted tokens live on Base.
+   * The chainId defaults to 8453 (Base); burn callers pass the token's own
+   * chain — allowlisted tokens live on Ethereum, Optimism, Base, and Celo.
    * Passing chainId to writeContractAsync tells wagmi to enforce the chain;
    * if the wallet is on the wrong chain wagmi will request a switch automatically.
    */
@@ -351,7 +396,7 @@ export function useWallet(): UseWalletReturn {
 
   const sendPlatformFee = useCallback(
     async (
-      feeUsd: number,
+      burnValueUsd: number,
       chainId: number,
       recipientAddress: string,
       feeRate: number = DEFAULT_PLATFORM_FEE_RATE,
@@ -363,9 +408,12 @@ export function useWallet(): UseWalletReturn {
         );
       }
       const nativePriceUsd = await fetchNativeTokenPriceUsd(chainId);
-      // Recalculate the fee amount from the burn value and the live fee rate
-      // so the native transfer always matches the admin-configured percentage.
-      const effectiveFeeUsd = feeUsd * feeRate;
+      // Recalculate the fee amount from the burn's USD value and the live fee
+      // rate so the native transfer always matches the admin-configured
+      // percentage. burnValueUsd MUST be a dollar value — passing a token
+      // count (the pre-fix recovery-path bug) scales the fee by the token
+      // price instead, over/under-charging for every non-$1 token.
+      const effectiveFeeUsd = burnValueUsd * feeRate;
       const feeNative = effectiveFeeUsd / nativePriceUsd;
       // Convert to wei (1e18)
       const feeWei = BigInt(Math.round(feeNative * 1e18));

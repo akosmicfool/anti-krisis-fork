@@ -91,6 +91,7 @@ export interface Profile {
     username: string;
     superpowers: string;
     displayName: string;
+    interests: string;
     born: string;
     socials: Array<SocialLink>;
     coverImage: string;
@@ -212,6 +213,7 @@ export interface PublicProfile {
     tribeId?: string;
     superpowers: string;
     displayName: string;
+    interests: string;
     born: string;
     socials: Array<SocialLink>;
     coverImage: string;
@@ -258,6 +260,7 @@ export interface ProfileInput {
     username: string;
     superpowers: string;
     displayName: string;
+    interests: string;
     born: string;
     socials: Array<SocialLink>;
     coverImage: string;
@@ -401,7 +404,6 @@ export interface backendInterface {
     getFeePercent(): Promise<number>;
     getFeeRecipient(): Promise<string | null>;
     getGritIssuanceRate(): Promise<bigint>;
-    getHistoryBasedAk69Stockpile(): Promise<number>;
     getIsLaunched(): Promise<boolean>;
     getLaunchGate(): Promise<{
         startTime: bigint;
@@ -416,6 +418,7 @@ export interface backendInterface {
         timeWindowEnabled: boolean;
         launchTimeEnabled: boolean;
     }>;
+    getLedgerAkkSupply(): Promise<bigint>;
     getLedgerMintingAccount(): Promise<Account | null>;
     getMinerCreationFees(): Promise<Array<ChainFeeEntry>>;
     getMintRetryStats(): Promise<{
@@ -432,6 +435,7 @@ export interface backendInterface {
     getMyTribe(): Promise<Tribe | null>;
     getPendingMints(): Promise<Array<MintRetryView>>;
     getPlayerBurnSummary(principal: Principal): Promise<Array<[string, number]>>;
+    getPlayerCount(): Promise<bigint>;
     getPlayerRank(principal: Principal, timescale: string): Promise<bigint | null>;
     getPlayerScore(principal: Principal, timescale: string): Promise<number>;
     getPlayerStreak(p: Principal): Promise<bigint>;
@@ -464,6 +468,7 @@ export interface backendInterface {
     getTribeAkkFromHistory(tribeId: TribeId): Promise<bigint>;
     getTribeBurnSummary(tribeId: string): Promise<Array<[string, number]>>;
     getTribeByName(name: string): Promise<Tribe | null>;
+    getTribeCount(): Promise<bigint>;
     getTribeLiveStats(tribeId: TribeId): Promise<{
         memberCount: bigint;
         totalGrit: bigint;
@@ -473,6 +478,10 @@ export interface backendInterface {
     getTribeMembersWithRoles(tribeId: TribeId): Promise<Array<TribeMemberWithRole>>;
     getTribeRank(tribeId: string, timescale: string): Promise<bigint | null>;
     getTribeScore(tribeId: string, timescale: string): Promise<number>;
+    getTribeWindowedTotals(tribeId: string): Promise<{
+        totalGrit: bigint;
+        totalAkk: bigint;
+    }>;
     getUserMiningStats(): Promise<{
         blocksMined: bigint;
         akkWon: bigint;
@@ -1112,20 +1121,6 @@ export class Backend implements backendInterface {
             return result;
         }
     }
-    async getHistoryBasedAk69Stockpile(): Promise<number> {
-        if (this.processError) {
-            try {
-                const result = await this.actor.getHistoryBasedAk69Stockpile();
-                return result;
-            } catch (e) {
-                this.processError(e);
-                throw new Error("unreachable");
-            }
-        } else {
-            const result = await this.actor.getHistoryBasedAk69Stockpile();
-            return result;
-        }
-    }
     async getIsLaunched(): Promise<boolean> {
         if (this.processError) {
             try {
@@ -1176,6 +1171,20 @@ export class Backend implements backendInterface {
             }
         } else {
             const result = await this.actor.getLaunchGateConfig();
+            return result;
+        }
+    }
+    async getLedgerAkkSupply(): Promise<bigint> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.getLedgerAkkSupply();
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.getLedgerAkkSupply();
             return result;
         }
     }
@@ -1335,6 +1344,20 @@ export class Backend implements backendInterface {
             }
         } else {
             const result = await this.actor.getPlayerBurnSummary(arg0);
+            return result;
+        }
+    }
+    async getPlayerCount(): Promise<bigint> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.getPlayerCount();
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.getPlayerCount();
             return result;
         }
     }
@@ -1604,6 +1627,20 @@ export class Backend implements backendInterface {
             return from_candid_opt_n52(this._uploadFile, this._downloadFile, result);
         }
     }
+    async getTribeCount(): Promise<bigint> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.getTribeCount();
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.getTribeCount();
+            return result;
+        }
+    }
     async getTribeLiveStats(arg0: TribeId): Promise<{
         memberCount: bigint;
         totalGrit: bigint;
@@ -1675,6 +1712,23 @@ export class Backend implements backendInterface {
             }
         } else {
             const result = await this.actor.getTribeScore(arg0, arg1);
+            return result;
+        }
+    }
+    async getTribeWindowedTotals(arg0: string): Promise<{
+        totalGrit: bigint;
+        totalAkk: bigint;
+    }> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.getTribeWindowedTotals(arg0);
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.getTribeWindowedTotals(arg0);
             return result;
         }
     }
@@ -2599,6 +2653,7 @@ function from_candid_record_n51(_uploadFile: (file: ExternalBlob) => Promise<Uin
     tribeId: [] | [string];
     superpowers: string;
     displayName: string;
+    interests: string;
     born: string;
     socials: Array<_SocialLink>;
     coverImage: string;
@@ -2614,6 +2669,7 @@ function from_candid_record_n51(_uploadFile: (file: ExternalBlob) => Promise<Uin
     tribeId?: string;
     superpowers: string;
     displayName: string;
+    interests: string;
     born: string;
     socials: Array<SocialLink>;
     coverImage: string;
@@ -2630,6 +2686,7 @@ function from_candid_record_n51(_uploadFile: (file: ExternalBlob) => Promise<Uin
         tribeId: record_opt_to_undefined(from_candid_opt_n8(_uploadFile, _downloadFile, value.tribeId)),
         superpowers: value.superpowers,
         displayName: value.displayName,
+        interests: value.interests,
         born: value.born,
         socials: value.socials,
         coverImage: value.coverImage,
@@ -2673,6 +2730,7 @@ function from_candid_record_n67(_uploadFile: (file: ExternalBlob) => Promise<Uin
     username: string;
     superpowers: string;
     displayName: string;
+    interests: string;
     born: string;
     socials: Array<_SocialLink>;
     coverImage: string;
@@ -2687,6 +2745,7 @@ function from_candid_record_n67(_uploadFile: (file: ExternalBlob) => Promise<Uin
     username: string;
     superpowers: string;
     displayName: string;
+    interests: string;
     born: string;
     socials: Array<SocialLink>;
     coverImage: string;
@@ -2702,6 +2761,7 @@ function from_candid_record_n67(_uploadFile: (file: ExternalBlob) => Promise<Uin
         username: value.username,
         superpowers: value.superpowers,
         displayName: value.displayName,
+        interests: value.interests,
         born: value.born,
         socials: value.socials,
         coverImage: value.coverImage,
@@ -3067,6 +3127,7 @@ function to_candid_record_n64(_uploadFile: (file: ExternalBlob) => Promise<Uint8
     username: string;
     superpowers: string;
     displayName: string;
+    interests: string;
     born: string;
     socials: Array<SocialLink>;
     coverImage: string;
@@ -3078,6 +3139,7 @@ function to_candid_record_n64(_uploadFile: (file: ExternalBlob) => Promise<Uint8
     username: string;
     superpowers: string;
     displayName: string;
+    interests: string;
     born: string;
     socials: Array<_SocialLink>;
     coverImage: string;
@@ -3090,6 +3152,7 @@ function to_candid_record_n64(_uploadFile: (file: ExternalBlob) => Promise<Uint8
         username: value.username,
         superpowers: value.superpowers,
         displayName: value.displayName,
+        interests: value.interests,
         born: value.born,
         socials: value.socials,
         coverImage: value.coverImage,

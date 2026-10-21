@@ -3,14 +3,58 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Anti Krisis Protocol</title>
+    <title>Anti Krisis</title>
     <meta name="description" content="Burn ERC-20 tokens on Ethereum and L2s. Receive non-transferable GRIT fuel tokens on ICP." />
-    <meta property="og:title" content="Anti Krisis Protocol" />
+    <meta property="og:title" content="Anti Krisis" />
     <meta property="og:description" content="Burn ERC-20 tokens on Ethereum and L2s. Receive non-transferable GRIT fuel tokens on ICP." />
     <meta name="theme-color" content="#1e1e1e" />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
+    <link rel="icon" type="image/png" href="/favicon.png" />
     <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+    <script>
+      // The platform's HTML transform strips app icon links and APPENDS its own
+      // /__meta/icon.svg links at the END of head — after this script's
+      // parse-time execution — so the swap must run after parse and stay
+      // enforced. Official Anti Krisis pixel mark (favicon.png 64x64, from the
+      // owner-supplied AK_favicon_dark icon).
+      (function () {
+        var OURS = "/favicon.png";
+        function swap() {
+          var links = document.querySelectorAll(
+            'link[rel="icon"],link[rel="apple-touch-icon"],link[rel="shortcut icon"]',
+          );
+          var haveOurs = false;
+          for (var i = 0; i < links.length; i++) {
+            if (links[i].href.indexOf(OURS) !== -1) {
+              haveOurs = true;
+              continue;
+            }
+            links[i].parentNode.removeChild(links[i]);
+          }
+          if (!haveOurs) {
+            var icon = document.createElement("link");
+            icon.rel = "icon";
+            icon.type = "image/png";
+            icon.href = OURS;
+            document.head.appendChild(icon);
+            var apple = document.createElement("link");
+            apple.rel = "apple-touch-icon";
+            apple.href = OURS;
+            document.head.appendChild(apple);
+          }
+        }
+        if (document.readyState === "loading") {
+          document.addEventListener("DOMContentLoaded", swap);
+        } else {
+          swap();
+        }
+        // The platform (or any script) may inject icon links later — keep ours
+        // as the only icon. swap() is a no-op once ours is the only one, so the
+        // observer settles instead of looping.
+        new MutationObserver(swap).observe(document.head, { childList: true });
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

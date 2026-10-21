@@ -2,16 +2,20 @@ import { createActor } from "@/backend";
 import { useActor } from "@caffeineai/core-infrastructure";
 import { Link, useParams } from "@tanstack/react-router";
 import { Share2, Shield, Users } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import type { Tribe, TribeMemberWithRole } from "../backend";
 import { HighlightsSection } from "../components/HighlightsSection";
+import { StatTile } from "../components/StatTile";
 import { useAuth } from "../hooks/use-auth";
 import {
   useGetMyTribe,
+  useGetTribe,
+  useGetTribeMembersWithRoles,
   useJoinTribe,
   useLeaveTribe,
 } from "../hooks/use-backend";
+import { useTopTribesAlltime } from "../hooks/use-score";
+import { formatGritCompact } from "../lib/format";
 
 const MAX_MEMBERS = 150;
 
@@ -21,45 +25,6 @@ function SectionHeader({ children }: { children: React.ReactNode }) {
       {children}
     </h2>
   );
-}
-
-function StatTile({
-  label,
-  value,
-  unit,
-  valueColor = "text-white",
-}: {
-  label: string;
-  value: string;
-  unit?: string;
-  valueColor?: string;
-}) {
-  return (
-    <div className="border border-white/10 bg-card px-2 py-3 flex flex-col items-center gap-0.5 flex-1 min-w-0">
-      <span className="font-accent text-xs sm:text-sm text-accent tracking-widest uppercase truncate">
-        {label}
-      </span>
-      <span
-        className={`font-mono text-lg sm:text-2xl font-bold tabular-nums leading-tight ${valueColor}`}
-      >
-        {value}
-      </span>
-      {unit && (
-        <span className="font-accent text-[9px] sm:text-xs text-muted-foreground tracking-widest uppercase truncate">
-          {unit}
-        </span>
-      )}
-    </div>
-  );
-}
-
-function formatGritCompact(raw: number): string {
-  // raw is the raw Nat value from the backend — divide directly for display
-  if (raw >= 1_000_000_000_000)
-    return `${(raw / 1_000_000_000_000).toFixed(2)}T`;
-  if (raw >= 1_000_000_000) return `${(raw / 1_000_000_000).toFixed(2)}B`;
-  if (raw >= 1_000_000) return `${(raw / 1_000_000).toFixed(2)}M`;
-  return raw.toFixed(2);
 }
 
 type ModalKind =
@@ -73,10 +38,6 @@ export function PublicTribePage() {
   const { actor, isFetching } = useActor(createActor);
   const { isAuthenticated, principal } = useAuth();
 
-  const [tribe, setTribe] = useState<Tribe | null>(null);
-  const [members, setMembers] = useState<TribeMemberWithRole[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [notFound, setNotFound] = useState(false);
   const [modal, setModal] = useState<ModalKind>(null);
   const [copied, setCopied] = useState(false);
 
@@ -85,55 +46,41 @@ export function PublicTribePage() {
   const [historyAkk, setHistoryAkk] = useState(0);
   const [tribeRank, setTribeRank] = useState<bigint | null>(null);
 
-  const [tribeLeaderboardScore, setTribeLeaderboardScore] = useState<number>(0);
+  // All-time score — derived from the ONE shared all-time tribe leaderboard
+  // cache (the same query the Skoreboard and the TOP LEADER badge read), so
+  // this page can never disagree with them.
+  const { data: topTribes = [] } = useTopTribesAlltime();
+  const tribeLeaderboardScore =
+    topTribes.find((t) => t.tribeId === tribeId)?.score ?? 0;
+
+  // Tribe + member list live in per-tribe React Query caches (["tribe", id],
+  // ["tribeMembersWithRoles", id]) so join/leave can invalidate them and both
+  // the MEMBERS tile and the "MEMBERS (n/150)" header converge to server
+  // truth instead of drifting from an optimistic ±1.
+  const {
+    data: tribe,
+    isPending: tribePending,
+    isError: tribeError,
+  } = useGetTribe(tribeId);
+  const {
+    data: members = [],
+    isPending: membersPending,
+    isError: membersError,
+  } = useGetTribeMembersWithRoles(tribeId);
 
   const { data: myTribe } = useGetMyTribe();
   const joinTribe = useJoinTribe();
   const leaveTribe = useLeaveTribe();
 
-  const cancelledRef = useRef(false);
-
-  useEffect(() => {
-    if (isFetching || !actor) return;
-    cancelledRef.current = false;
-    setLoading(true);
-    setNotFound(false);
-
-    (async () => {
-      try {
-        const [t, m] = await Promise.all([
-          actor.getTribe(tribeId),
-          actor.getTribeMembersWithRoles(tribeId),
-        ]);
-        if (cancelledRef.current) return;
-        if (!t) {
-          setNotFound(true);
-        } else {
-          setTribe(t);
-          setMembers(m);
-        }
-      } catch {
-        if (!cancelledRef.current) setNotFound(true);
-      } finally {
-        if (!cancelledRef.current) setLoading(false);
-      }
-    })();
-
-    return () => {
-      cancelledRef.current = true;
-    };
-  }, [actor, isFetching, tribeId]);
-
-  // Fetch live GRIT/AKK stats + rank/score
+  // Fetch live GRIT/AKK stats + rank
   useEffect(() => {
     if (isFetching || !actor || !tribeId) return;
     let cancelled = false;
     (async () => {
       try {
-        const [liveStats, rank, topTribes, akkResult] = await Promise.all([
+        const [liveStats, rank, akkResult] = await Promise.all([
           actor.getTribeLiveStats(tribeId),
           actor.getTribeRank(tribeId, "alltime"),
-          actor.getTopTribes("alltime"),
           actor.getTribeAkkFromHistory(tribeId).catch(() => null),
         ]);
         if (cancelled) return;
@@ -144,15 +91,8 @@ export function PublicTribePage() {
         // getTribeAkkFromHistory returns bigint directly — convert to AKK (e8s)
         setHistoryAkk(akkResult != null ? Number(akkResult) / 1e8 : 0);
         setTribeRank(rank ?? null);
-        // Score: first try leaderboard entry (most accurate for all-time)
-        const entry = topTribes.find((t) => t.tribeId === tribeId);
-        if (entry) {
-          const leaderScore =
-            typeof entry.score === "number" ? entry.score : Number(entry.score);
-          setTribeLeaderboardScore(Math.round(leaderScore));
-        }
       } catch {
-        // silently fall back to 0
+        // silently fall back to the initial values
       }
     })();
     return () => {
@@ -203,8 +143,9 @@ export function PublicTribePage() {
   const confirmJoin = useCallback(() => {
     joinTribe.mutate(tribeId, {
       onSuccess: () => {
+        // The mutation invalidates ["tribe", id] + ["tribeMembersWithRoles", id]
+        // so the member tile and header refetch server truth immediately.
         toast.success("Joined tribe!");
-        if (tribe) setTribe({ ...tribe, memberCount: tribe.memberCount + 1n });
         setModal(null);
       },
       onError: (err: Error) => {
@@ -212,7 +153,7 @@ export function PublicTribePage() {
         setModal(null);
       },
     });
-  }, [joinTribe, tribeId, tribe]);
+  }, [joinTribe, tribeId]);
 
   const handleLeaveClick = useCallback(() => {
     setModal({ type: "leave" });
@@ -222,11 +163,6 @@ export function PublicTribePage() {
     leaveTribe.mutate(undefined, {
       onSuccess: () => {
         toast.success("Left tribe.");
-        if (tribe)
-          setTribe({
-            ...tribe,
-            memberCount: tribe.memberCount > 0n ? tribe.memberCount - 1n : 0n,
-          });
         setModal(null);
       },
       onError: (err: Error) => {
@@ -234,7 +170,12 @@ export function PublicTribePage() {
         setModal(null);
       },
     });
-  }, [leaveTribe, tribe]);
+  }, [leaveTribe]);
+
+  // Gate on BOTH queries (parity with the old Promise.all) so the members
+  // list never flashes "0/150 / No members yet" while its fetch is in flight.
+  const loading = tribePending || membersPending;
+  const notFound = tribeError || membersError || (!loading && !tribe);
 
   // Loading state
   if (loading || isFetching) {
@@ -408,25 +349,33 @@ export function PublicTribePage() {
           </div>
         </div>
 
-        {/* Tribe name + description */}
+        {/* Tribe name */}
         <div className="space-y-1">
           <h1 className="font-display text-3xl text-foreground tracking-widest leading-tight">
             {tribe.name}
           </h1>
-          {tribe.description && (
-            <p className="font-mono text-sm text-white leading-relaxed">
-              {tribe.description}
-            </p>
-          )}
         </div>
       </section>
 
-      {/* ════════════════════════════════════════════════════════════
+      {/* ABOUT — tribe description (mirrors the player profile's BIO panel) */}
+      {tribe.description && (
+        <section
+          className="border border-border p-4 bg-card mb-6"
+          data-ocid="tribe.about_section"
+        >
+          <SectionHeader>ABOUT</SectionHeader>
+          <p className="font-mono text-sm md:text-base text-foreground leading-relaxed whitespace-pre-wrap">
+            {tribe.description}
+          </p>
+        </section>
+      )}
+
+      {/*════════════════════════════════════════════════════════════
           OVERVIEW — two-row tile grid
       ════════════════════════════════════════════════════════════ */}
       <section className="mb-6" data-ocid="tribe.overview_section">
         <SectionHeader>OVERVIEW</SectionHeader>
-        {/* Row 1: RANK · SCORE · MEMBERS — flex-row on ALL screen sizes so all 3 fit */}
+        {/* Row 1: RANK · SKORE · MEMBERS — flex-row on ALL screen sizes so all 3 fit */}
         <div className="flex flex-row gap-2 mb-3">
           <StatTile
             label="RANK"
@@ -435,9 +384,9 @@ export function PublicTribePage() {
             valueColor="text-[#00ff41]"
           />
           <StatTile
-            label="SCORE"
+            label="SKORE"
             value={
-              tribeLeaderboardScore > 0 ? tribeLeaderboardScore.toString() : "—"
+              tribeLeaderboardScore > 0 ? tribeLeaderboardScore.toFixed(2) : "—"
             }
             unit="AK69"
             valueColor="text-[#00ff41]"
@@ -462,7 +411,7 @@ export function PublicTribePage() {
               minimumFractionDigits: 2,
               maximumFractionDigits: 2,
             })}
-            unit="AKK"
+            unit="All Time"
           />
         </div>
       </section>

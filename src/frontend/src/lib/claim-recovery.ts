@@ -16,10 +16,13 @@
 // - The backend's 15s background timer verifies #pending (burn) and
 //   #pendingFee (fee) claims. The frontend NEVER marks these failed on its
 //   own — Re-check buttons just force an immediate verification pass.
-// - ageOut: a #pending claim older than 35 min transitions #failed
-//   (backend-side); the UI reflects whatever the backend reports.
+// - No expiry: claims NEVER age out (`grit.mo` cleanupExpiredClaims is a
+//   no-op). #pending stays #pending until the burn verifies or the backend
+//   reports a definitive on-chain failure; the UI reflects whatever the
+//   backend reports.
 
 import { type ClaimRecord, ClaimStatus, isPendingFee } from "../types";
+import { fetchDexScreenerPrice } from "../utils/dexscreener";
 
 export type ClaimAction =
   | { kind: "verifying_burn"; label: "Confirming burn" }
@@ -27,7 +30,6 @@ export type ClaimAction =
   | { kind: "pay_fee"; label: "Pay Fee" }
   | { kind: "verifying_fee"; label: "Confirming fee" }
   | { kind: "recheck_fee"; label: "Re-check Fee" }
-  | { kind: "retry_fee"; label: "Retry Fee" }
   | { kind: "burn_failed"; label: "Burn Failed" }
   | { kind: "earned"; label: "GRIT Earned" }
   | { kind: "retry_claim"; label: "Retry Claim" }
@@ -41,21 +43,25 @@ export function deriveClaimAction(claim: ClaimRecord): ClaimAction {
 
     case ClaimStatus.failed: {
       // Backend #failed covers BOTH definitive-failure flavors:
-      //   - burn could not be verified on-chain (burn tx failed/reverted,
-      //     or aged out after 35 min of PENDING) → "Burn Failed"
-      //   - fee verification failed definitively (binding mismatch etc.)
-      //     Both recover the same way: Retry Claim re-submits and re-runs
-      // verification. The label distinguishes them for the user:
-      // amountBurned > 0 means the burn WAS verified → the failure was in
-      // the fee stage; amountBurned == 0 → the burn itself never verified.
+      //   - the BURN never verified on-chain (burn tx failed/reverted) →
+      //     amountBurned stays 0.0
+      //   - the burn DID verify and the FEE stage failed definitively
+      //     (binding mismatch, replaced/rejected fee, ...) → amountBurned > 0
+      //
+      // AKK-CRIT-7: the two flavors recover DIFFERENTLY. Re-sending the same
+      // doomed fee tx was the fee-stage dead end: Retry Claim submitted
+      // claim.feeTxHash ?? "" and the backend refused every non-#pendingFee
+      // status — a deterministic failure loop whose only exit was a new burn.
+      //   - burn verified → Pay Fee, with a NEW fee hash: the backend's
+      //     retryFeeClaim now accepts a #failed claim whose burn verified
+      //     (stores the new hash, #pendingFee rescue, then #verified credit).
+      //   - burn never verified → Retry Claim: re-initiate the claim (the
+      //     backend resurrects the record and re-verifies the burn; a fee
+      //     could not be priced on it anyway).
       const burnVerified = claim.amountBurned > 0;
       if (burnVerified) {
-        return { kind: "retry_claim", label: "Retry Claim" };
+        return { kind: "pay_fee", label: "Pay Fee" };
       }
-      // Burn never verified: the user's mapping names this "Burn Failed"
-      // (no action) — but the Retry Claim recovery still applies (re-check
-      // can rescue a slow-indexed burn). Use the retry_claim kind with a
-      // distinct status label; the button itself reads "Retry Claim".
       return { kind: "retry_claim", label: "Retry Claim" };
     }
 
@@ -108,9 +114,39 @@ export function deriveClaimAction(claim: ClaimRecord): ClaimAction {
 
 /** True when the action requires the wallet (enables/disables buttons). */
 export function actionNeedsWallet(action: ClaimAction): boolean {
-  return (
-    action.kind === "pay_fee" ||
-    action.kind === "retry_fee" ||
-    action.kind === "retry_claim"
-  );
+  return action.kind === "pay_fee" || action.kind === "retry_claim";
+}
+
+/**
+ * Shown when the live price cannot be established for a recovery fee send.
+ * Never send a fee the backend cannot size-check — the same fail-closed rule
+ * as the zero-usdValue guard it replaces.
+ */
+export const LIVE_PRICE_UNAVAILABLE_MSG =
+  "Live price unavailable — try again in a moment; sending a fee now would be mis-sized.";
+
+/**
+ * AKK-CRIT-10: size a recovery fee the way the BACKEND checks it.
+ *
+ * retryFeeClaim floors a new fee against the CURRENT oracle price of the
+ * on-chain confirmed burn amount (grit-api.mo `usdValueRetry = amountBurned ×
+ * effectivePrice`), so the frontend must size the send from
+ * `amountBurned × live price` at send time. The stored claim-time `usdValue`
+ * goes stale on any price move — after a >7% rise a fee sized from it fails
+ * the backend's underpaid floor even though the send was "correct" at claim
+ * time (the AKK-CRIT-3 sizing rule used the stored value; this replaces it).
+ *
+ * Returns null when the live price is unavailable (fetch failed or <= 0).
+ * Callers MUST NOT send a fee in that case and should surface
+ * LIVE_PRICE_UNAVAILABLE_MSG instead.
+ */
+export async function liveBurnValueUsd(
+  claim: ClaimRecord,
+): Promise<number | null> {
+  // Per-claim fetch with the claim's own chain: the shared util prefers pairs
+  // on that chain (and falls back to base-token-true pairs elsewhere).
+  const price = await fetchDexScreenerPrice(claim.tokenAddress, claim.chain);
+  if (price === null || !(price > 0)) return null;
+  const value = Number(claim.amountBurned) * price;
+  return value > 0 ? value : null;
 }

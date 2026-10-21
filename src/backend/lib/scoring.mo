@@ -316,7 +316,48 @@ module {
     total;
   };
 
+  /// Membership-windowed tribe totals: Σ gritSpent / Σ akkWon over every
+  /// stored tribe snapshot for this tribe (alltime — no window parameter).
+  ///
+  /// The daily tribeSnapshots are written by applyBlock at block time through
+  /// TribeLib.tribeIdAt, so each raw already encodes the membership window:
+  /// a block counts for the tribe the contributor belonged to WHEN THE BLOCK
+  /// CLOSED. Unlike TribeLib.getTribeLiveStats / getTribeAkkFromHistory —
+  /// which sum over CURRENT members only, shrinking when a member leaves and
+  /// absorbing a joiner's entire pre-join history — these totals are a plain
+  /// read of immutable raws and never move after the fact.
+  public func tribeWindowedTotals(
+    state   : State,
+    tribeId : TribeTypes.TribeId,
+  ) : { totalGrit : Nat; totalAkk : Nat } {
+    var totalGrit : Nat = 0;
+    var totalAkk : Nat = 0;
+    for ((_, snap) in state.tribeSnapshots.entries()) {
+      if (snap.tribeId == tribeId) {
+        totalGrit += snap.gritSpent;
+        totalAkk += snap.akkWon;
+      };
+    };
+    { totalGrit; totalAkk };
+  };
+
   // ─── Leaderboards ───────────────────────────────────────────────────────────
+
+  /// Total number of registered players: profiles with a non-empty username.
+  /// Independent of the top-9 leaderboard window and of player scores.
+  public func playerCount(profileState : ProfileLib.State) : Nat {
+    var count : Nat = 0;
+    for ((_, profile) in profileState.profiles.entries()) {
+      if (profile.username != "") { count += 1 };
+    };
+    count;
+  };
+
+  /// Total number of tribes on the network, regardless of member count.
+  /// Independent of the top-6 leaderboard window.
+  public func tribeCount(tribeState : TribeLib.State) : Nat {
+    tribeState.tribes.size();
+  };
 
   /// Top 9 players (username required, score > 0) for the given timescale.
   public func getTopPlayers(
@@ -334,8 +375,8 @@ module {
     };
     let sorted = scored.sort(
       func((a, _) : (Float, Principal), (b, _) : (Float, Principal)) : { #less; #equal; #greater } {
-        if (b > a) #less
-        else if (b < a) #greater
+        if (a > b) #less
+        else if (a < b) #greater
         else #equal;
       }
     ).toArray();
@@ -390,8 +431,8 @@ module {
     };
     let sorted = scored.sort(
       func((a, _) : (Float, TribeTypes.Tribe), (b, _) : (Float, TribeTypes.Tribe)) : { #less; #equal; #greater } {
-        if (b > a) #less
-        else if (b < a) #greater
+        if (a > b) #less
+        else if (a < b) #greater
         else #equal;
       }
     ).toArray();
@@ -444,8 +485,8 @@ module {
     };
     let sorted = scored.sort(
       func((a, _) : (Float, Principal), (b, _) : (Float, Principal)) : { #less; #equal; #greater } {
-        if (b > a) #less
-        else if (b < a) #greater
+        if (a > b) #less
+        else if (a < b) #greater
         else #equal;
       }
     ).toArray();
@@ -477,8 +518,8 @@ module {
     };
     let sorted = scored.sort(
       func((a, _) : (Float, TribeTypes.TribeId), (b, _) : (Float, TribeTypes.TribeId)) : { #less; #equal; #greater } {
-        if (b > a) #less
-        else if (b < a) #greater
+        if (a > b) #less
+        else if (a < b) #greater
         else #equal;
       }
     ).toArray();
@@ -506,12 +547,6 @@ module {
       };
     };
     total;
-  };
-
-  /// Retained endpoint name for frontend compatibility. Semantics updated:
-  /// returns the cumulative Σ(all-time player scores) stockpile.
-  public func getHistoryBasedAk69Stockpile(state : State) : Float {
-    getTotalAk69Score(state);
   };
 
   // ─── Streak maintenance ─────────────────────────────────────────────────────

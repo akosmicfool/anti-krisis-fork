@@ -95,11 +95,11 @@ import {
   useSetMinerCreationFee,
   useSetNftGate,
 } from "../hooks/use-backend";
-import { useTestScore } from "../hooks/use-test-score";
 import type { AllowlistedToken, Chain } from "../types";
 import {
   AuditAction,
   CHAIN_LABELS,
+  UNSUPPORTED_CHAIN_MSG,
   formatUSDValue,
   getChainId,
   truncateAddress,
@@ -176,118 +176,6 @@ function CreditAbandonedMintsSection() {
           </span>
         )}
       </div>
-    </div>
-  );
-}
-
-// ─── ScoreOverrideSection ────────────────────────────────────────────────────
-function ScoreOverrideSection() {
-  const {
-    testScore,
-    setTestScore,
-    clearTestScore,
-    testBadgeLevel,
-    testBadgeName,
-  } = useTestScore();
-  const [customInput, setCustomInput] = useState("");
-
-  const PRESETS = [
-    { label: "PLAYER (690)", value: 690 },
-    { label: "SUPER PLAYER (6,900)", value: 6900 },
-    { label: "ALPHA PLAYER (69,000)", value: 69000 },
-  ] as const;
-
-  const handleSetCustom = () => {
-    const n = Number(customInput);
-    if (!Number.isFinite(n) || n < 0) return;
-    setTestScore(n);
-    setCustomInput("");
-  };
-
-  return (
-    <div className="space-y-6">
-      <div>
-        <h2 className="font-mono text-base uppercase tracking-widest text-foreground font-semibold">
-          SCORE OVERRIDE
-        </h2>
-        <p className="text-muted-foreground text-sm mt-1">
-          Set a test AK69 score to simulate badge thresholds. For testing only.
-        </p>
-      </div>
-
-      {/* Preset buttons */}
-      <div className="flex flex-wrap gap-2">
-        {PRESETS.map((p) => (
-          <button
-            key={p.value}
-            type="button"
-            onClick={() => setTestScore(p.value)}
-            data-ocid={`admin.test_score_preset.${p.value}`}
-            className="font-mono text-xs uppercase tracking-widest px-3 py-1.5 border border-primary text-primary bg-transparent hover:bg-primary/10 transition-colors duration-150"
-          >
-            {p.label}
-          </button>
-        ))}
-      </div>
-
-      {/* Custom input row */}
-      <div className="flex items-center gap-2">
-        <label
-          htmlFor="custom-score-input"
-          className="font-mono text-xs uppercase tracking-widest text-foreground whitespace-nowrap"
-        >
-          CUSTOM SCORE
-        </label>
-        <Input
-          id="custom-score-input"
-          type="number"
-          min={0}
-          placeholder="e.g. 12345"
-          value={customInput}
-          onChange={(e) => setCustomInput(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && handleSetCustom()}
-          data-ocid="admin.test_score_input"
-          className="w-36 font-mono text-sm h-8"
-        />
-        <button
-          type="button"
-          onClick={handleSetCustom}
-          data-ocid="admin.test_score_set_button"
-          className="font-mono text-xs uppercase tracking-widest px-3 py-1.5 border border-primary text-primary bg-transparent hover:bg-primary/10 transition-colors duration-150"
-        >
-          SET
-        </button>
-      </div>
-
-      {/* Reset button */}
-      <div>
-        <button
-          type="button"
-          onClick={clearTestScore}
-          data-ocid="admin.test_score_reset_button"
-          className="font-mono text-xs uppercase tracking-widest px-3 py-1.5 border border-destructive text-destructive bg-transparent hover:bg-destructive/10 transition-colors duration-150"
-        >
-          RESET TO REAL SCORE
-        </button>
-      </div>
-
-      {/* Status line */}
-      {testScore !== null ? (
-        <p
-          className="font-mono text-sm text-primary"
-          data-ocid="admin.test_score_status"
-        >
-          Test score active: {testScore.toLocaleString()} →{" "}
-          {testBadgeLevel > 0 ? testBadgeName : "No badge"}
-        </p>
-      ) : (
-        <p
-          className="font-mono text-sm text-muted-foreground"
-          data-ocid="admin.test_score_status"
-        >
-          No test override active.
-        </p>
-      )}
     </div>
   );
 }
@@ -605,6 +493,12 @@ function AddTokenModal({ open, onClose }: AddTokenModalProps) {
     setFetchError(null);
     try {
       const chainId = getChainId(form.chain as Chain);
+      if (chainId === null) {
+        // Finding #18: no chain id = this build can't burn on that chain.
+        // Fail loudly instead of probing a guessed RPC (was: chain 1).
+        setFetchError(UNSUPPORTED_CHAIN_MSG);
+        return;
+      }
       const details = await fetchTokenDetails(
         form.tokenAddress as `0x${string}`,
         chainId,
@@ -1876,7 +1770,7 @@ function GritIssuanceRateSection() {
                   </Label>
                   <p className="text-xs text-muted-foreground mt-0.5 mb-1.5">
                     Number of GRIT issued per $1 of token burned. Default:
-                    1,000,000,000,000 (1 trillion)
+                    100,000,000,000 (100 billion)
                   </p>
                   <div className="relative">
                     <Input
@@ -3055,7 +2949,6 @@ export function AdminPage() {
         </TabsContent>
 
         <TabsContent value="testing" className="mt-6 space-y-8">
-          <ScoreOverrideSection />
           <div className="border-t border-green-900/30 pt-6">
             <CreditAbandonedMintsSection />
           </div>

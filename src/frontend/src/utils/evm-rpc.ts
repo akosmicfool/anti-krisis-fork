@@ -1,12 +1,13 @@
+import { TX_INDEX_RPCS } from "../lib/kvcm-retirement";
+
 /**
- * Shared Ethereum RPC endpoint list.
- * Used by WalletsAndBalances, BurnPage, and AdminPage for Ethereum contract reads.
- * Ordered by reliability: llamarpc (high throughput) → publicnode (reliable fallback)
- * → ankr (public, good uptime) → cloudflare-eth (last resort).
+ * Shared Ethereum RPC endpoint list for contract reads (WalletsAndBalances,
+ * BurnPage, AdminPage, AcquireSection, useNftOwnership).
+ *
+ * Single-sourced from TX_INDEX_RPCS (kvcm-retirement.ts) — the canonical set
+ * aligned with the backend's fee verifier. The retired
+ * llamarpc/publicnode/ankr/cloudflare-eth list this file used to carry served
+ * stale browser reads (ankr is key-gated → result:null, cloudflare-eth
+ * result:null, publicnode 403s canister-adjacent traffic).
  */
-export const ETH_RPC_ENDPOINTS: readonly string[] = [
-  "https://eth.llamarpc.com",
-  "https://ethereum.publicnode.com",
-  "https://rpc.ankr.com/eth",
-  "https://cloudflare-eth.com",
-];
+export const ETH_RPC_ENDPOINTS: readonly string[] = TX_INDEX_RPCS[1];

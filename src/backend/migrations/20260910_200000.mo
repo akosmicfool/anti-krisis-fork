@@ -450,9 +450,9 @@ module {
         minerCreationFees = old.miningState.minerCreationFees;
         blockHistory = old.miningState.blockHistory;
         var lastBlockWasEmpty = old.miningState.lastBlockWasEmpty;
-        pendingMints = List.map<MintRetryEntryOld, MintRetryEntry>(old.miningState.pendingMints, migrationUpgradeEntry);
+        pendingMints = old.miningState.pendingMints.map(migrationUpgradeEntry);
         mintedBlockIds = old.miningState.mintedBlockIds;
-        abandonedMints = List.map<MintRetryEntryOld, MintRetryEntry>(old.miningState.abandonedMints, migrationUpgradeEntry);
+        abandonedMints = old.miningState.abandonedMints.map(migrationUpgradeEntry);
         var totalMintRetried = old.miningState.totalMintRetried;
         var totalMintSucceeded = old.miningState.totalMintSucceeded;
         var totalMintAbandoned = old.miningState.totalMintAbandoned;

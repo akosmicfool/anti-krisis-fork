@@ -36,6 +36,28 @@ module {
     var nftGateEnabled : Bool;
   };
 
+  /// FIX-16: pure decision for the burn TIME-WINDOW gate. The fields are
+  /// written by setLaunchGate (mixins/allowlist-api.mo) and were previously
+  /// read by nothing — config theater. Both paid entry points (initiateClaim
+  /// in grit-api.mo, createMiner in mining-api.mo) call this next to their
+  /// launch-time gate.
+  ///
+  /// Returns true when the action is ALLOWED:
+  ///   - gate disabled              → open (the window is opt-in)
+  ///   - enabled, valid window      → open iff start <= nowNs <= end (inclusive)
+  ///   - enabled, inverted window   → CLOSED (fail closed: a malformed window
+  ///     must never read as permanently open)
+  ///
+  /// `nowNs` is Time.now() (nanoseconds); the stored gate times are Unix
+  /// epoch milliseconds (admin/frontend convention, same as launchTime).
+  public func burnWindowOpen(gate : GateState, nowNs : Int) : Bool {
+    if (not gate.gateEnabled) { return true };
+    if (gate.gateStartTime >= gate.gateEndTime) { return false };
+    let startNs : Int = gate.gateStartTime * 1_000_000;
+    let endNs : Int = gate.gateEndTime * 1_000_000;
+    nowNs >= startNs and nowNs <= endNs;
+  };
+
   public type State = {
     tokens   : List.List<Types.AllowlistedToken>;
     auditLog : List.List<Types.AuditLogEntry>;
@@ -44,7 +66,7 @@ module {
   /// W1B: fresh empty admin list (test helper — an AdminState value cannot be
   /// constructed outside the module because List identity matters).
   public func emptyAdmins() : List.List<Principal> {
-    List.empty<Principal>();
+    List.empty();
   };
 
   public func isAdmin(adminState : AdminState, caller : Principal) : Bool {
@@ -81,6 +103,44 @@ module {
 
   public func getAdmins(adminState : AdminState) : [Principal] {
     adminState.admins.toArray();
+  };
+
+  // ── GRIT issuance-rate seeding (2026-10-20 incident fix) ─────────────────
+  //
+  // 100B GRIT per $1.00 burned is the protocol default (the AdminState comment
+  // above has said so since the field was added).
+  public let DEFAULT_GRIT_ISSUANCE_RATE : Nat = 100_000_000_000;
+  // The value the v340–v379 boot seed forced on every boot. Kept ONLY so the
+  // one-time repair below can recognise (and replace) it.
+  public let LEGACY_BOOT_DEFAULT_RATE : Nat = 1_000_000_000_000;
+
+  /// Boot seed — write the default ONLY into a pristine field.
+  ///
+  /// The old boot code did a plain `adminState.gritIssuanceRate := 1e12` on
+  /// every upgrade. That reverted an admin override on the next backend push,
+  /// including a value the owner had already frozen with setLaunched(): live
+  /// was locked at 100B and the next promotion silently rewrote it to 1T with
+  /// no way to set it back (setGritIssuanceRate traps once isLaunched).
+  /// Seeding must never resurrect a value the admin — or the launch lock —
+  /// has taken ownership of.
+  public func seedGritIssuanceRate(adminState : AdminState) {
+    if (not adminState.isLaunched and adminState.gritIssuanceRate == 0) {
+      adminState.gritIssuanceRate := DEFAULT_GRIT_ISSUANCE_RATE;
+    };
+  };
+
+  /// One-time repair (seedVersion-gated in main.mo): replace the legacy boot
+  /// default that older boots forced onto every canister. A rate the admin
+  /// chose that is NOT the legacy default is left untouched; a deliberate
+  /// 1T choice is indistinguishable from the stomp and is corrected (owner
+  /// decision 2026-10-20: 100B is the launch value).
+  public func repairLegacyBootDefaultRate(adminState : AdminState) : Bool {
+    if (adminState.gritIssuanceRate == LEGACY_BOOT_DEFAULT_RATE) {
+      adminState.gritIssuanceRate := DEFAULT_GRIT_ISSUANCE_RATE;
+      true
+    } else {
+      false
+    }
   };
 
   // ── W1B: atomic secure fee configuration ──────────────────────────────────

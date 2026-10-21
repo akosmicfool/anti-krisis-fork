@@ -46,6 +46,33 @@ caffeine preview --build --project .                 # cloud build + draft uploa
   `git fetch && git reset --hard origin/main` to re-sync.
 - Local edits go up only via `caffeine preview`; pulling from GitHub does not deploy.
 
+## Upload sizing & failure taxonomy (2026-10-08)
+
+- **The upload package is `caffeine.toml [workspace].include` — and an
+  UNANCHORED glob ships every nested worktree.** `include = ["src/**"]`
+  matched `.worktrees/*/src/**` too: 7 accumulated worktrees × ~25 MB →
+  `Project is too large to upload: Project files total 203.4 MB unpacked; the
+  upload limit is 50.0 MB` when pushing from the primary checkout (the era of
+  "smooth pushes from main" ended as worktrees accumulated — nothing else
+  changed). **Fixed by anchoring to `"/src/**"` (commit `feadd82`)** — the
+  size gate rejects in ~2 s and its error LISTS THE LARGEST FILES; read that
+  list first whenever uploads behave oddly. With the anchored include only
+  root `src/**` ships: knowledge/, contracts/, .pocketic/, akk-ledger/,
+  audit-docs/ are never packaged (the old "mv the weight out" dance is
+  historical insurance).
+- **`Upload failed: Network error … socket closed` has two variants** — it
+  lands server-side more often than not (ALWAYS verify
+  `caffeine_show_project` `lastDeployedDraftId` + the draft hash BEFORE any
+  retry — a retry after a landed push burns a version), and a genuine death
+  is the stale-token 401 → client refresh + internal retry → server hang →
+  ~60 s middlebox cut (per the v351 row: remedy = zero-gap
+  `caffeine auth device start --json` → `caffeine_local_setup({userCode})` →
+  `caffeine auth device complete && caffeine preview --build …` in one
+  command chain).
+- **Slow uplinks also die against foreground terminal caps (~420 s)** for a
+  17.5 MB POST: run `caffeine preview` as a BACKGROUND process and poll the
+  draft URL / `caffeine_show_project` instead of a foreground timed call.
+
 ## Motoko / icp-cli specifics
 
 - `icp identity principal` (NOT `whoami` — that's dfx syntax) shows a keypair principal;

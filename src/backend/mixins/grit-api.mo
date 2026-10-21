@@ -110,8 +110,8 @@ mixin (
     // For a native transfer there are no ERC-20 logs, so parseRpcResponse will return
     // #err("No ERC-20 Transfer log found ...") for a successful native tx.
     // We intercept that: if status was 0x1 (success), treat it as #ok.
-    let arr = response.toArray();
-    if (response.contains(#text "\"error\"")) { return #err("PENDING") };
+    // No "\"error\"" re-check here: the accept guard above only promotes
+    // error-free bodies, so `response` can never contain an "error" key.
     // Check result:null → pending
     let needle1 = "\"result\":null";
     let needle2 = "\"result\": null";
@@ -195,11 +195,13 @@ mixin (
   ///     sized on the frontend price, we check against the oracle price, so an
   ///     honest fee may sit below the oracle-computed ideal by up to that band.
   ///     The amount check runs ONLY when the FeePaid check is armed AND a
-  ///     native price is available (celo currently skips — no verified ERC-20
-  ///     CELO address); undecodable/missing event data stays PENDING (transient,
-  ///     never fraud) per the recovery model. Zero usdValue (oracle returned no
-  ///     price) or feePercent = 0 auto-pass — the amount check never blocks a
-  ///     claim the rest of the pipeline would credit.
+  ///     native price is available (every supported chain has a verified
+  ///     wrapped-native address — see nativeWrappedAddress; a price outage or
+  ///     an unknown chain skips the check, never fails a claim). Undecodable
+  ///     or missing event data stays PENDING (transient, never fraud) per the
+  ///     recovery model. Zero usdValue (oracle returned no price) or
+  ///     feePercent = 0 auto-pass — the amount check never blocks a claim the
+  ///     rest of the pipeline would credit.
   func verifyFeeBinding(
     feeTxHash : Text,
     burnTxHash : Text,
@@ -412,6 +414,15 @@ mixin (
       };
     };
 
+    // --- Burn time-window gate (FIX-16) ---
+    // setLaunchGate's window is now enforced, not just stored: outside
+    // [startTime, endTime] no burn claim is accepted. Disabled gate = open;
+    // an inverted/malformed window fails closed. Placed with the launch gate,
+    // before any duplicate work, so the whole entry point shares one policy.
+    if (not AllowlistLib.burnWindowOpen(gate, Time.now())) {
+      return #err("BURN_WINDOW_CLOSED: burns are only allowed during the configured time window.");
+    };
+
     // --- NFT gate ---
     // When enabled the frontend is expected to have verified ownership before submitting;
     // the backend enforces the gate flag here. Full on-chain NFT verification is done by
@@ -470,6 +481,18 @@ mixin (
     // background recheck would verify it twice and burn stats would
     // double-count it). The resurrected record is already #pending.
     if (not resurrected and not adopted) {
+      // FIX-6 (audit v341): cap the caller's claims awaiting verification.
+      // This is the only path that ADDS a claim row, and pre-fix ANY 64-hex
+      // hash was accepted here before any proof — free unauthenticated spam
+      // grew state without bound and kept the 15s recheck sweep verifying the
+      // spammer's records forever. The cap gates NEW rows only: the
+      // resurrection/adoption branches above rewrite EXISTING rows (they add
+      // nothing), and they are the recovery paths for the very users most
+      // likely to sit at the cap. The rendered count comes from the constant
+      // so the message and the cap can never drift apart.
+      if (GritLib.countAwaitingClaims(gritState, caller) >= GritLib.PENDING_CLAIMS_PER_CALLER) {
+        return #err("CLAIM_LIMIT_REACHED: you already have " # GritLib.PENDING_CLAIMS_PER_CALLER.toText() # " claims awaiting verification — wait for them to settle or use Re-check in Burn History.");
+      };
       let pendingRecord : GritTypes.ClaimRecord = {
         txHash = txHashCanon;
         feeTxHash     = ?feeTxHashCanon;
@@ -491,7 +514,7 @@ mixin (
     let rpcUrlOpt = VerifyLib.rpcUrlForChain(chain);
     switch (rpcUrlOpt) {
       case null {
-        GritLib.updateClaimStatus(gritState, txHashCanon, #failed, 0, null, null, null, null);
+        GritLib.updateClaimStatus(gritState, txHashCanon, #failed, 0, null, null, null, null, null);
         return #err("Unsupported chain: " # chain);
       };
       case (?rpcUrlsRaw) {
@@ -536,7 +559,7 @@ mixin (
               urlIdx += 1;
               attempt += 1;
             } else {
-              GritLib.updateClaimStatus(gritState, txHashCanon, #failed, 0, null, null, null, null);
+              GritLib.updateClaimStatus(gritState, txHashCanon, #failed, 0, null, null, null, null, null);
               return #err("HTTP outcall failed");
             };
           } else {
@@ -579,7 +602,7 @@ mixin (
           };
           case (#err("TX_FAILED")) {
             // Explicit on-chain revert — this is a definitive failure.
-            GritLib.updateClaimStatus(gritState, txHashCanon, #failed, 0, null, null, null, null);
+            GritLib.updateClaimStatus(gritState, txHashCanon, #failed, 0, null, null, null, null, null);
             #err("Verification failed: transaction was reverted on-chain");
           };
           case (#err(_reason)) {
@@ -605,8 +628,8 @@ mixin (
             // Fetch real-time price from DexScreener (sole source of truth for GRIT crediting).
             // Cross-check against frontendPrice: reject if deviation > 6.9%.
             // AKK-3: on oracle failure we FAIL CLOSED — the claim stays #pending and the
-            // background timer retries the price fetch (aged out after 35 min if the
-            // oracle never recovers). The frontend-supplied price is never used to mint.
+            // background timer keeps retrying the price fetch (claims never expire —
+            // there is no age-out). The frontend-supplied price is never used to mint.
             let backendPriceResult = try {
               await PriceOracle.fetchTokenPrice(normToken, chain, priceCache, transformPriceResponse);
             } catch (_) {
@@ -626,8 +649,9 @@ mixin (
                     // settled oracle price and credits when both sources
                     // agree. AKK-3's fail-closed posture is unchanged: the
                     // frontend price is never used to mint, and no credit
-                    // happens while prices disagree. Bounded by the 35-min
-                    // pending age-out. STILL_PROCESSING is a stable contract
+                    // happens while prices disagree. The claim stays #pending
+                    // (never expires — the timer keeps re-pricing).
+                    // STILL_PROCESSING is a stable contract
                     // token — the frontend keeps the modal in a processing
                     // state (step 3 spinner) and polls until settlement,
                     // instead of showing a terminal failure for a claim
@@ -641,7 +665,7 @@ mixin (
                 // AKK-3: fail closed — never price a claim from caller-supplied data.
                 // The claim stays #pending; the background recheck timer retries the
                 // price fetch and credits GRIT when a real oracle price is reachable
-                // (claims still pending after 35 min age out as #failed).
+                // (claims never expire — the retry continues until one is).
                 return #ok;
               };
             };
@@ -671,6 +695,7 @@ mixin (
                 null,
                 ?humanAmount,
                 ?usdValueAtVerification,
+                null,
                 null,
               );
               // Deferred-fee submission SUCCEEDED: claim created, burn
@@ -712,13 +737,15 @@ mixin (
                   Debug.print("[grit-api] initiateClaim transient binding error (kept pending): " # bindingMsg);
                   return #ok;
                 };
-                GritLib.updateClaimStatus(gritState, txHashCanon, #failed, 0, null, null, null, null);
+                GritLib.updateClaimStatus(gritState, txHashCanon, #failed, 0, null, null, null, null, null);
                 return #err(bindingMsg);
               };
               case (#ok) {
                 // Fee confirmed — credit GRIT and mark verified
                 let gritAmount = GritLib.calcGrit(rawAmountBurned, token.decimals, effectivePrice, admin.gritIssuanceRate);
-                GritLib.updateClaimStatus(gritState, txHashCanon, #verified, gritAmount, null, ?humanAmount, ?usdValueAtVerification, null);
+                // AKK-CRIT-1: the credit binds to the principal whose fee
+                // binding was just verified - never the possibly-rebound record.
+                GritLib.updateClaimStatus(gritState, txHashCanon, #verified, gritAmount, null, ?humanAmount, ?usdValueAtVerification, null, ?caller);
                 #ok;
               };
             };
@@ -730,7 +757,8 @@ mixin (
 
   /// Internal: re-check a single pending claim. Used by the background timer.
   /// Attempts one RPC call per available endpoint; if still pending, leaves claim unchanged.
-  /// Marks #failed only on explicit on-chain failure (TX_FAILED) or >30 min age.
+  /// Marks #failed only on explicit on-chain failure (TX_FAILED) — transient RPC
+  /// noise and not-yet-indexed txs stay #pending (claims never expire).
   func recheckClaim(record : GritTypes.ClaimRecord) : async () {
     let rpcUrlOpt = VerifyLib.rpcUrlForChain(record.chain);
     let rpcUrlsRaw = switch (rpcUrlOpt) { case null { return }; case (?u) { u } };
@@ -773,7 +801,7 @@ mixin (
         // recheck going as long as the claim exists.
       };
       case (#err("TX_FAILED")) {
-        GritLib.updateClaimStatus(gritState, record.txHash, #failed, 0, null, null, null, null);
+        GritLib.updateClaimStatus(gritState, record.txHash, #failed, 0, null, null, null, null, null);
       };
       case (#err(_)) {
         // Any other error (malformed response, unrecognised status, etc.) is
@@ -841,16 +869,23 @@ mixin (
             ?humanAmount,
             ?usdValueRecheckBurn,
             null,
+            null,
           );
           return;
         } else {
-          // AKK-10 amount check uses the STORED claim-time usdValue (the value
-          // the fee was actually sized against) — NOT usdValueRecheckBurn.
-          // This path auto-reprices the claim to the CURRENT oracle price for
-          // the GRIT credit, but the fee was paid at claim-time prices; using
-          // the repriced value would fail honest claims after a >7% price rise
-          // during the pending window (same class as the AKK-4b drift bug).
-          let feeResult = await verifyFeeBinding(feeTxHash, record.txHash, record.chain, record.claimant, ?record.usdValue, burnOwner);
+          // AKK-CRIT-2 comparator contract: the fee floor is checked against
+          // the FRESHEST value available on this path — `usdValueRecheckBurn`,
+          // computed just above from the re-verified burn and the CURRENT
+          // oracle price (guaranteed > 0: verifyBurn rejects zero-amount burns
+          // and the price fetch must have succeeded), and the same price the
+          // GRIT credit below uses. The stored `record.usdValue` is 0.0 for
+          // combined-path claims (initiateClaim stores a fee hash before the
+          // burn is ever priced) — passing that zero made amountCheckFloor
+          // return null (usd <= 0 → skip), silently disabling the AKK-10 floor
+          // while still crediting full GRIT. User-driven retryFeeClaim already
+          // sizes its check against the current price (:1186); this path now
+          // matches, closing the timer-vs-credit comparator asymmetry.
+          let feeResult = await verifyFeeBinding(feeTxHash, record.txHash, record.chain, record.claimant, ?usdValueRecheckBurn, burnOwner);
           switch (feeResult) {
             case (#err("TX_FAILED")) {
               // Fee tx definitively failed — ask user to retry
@@ -874,13 +909,15 @@ mixin (
               if (isTransient) {
                 Debug.print("[grit-api] recheckClaim transient binding error (kept pending): " # bindingMsg);
               } else {
-                GritLib.updateClaimStatus(gritState, record.txHash, #failed, 0, null, null, null, null);
+                GritLib.updateClaimStatus(gritState, record.txHash, #failed, 0, null, null, null, null, null);
                 Debug.print("[grit-api] recheckClaim binding fail: " # bindingMsg);
               };
             };
             case (#ok) {
               // Both burn and fee confirmed AND bound — credit GRIT
-              GritLib.updateClaimStatus(gritState, record.txHash, #verified, gritAmount, null, ?humanAmount, ?usdValueRecheckBurn, null);
+              // AKK-CRIT-1: the credit binds to the principal whose fee
+              // binding was just verified (the verify call above used it).
+              GritLib.updateClaimStatus(gritState, record.txHash, #verified, gritAmount, null, ?humanAmount, ?usdValueRecheckBurn, null, ?record.claimant);
             };
           };
         };
@@ -961,7 +998,7 @@ mixin (
     if (record.amountBurned <= 0.0) {
       switch (await recheckBurnAmount(record)) {
         case (#err("TX_FAILED")) {
-          GritLib.updateClaimStatus(gritState, record.txHash, #failed, 0, null, null, null, null);
+          GritLib.updateClaimStatus(gritState, record.txHash, #failed, 0, null, null, null, null, null);
           return;
         };
         case (#err(_)) { return }; // PENDING / transient RPC — retry next cycle
@@ -970,7 +1007,7 @@ mixin (
             case (#ok(p)) { humanAmount * p };
             case (#err(_)) { return }; // price needed to commit + size AKK-10 — retry next cycle
           };
-          GritLib.updateClaimStatus(gritState, record.txHash, #pendingFee, 0, null, ?humanAmount, ?usdNow, null);
+          GritLib.updateClaimStatus(gritState, record.txHash, #pendingFee, 0, null, ?humanAmount, ?usdNow, null, null);
           rec := { record with amountBurned = humanAmount; usdValue = usdNow };
         };
       };
@@ -1008,7 +1045,7 @@ mixin (
         if (isTransient) {
           Debug.print("[grit-api] recheckFeeClaim transient binding error (kept pendingFee): " # bindingMsg);
         } else {
-          GritLib.updateClaimStatus(gritState, record.txHash, #failed, 0, null, null, null, null);
+          GritLib.updateClaimStatus(gritState, record.txHash, #failed, 0, null, null, null, null, null);
           Debug.print("[grit-api] recheckFeeClaim binding fail: " # bindingMsg);
         };
       };
@@ -1039,7 +1076,9 @@ mixin (
         let gritAmount = GritLib.calcGrit(rawAmountBurned, token.decimals, effectivePrice, admin.gritIssuanceRate);
         // W1A: usdValue at fee-confirmation time commits atomically below
         let usdValueFeeConfirm : Float = rec.amountBurned * effectivePrice;
-        GritLib.updateClaimStatus(gritState, rec.txHash, #verified, gritAmount, null, null, ?usdValueFeeConfirm, null);
+        // AKK-CRIT-1: the credit binds to the principal whose fee binding was
+        // just verified (the verify call above used record.claimant).
+        GritLib.updateClaimStatus(gritState, rec.txHash, #verified, gritAmount, null, null, ?usdValueFeeConfirm, null, ?record.claimant);
       };
     };
   };
@@ -1052,8 +1091,7 @@ mixin (
     // since last check, based on claim age.
     //   0–3 min:   retry every 8 s
     //   3–10 min:  retry every 20 s
-    //   10–30 min: retry every 45 s
-    //   >30 min:   will be expired by recheckClaim itself
+    //   10+ min:   retry every 45 s (no upper bound — claims never expire)
     let pending = gritState.claims.filter(func(r : GritTypes.ClaimRecord) : Bool {
       if (r.status != #pending) { return false };
       let ageNs : Int = nowNs - r.timestamp;
@@ -1067,7 +1105,7 @@ mixin (
         // 3–10 min: check every 20 s → eligible every ~2 timer ticks (use modulo on age)
         (ageSeconds / 20) % 2 == 0
       } else {
-        // 10–30 min: check every 45 s → eligible every ~3 timer ticks
+        // 10+ min: check every 45 s → eligible every ~3 timer ticks
         (ageSeconds / 45) % 3 == 0
       }
     }).toArray();
@@ -1093,6 +1131,9 @@ mixin (
   };
 
   /// User: retry fee payment for a claim in #pendingFee status.
+  /// AKK-CRIT-7: also opens the Pay Fee door on a #failed claim whose BURN
+  /// verified (amountBurned > 0) — fee-stage death is recoverable with a NEW
+  /// fee hash; burn-failed claims stay refused (see the status switch below).
   /// Verifies the new feeTxHash on-chain; if confirmed, credits GRIT and marks claim #verified.
   public shared ({ caller }) func retryFeeClaim(
     txHash    : Text,
@@ -1121,8 +1162,9 @@ mixin (
     };
 
     // Claim must be awaiting a fee: #pendingFee (fee tried and failed/still
-    // confirming) or #pending with no fee hash yet (the modal's slow-burn
-    // background path — Pay Fee button completes it from Burn History).
+    // confirming), #pending with no fee hash yet (the modal's slow-burn
+    // background path — Pay Fee button completes it from Burn History), or
+    // (AKK-CRIT-7) a #failed claim whose BURN verified with a NEW fee hash.
     // #pending claims WITH a fee hash are mid-verification; Retry Claim, not
     // Pay Fee, is their path.
     switch (claim.status) {
@@ -1137,6 +1179,18 @@ mixin (
               return #err("Claim is already verifying — use Retry Claim instead");
             };
           };
+        }
+      };
+      // AKK-CRIT-7: fee-stage death is recoverable with a NEW fee hash —
+      // amountBurned > 0 means the burn stage succeeded and only the fee
+      // failed (retryFeeClaim stores the NEW hash via
+      // updateClaimToPendingFee and proceeds down the existing verify+credit
+      // path, whose CAS gates now admit the escape). A burn-failed claim
+      // (amountBurned == 0) keeps the old refusal: nothing on it can be
+      // priced, and re-initiating the claim is its path.
+      case (#failed) {
+        if (claim.amountBurned <= 0.0) {
+          return #err("Claim is not awaiting a fee payment");
         };
       };
       case _ { return #err("Claim is not awaiting a fee payment") };
@@ -1209,7 +1263,9 @@ mixin (
       case (#ok) {
         // Fee confirmed — new fee hash + usdValue + credit commit atomically below
         let gritAmount = GritLib.calcGrit(rawAmountBurned, token.decimals, effectivePrice, admin.gritIssuanceRate);
-        GritLib.updateClaimStatus(gritState, txHashCanon, #verified, gritAmount, null, null, ?usdValueRetry, ?feeTxHashCanon);
+        // AKK-CRIT-1: the credit binds to the caller (== claim.claimant, checked
+        // above) - the principal whose fee binding was just verified.
+        GritLib.updateClaimStatus(gritState, txHashCanon, #verified, gritAmount, null, null, ?usdValueRetry, ?feeTxHashCanon, ?caller);
         #ok(gritAmount);
       };
     };
@@ -1349,7 +1405,7 @@ mixin (
                 results.add((chain, "NON-JSON/BLOCKED " # ep # " → " # head));
               };
             } catch (e) {
-              results.add((chain, "ERROR " # ep # " → " # Error.message(e)));
+              results.add((chain, "ERROR " # ep # " → " # e.message()));
             };
           };
         };

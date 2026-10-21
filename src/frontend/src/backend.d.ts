@@ -45,6 +45,7 @@ export interface Profile {
     username: string;
     superpowers: string;
     displayName: string;
+    interests: string;
     born: string;
     socials: Array<SocialLink>;
     coverImage: string;
@@ -166,6 +167,7 @@ export interface PublicProfile {
     tribeId?: string;
     superpowers: string;
     displayName: string;
+    interests: string;
     born: string;
     socials: Array<SocialLink>;
     coverImage: string;
@@ -212,6 +214,7 @@ export interface ProfileInput {
     username: string;
     superpowers: string;
     displayName: string;
+    interests: string;
     born: string;
     socials: Array<SocialLink>;
     coverImage: string;
@@ -355,7 +358,6 @@ export interface backendInterface {
     getFeePercent(): Promise<number>;
     getFeeRecipient(): Promise<string | null>;
     getGritIssuanceRate(): Promise<bigint>;
-    getHistoryBasedAk69Stockpile(): Promise<number>;
     getIsLaunched(): Promise<boolean>;
     getLaunchGate(): Promise<{
         startTime: bigint;
@@ -370,6 +372,7 @@ export interface backendInterface {
         timeWindowEnabled: boolean;
         launchTimeEnabled: boolean;
     }>;
+    getLedgerAkkSupply(): Promise<bigint>;
     getLedgerMintingAccount(): Promise<Account | null>;
     getMinerCreationFees(): Promise<Array<ChainFeeEntry>>;
     getMintRetryStats(): Promise<{
@@ -386,6 +389,7 @@ export interface backendInterface {
     getMyTribe(): Promise<Tribe | null>;
     getPendingMints(): Promise<Array<MintRetryView>>;
     getPlayerBurnSummary(principal: Principal): Promise<Array<[string, number]>>;
+    getPlayerCount(): Promise<bigint>;
     getPlayerRank(principal: Principal, timescale: string): Promise<bigint | null>;
     getPlayerScore(principal: Principal, timescale: string): Promise<number>;
     getPlayerStreak(p: Principal): Promise<bigint>;
@@ -418,6 +422,7 @@ export interface backendInterface {
     getTribeAkkFromHistory(tribeId: TribeId): Promise<bigint>;
     getTribeBurnSummary(tribeId: string): Promise<Array<[string, number]>>;
     getTribeByName(name: string): Promise<Tribe | null>;
+    getTribeCount(): Promise<bigint>;
     getTribeLiveStats(tribeId: TribeId): Promise<{
         memberCount: bigint;
         totalGrit: bigint;
@@ -427,6 +432,10 @@ export interface backendInterface {
     getTribeMembersWithRoles(tribeId: TribeId): Promise<Array<TribeMemberWithRole>>;
     getTribeRank(tribeId: string, timescale: string): Promise<bigint | null>;
     getTribeScore(tribeId: string, timescale: string): Promise<number>;
+    getTribeWindowedTotals(tribeId: string): Promise<{
+        totalGrit: bigint;
+        totalAkk: bigint;
+    }>;
     getUserMiningStats(): Promise<{
         blocksMined: bigint;
         akkWon: bigint;

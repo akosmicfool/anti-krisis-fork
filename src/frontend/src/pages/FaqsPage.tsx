@@ -354,7 +354,7 @@ export function FaqsPage() {
       <div className="max-w-4xl mx-auto px-4 py-12">
         {/* Page Header */}
         <div className="mb-12 text-center">
-          <h1 className="font-display text-4xl md:text-5xl text-foreground uppercase tracking-widest mb-4">
+          <h1 className="font-display text-4xl sm:text-5xl text-foreground uppercase tracking-widest mb-4">
             FAQs
           </h1>
           <div className="h-px w-24 bg-accent mx-auto" />
@@ -365,7 +365,7 @@ export function FaqsPage() {
           {faqData.map((category) => (
             <section key={category.title} className="space-y-4">
               {/* Category Header */}
-              <h2 className="font-display text-2xl md:text-3xl text-accent uppercase tracking-widest border-b border-border pb-2">
+              <h2 className="font-display text-3xl text-accent uppercase tracking-widest border-b border-border pb-2">
                 {category.title}
               </h2>
 
@@ -388,7 +388,7 @@ export function FaqsPage() {
                         aria-expanded={isOpen}
                         data-ocid={`faq.question_button.${category.title.toLowerCase()}.${idx + 1}`}
                       >
-                        <span className="font-body text-sm md:text-base text-foreground pr-4">
+                        <span className="font-body text-sm md:text-base text-accent pr-4">
                           {item.question}
                         </span>
                         <ChevronDown
@@ -407,7 +407,7 @@ export function FaqsPage() {
                         }`}
                       >
                         <div className="px-4 pb-4 pt-1 border-t border-border/50">
-                          <p className="font-body text-sm text-muted-foreground leading-relaxed">
+                          <p className="font-body text-sm md:text-base text-muted-foreground leading-relaxed">
                             {item.answer}
                           </p>
                         </div>

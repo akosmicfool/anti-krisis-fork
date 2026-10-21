@@ -5,6 +5,7 @@ import {
   createRootRoute,
   createRoute,
   createRouter,
+  redirect,
 } from "@tanstack/react-router";
 import { Suspense, lazy } from "react";
 import { Layout } from "./components/Layout";
@@ -95,8 +96,15 @@ const akoreRoute = createRoute({
 
 const dashboardRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: "/dashboard",
+  path: "/akore/burnhistory",
   component: () => <BurnHistoryPage />,
+});
+
+// Legacy path kept alive: old links and bookmarks must not 404.
+const dashboardRedirectRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/dashboard",
+  beforeLoad: () => redirect({ to: "/akore/burnhistory" }),
 });
 
 const adminRoute = createRoute({
@@ -124,14 +132,21 @@ const publicTribeRoute = createRoute({
 
 const scoreRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: "/score",
+  path: "/skore",
   component: () => <ScorePage />,
 });
 
 const blocksHistoryRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: "/mining/blocks",
+  path: "/akore/blockhistory",
   component: () => <BlocksHistoryPage />,
+});
+
+// Legacy path kept alive: old links and bookmarks must not 404.
+const blocksHistoryRedirectRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/mining/blocks",
+  beforeLoad: () => redirect({ to: "/akore/blockhistory" }),
 });
 
 const aboutRoute = createRoute({
@@ -151,6 +166,8 @@ const routeTree = rootRoute.addChildren([
   publicTribeRoute,
   scoreRoute,
   blocksHistoryRoute,
+  dashboardRedirectRoute,
+  blocksHistoryRedirectRoute,
 ]);
 
 const router = createRouter({ routeTree });

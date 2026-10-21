@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Anti Krisis — Burn → Mine Flow Map (v341 deep audit)</title>
+<style>
+  :root { color-scheme: dark; }
+  body { color: var(--foreground); font-size: 13px; line-height: 1.5; }
+  h1 { font-size: 20px; margin: 0 0 2px; color: var(--accent); }
+  h2 { font-size: 15px; margin: 26px 0 8px; color: var(--accent); border-bottom: 1px solid var(--border); padding-bottom: 4px; }
+  h3 { font-size: 13px; margin: 14px 0 6px; }
+  .meta { color: var(--muted-foreground); font-size: 11px; margin-bottom: 14px; }
+  .lane { border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; margin: 10px 0; background: var(--card); }
+  .lane-title { font-weight: 700; color: var(--accent); margin-bottom: 6px; }
+  .flow { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .step { border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px; background: color-mix(in srgb, var(--accent) 8%, transparent); }
+  .step.bad { background: color-mix(in srgb, #ef4444 10%, transparent); border-color: #ef444455; }
+  .step.ok { background: color-mix(in srgb, #22c55e 10%, transparent); border-color: #22c55e55; }
+  .arrow { color: var(--muted-foreground); }
+  table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 12px; }
+  th, td { border: 1px solid var(--border); padding: 4px 7px; text-align: left; vertical-align: top; }
+  th { background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--accent); white-space: nowrap; }
+  td code, p code, li code { background: color-mix(in srgb, var(--muted-foreground) 15%, transparent); padding: 0 3px; border-radius: 3px; font-size: 11px; }
+  .sev { display: inline-block; font-weight: 700; font-size: 10px; padding: 1px 6px; border-radius: 3px; margin-right: 4px; }
+  .sev.crit { background: #ef4444; color: #fff; }
+  .sev.high { background: #f97316; color: #fff; }
+  .sev.med  { background: #eab308; color: #000; }
+  .sev.low  { background: #3b82f6; color: #fff; }
+  .sev.info { background: var(--muted-foreground); color: var(--card); }
+  .plain { color: var(--muted-foreground); }
+  .sm { font-size: 11px; }
+  .callout { border-left: 3px solid var(--accent); padding: 6px 10px; margin: 8px 0; background: color-mix(in srgb, var(--accent) 6%, transparent); }
+  .callout.red { border-left-color: #ef4444; background: color-mix(in srgb, #ef4444 7%, transparent); }
+  .cols { display: flex; gap: 14px; flex-wrap: wrap; }
+  .cols > div { flex: 1 1 320px; }
+  ul { margin: 4px 0; padding-left: 18px; }
+</style>
+</head>
+<body>
+<h1>Burn → Mine — Full Flow &amp; Failure Map</h1>
+<div class="meta">Base: origin/main <code>1216c76</code> (= shipped v341) · read-only deep audit 2026-09-16 · ground-truth trace + 5 independent model-pinned subagent audits, cross-verified · evidence = file:line</div>
+
+<h2>1 · Bird's-eye: who does what</h2>
+<div class="lane">
+  <div class="flow">
+    <span class="step">User wallet<br><span class="sm plain">(burn tx, fee tx, MINE fee tx)</span></span><span class="arrow">→</span>
+    <span class="step">Frontend<br><span class="sm plain">BurnPage · modal · Burn History · miner hook<br>TX_INDEX_RPCS · DexScreener · CoinGecko</span></span><span class="arrow">→</span>
+    <span class="step">Backend canister (Motoko)<br><span class="sm plain">grit-api (claims) · mining-api (miners)<br>15s recheck timer · 690s block cycle</span></span><span class="arrow">→</span>
+    <span class="step">Chain RPCs (per-chain sets)<br><span class="sm plain">receipts · tx objects · FeePaid events</span></span>
+  </div>
+  <div class="flow" style="margin-top:6px">
+    <span class="step">FeeCollector <code>0x6cBB…aCD2</code> ×4 chains<br><span class="sm plain">emits FeePaid(payer, binding, value)</span></span><span class="arrow">←</span>
+    <span class="step">DexScreener oracle<br><span class="sm plain">token USD + wrapped-native USD</span></span><span class="arrow">←</span>
+    <span class="step">GRIT ledger<br><span class="sm plain">internal balances map (grit.mo)</span></span>
+  </div>
+</div>
+<div class="callout"><b>Plain English:</b> you burn a token → the app asks the canister to track it → you pay a small fee on-chain → the canister re-reads the chain to prove both, then mints GRIT. A separate "create miner" action spends GRIT and charges its own fee. Everything the canister believes, it re-proves from public RPC data — there is no trust in the frontend.</div>
+
+<h2>2 · Phase A — Burn tx trigger → claim created</h2>
+<div class="lane">
+  <div class="lane-title">Happy path</div>
+  <div class="flow">
+    <span class="step">Click Burn<br><span class="sm">principal + fee-recipient guards</span></span><span class="arrow">→</span>
+    <span class="step">Wallet: burn tx<br><span class="sm">dead-address transfer / kVCM approve+retire (sim-gated)</span></span><span class="arrow">→</span>
+    <span class="step">15s fixed wait + ≤90s receipt poll<br><span class="sm plain">TX_INDEX_RPCS</span></span><span class="arrow">→</span>
+    <span class="step ok">initiateClaim(hash, feeHash=<code>""</code>)<br><span class="sm">claim row lands in Burn History BEFORE any fee</span></span><span class="arrow">→</span>
+    <span class="step ok">backend verifies burn on its own RPCs<br><span class="sm">commit amount + usdValue atomically</span></span>
+  </div>
+</div>
+<table>
+<tr><th>Failure at</th><th>What happens</th><th>User sees (exact)</th><th>Recovery</th></tr>
+<tr><td>Wallet rejects burn</td><td>catch → userRejected; nothing on-chain</td><td><i>"Burn step failed before the transaction was sent: User rejected…"</i></td><td>Retry freely</td></tr>
+<tr><td>Wallet relays accept-then-drop / tx unmined ≤90s</td><td><code>waitBurnReceipt</code> unsettled → claim submitted fee-less, modal to background</td><td><i>"Burn verification is taking longer… Burn History will show your claim as Fee Pending"</i></td><td>Pay Fee in Burn History; timer self-heals</td></tr>
+<tr><td>Burn reverts on-chain</td><td>terminal fail, fee never charged</td><td><i>"Burn Failed — the transaction failed on-chain. Try again with a fresh burn."</i></td><td>New burn</td></tr>
+<tr><td>initiateClaim errors (launch gate / allowlist / already claimed / HTTP outcall failed)</td><td>backend rejects; HTTP-outcall failure marks claim <code>#failed</code> (<code>grit-api.mo:533-541</code> — contradicts the transient rule)</td><td><i>"…failed before the transaction was sent: HTTP outcall failed"</i> etc.</td><td>Retry Claim (resurrection) — works but mislabeled as failure</td></tr>
+<tr><td>Oracle down at claim time</td><td>AKK-3 fail-closed: claim stays <code>#pending</code>, timer retries price</td><td><i>"Price service is temporarily unavailable — your claim stays pending…"</i></td><td>Automatic</td></tr>
+<tr><td>Frontend price ≠ oracle by &gt;6.9%</td><td>claim stays <code>#pending</code> (<code>STILL_PROCESSING</code>)</td><td><i>"STILL_PROCESSING: GRIT credit is being finalized — no action needed."</i></td><td>Automatic (no-expiry policy)</td></tr>
+<tr><td><b>Tab closed during the 15s+90s window</b> ⚠</td><td>burn hash lived only in React state — <b>no durable record, claim never created</b></td><td>nothing — burn silently missing from Burn History</td><td><b>None</b> (F-A1)</td></tr>
+</table>
+
+<h2>3 · Claim state machine (backend truth)</h2>
+<div class="lane">
+  <div class="flow">
+    <span class="step">#pending<br><span class="sm">amountBurned=0 until burn verifies</span></span><span class="arrow">→</span>
+    <span class="step">#pendingFee<br><span class="sm">fee hash stored (Pay Fee / retryFeeClaim)</span></span><span class="arrow">→</span>
+    <span class="step ok">#verified<br><span class="sm">CAS-guarded credit, idempotent</span></span>
+  </div>
+  <ul class="sm plain">
+    <li><code>#failed</code> reachable from both; only the original claimant can resurrect it with a (new) fee hash.</li>
+    <li>W4/F2 guard (<code>grit.mo:157-160</code>): a <code>#verified</code> transition with 0 GRIT <b>and</b> 0 amount is refused — claims can't be terminalized at zero.</li>
+    <li>W1A CAS guard (<code>grit.mo:113-201</code>): credit happens once, to <code>updated.claimant</code> at write time.</li>
+    <li>No expiry anywhere: every stuck state stays recoverable by design.</li>
+    <li>Adoption (W4/F4, <code>grit.mo:226-243</code>): a different caller may adopt any <b>uncredited</b> claim — anti-squatting relief. <span style="color:#ef4444">This is where the critical race lives (F-C1).</span></li>
+  </ul>
+</div>
+
+<h2>4 · Phase B — Fee tx → GRIT credit</h2>
+<div class="lane">
+  <div class="lane-title">Happy path</div>
+  <div class="flow">
+    <span class="step">Fee sized: burn USD × 0.69% ÷ native price<br><span class="sm plain">frontend CoinGecko · backend DexScreener</span></span><span class="arrow">→</span>
+    <span class="step">Wallet: native tx → collector<br><span class="sm">calldata = (principal, burn hash)</span></span><span class="arrow">→</span>
+    <span class="step">retryFeeClaim stores hash FIRST<br><span class="sm plain">then verifies</span></span><span class="arrow">→</span>
+    <span class="step ok">verifyFeeBinding<br><span class="sm">recipient + sender + calldata + FeePaid event + AKK-10 floor</span></span><span class="arrow">→</span>
+    <span class="step ok">GRIT credited (1T per $1, oracle-priced)</span>
+  </div>
+</div>
+<table>
+<tr><th>Failure at</th><th>What happens</th><th>User sees (exact)</th><th>Recovery</th></tr>
+<tr><td>Wallet rejects fee</td><td>claim already exists (claim-first)</td><td>amber <i>"Fee cancelled — your burn is saved in Burn History"</i>; badge "Fee Pending"</td><td>Pay Fee (single action)</td></tr>
+<tr><td>Fee tx slow to index</td><td>hash stored, claim <code>#pendingFee</code>; 5s poll re-drives + 15s timer</td><td><i>"Fee transaction not yet confirmed"</i> → processing state</td><td>Automatic</td></tr>
+<tr><td>Fee tx reverts</td><td>hash cleared (Bug-3), claim waits fee-less</td><td>Burn History: "Pay Fee"</td><td>Pay a new fee</td></tr>
+<tr><td>Binding mismatch (recipient/sender/calldata)</td><td>structural → <code>#failed</code></td><td><i>"BINDING_FAIL: fee tx recipient is not the configured fee wallet"</i> etc.</td><td>⚠ Retry Claim only re-sends the SAME doomed hash — no way to pay a fresh fee (F-B5)</td></tr>
+<tr><td>Fee underpaid (AKK-10 floor)</td><td>armed + priced → <code>#failed</code></td><td><i>"BINDING_FAIL: fee underpaid — paid X native, required ≥ Y"</i></td><td>Same dead end (F-B5); and recovery-path fees are mis-sized (F-B1)</td></tr>
+<tr><td>Native price unavailable / usd unknown</td><td>amount check <b>skipped</b> (documented fail-open)</td><td>silent</td><td>— (F-B4 accepted-risk family)</td></tr>
+<tr><td>FeePaid event missing (stale receipt)</td><td>PENDING — retriable, never fraud</td><td>"Confirming fee" until it lands</td><td>Automatic</td></tr>
+<tr><td>35-min frontend poll cap</td><td>modal gives up but backend claim lives forever</td><td>red <i>"Fee confirmation timed out. The platform fee did not settle within 35 minutes."</i> — while Burn History still offers working recovery; and "Retry Fee" actually sends a NEW payment despite the modal promising otherwise</td><td>Pay Fee in Burn History (first fee possibly orphaned — F-B6)</td></tr>
+</table>
+<div class="callout red"><b>Comparator-moment map (who checks what against when):</b> timer burn-recheck → stored claim-time usd (<code>grit-api.mo:853</code>) · user Pay Fee → current price (<code>:1186-1189</code>) · timer fee-recheck → stored (<code>:978</code>) · GRIT credit → current oracle price always. The <b>stale-zero</b> case (claim stored with a fee hash, burn verified later by the timer) makes the floor check skip entirely — critical finding F-C2.</div>
+
+<h2>5 · Phase C — Miner creation</h2>
+<div class="lane">
+  <div class="lane-title">Happy path</div>
+  <div class="flow">
+    <span class="step">Fee elected by wallet's current chain<br><span class="sm plain">feeWei from getMinerCreationFees (ETH/Base/OP 6.9e12 · Celo 6.9e16)</span></span><span class="arrow">→</span>
+    <span class="step">Wallet: tx → collector, calldata = (principal, "MINE")<br><span class="sm">tile persisted to localStorage BEFORE send</span></span><span class="arrow">→</span>
+    <span class="step">createMiner(feeChain, feeTxHash)<br><span class="sm">D1 armed-anywhere gate</span></span><span class="arrow">→</span>
+    <span class="step ok">receipt → FeePaid value+binding → tx fetch → payer match → MINE decode → exact-or-more floor</span><span class="arrow">→</span>
+    <span class="step ok">await-free tail: replay check → debit GRIT → insert miner → consume fee</span>
+  </div>
+</div>
+<table>
+<tr><th>Failure at</th><th>Classifier outcome</th><th>User sees</th><th>Recovery</th></tr>
+<tr><td>MINER_FEE_REPLAY</td><td>success</td><td>"Miner created!"</td><td>— (hash already used, miner exists)</td></tr>
+<tr><td>MINER_FEE_TX_FAILED / UNDERPAID / BINDING</td><td>failed_fee / action_needed</td><td>"The fee transaction reverted on-chain" / "paid X, required ≥ Y"</td><td>Pay a new fee</td></tr>
+<tr><td>MINER_FEE_TX_REQUIRED / CHAIN_UNSUPPORTED / NOT_CONFIGURED</td><td>action_needed (no infinite retry)</td><td>"A creation fee is required on this chain…" etc.</td><td>Manual — switch chain / admin</td></tr>
+<tr><td>PENDING / TX_ERROR / unknown</td><td>transient → 30s retry loop</td><td>tile "Confirming…"</td><td>Automatic — but deterministic errors like "Insufficient GRIT balance" also land here and retry forever silently (F-C4)</td></tr>
+<tr><td>Smart-contract wallet (Safe/forwarder) pays the fee</td><td>payer(event)=Safe ≠ tx.from=EOA → PENDING</td><td>"Still confirming — taking longer than usual" forever</td><td><b>None</b> (F-C5)</td></tr>
+<tr><td>feeRecipient ≠ collector (admin config drift)</td><td>event #missing tolerated → payer match fails → PENDING forever</td><td>same silent-forever tile</td><td><b>None</b> (F-C6)</td></tr>
+</table>
+
+<h2>6 · Cross-chain × cross-token matrix (condensed)</h2>
+<table>
+<tr><th>Protection</th><th>Ethereum</th><th>Base</th><th>Optimism</th><th>Celo</th></tr>
+<tr><td>Backend RPC set (JSON-shape guarded)</td><td>✅ 3</td><td>✅ 3</td><td>✅ 3</td><td>✅ 3</td></tr>
+<tr><td>Frontend TX_INDEX_RPCS (aligned, GAP-2 closed)</td><td>✅ 3</td><td>✅ 3</td><td>✅ 3</td><td>✅ 3</td></tr>
+<tr><td>Allowlist tokens</td><td>IMPT (18)</td><td>kVCM, axlREGEN (6), TGN</td><td>GIV</td><td>axlREGEN (6)</td></tr>
+<tr><td>Burn proof shape</td><td>Transfer→dead</td><td>kVCM: CarbonRetired+Σ→AAM · others →dead</td><td>Transfer→dead</td><td>Transfer→dead</td></tr>
+<tr><td>AKK-10 native price (WETH/CELO)</td><td>✅</td><td>✅</td><td>✅</td><td>✅ (stale comment says skip)</td></tr>
+<tr><td>Miner-creation fee (armed)</td><td>6.9e12</td><td>6.9e12</td><td>6.9e12</td><td>6.9e16</td></tr>
+<tr><td>Explorer map</td><td>✅ etherscan</td><td>✅ basescan</td><td>✅ optimistic.etherscan</td><td>✅ celoscan</td></tr>
+<tr><td>Fee grace window</td><td>5 min (L1)</td><td>90 s</td><td>90 s</td><td>90 s (it's an L1)</td></tr>
+<tr><td>Unknown-chain fallback</td><td colspan="4">⚠ silent Ethereum (<code>types.ts:112</code>, BurnHistory ladders, <code>waitBurnReceipt</code> settled:true) — F-S4</td></tr>
+<tr><td>Frontend price picker (dust-pair/base filter)</td><td colspan="4">⚠ backend has it, frontend <code>pickBestPair</code> does NOT — F-S2 (backend fixed this exact class 2026-08-28)</td></tr>
+<tr><td>Frontend RPC lists (5 independent copies)</td><td colspan="4">⚠ 3 of 5 still carry the retired llamarpc/publicnode/ankr set — F-S3</td></tr>
+</table>
+<div class="sm plain">arbitrum/polygon: RPC entries exist backend-side (1 endpoint each) but no allowlisted tokens — dead surface today, a footgun if a token is ever added (fee floor silently off: no wrapped-native mapping).</div>
+
+<h2>7 · Ranked findings (merged: 5 subagent audits × my ground-truth pass, deduped, evidence-verified)</h2>
+<table>
+<tr><th>#</th><th>Sev</th><th>Finding</th><th>Plain English</th><th>Technical (evidence)</th><th>Fix</th></tr>
+<tr><td>1</td><td><span class="sev crit">CRIT</span></td><td><b>Adoption race steals an in-flight credit</b></td>
+<td>A stranger watching the chain can adopt your pending claim during the seconds the robot is verifying your fee — the GRIT lands in <i>their</i> account while you paid burn + fee.</td>
+<td><code>grit.mo:226-243</code> rebinds claimant on any uncredited claim; credit pays <code>updated.claimant</code> at CAS-write time (<code>grit.mo:175-196</code>); adoption is synchronous at <code>grit-api.mo:439-453</code> while the victim's <code>retryFeeClaim</code>/<code>recheckFeeClaim</code> sits inside its <code>verifyFeeBinding</code> awaits; CAS only re-checks status, not claimant.</td>
+<td>Carry the proof-passing principal into <code>updateClaimStatus</code> and credit only if it still equals the stored claimant; forbid adopting claims carrying a fee hash.</td></tr>
+<tr><td>2</td><td><span class="sev crit">CRIT</span></td><td><b>AKK-10 fee floor skipped when the burn verifies via the timer (combined claim path)</b></td>
+<td>There's a back door where the "did you pay enough fee?" check silently skips — a crafted direct call mints full GRIT while paying ~zero fee. (Confirmed independently by two auditors.)</td>
+<td>Claim stored with fee hash + usdValue 0 (<code>grit-api.mo:472-488</code>); timer passes stale <code>record.usdValue=0.0</code> (<code>:853</code>); check gated on <code>usd > 0.0</code> (<code>:344-346</code>, <code>fee-amount.mo:149-161</code>); full credit from the real receipt amount (<code>:881-884</code>). Frontend never sends this shape; the canister endpoint is public.</td>
+<td>Pass <code>?usdValueRecheckBurn</code> (computed <code>:811</code>) — commit amount+usd before the fee check; treat <code>usd ≤ 0</code> as PENDING, not "no check".</td></tr>
+<tr><td>3</td><td><span class="sev crit">CRIT</span></td><td><b>Recovery-path fees sized from token count, not USD (~1/token-price error)</b></td>
+<td>When you pay a fee from Burn History or Recent Burns, the app multiplies your <i>token amount</i> by 0.69% instead of the dollar value — a 1000 kVCM burn charges ~71× the intended fee; expensive tokens underpay and get failed with the fee sunk.</td>
+<td><code>BurnHistoryPage.tsx:331</code>, <code>:412</code> and <code>BurnPage.tsx:1907</code> pass <code>Number(claim.amountBurned)</code> into <code>sendPlatformFee</code>, which computes <code>feeUsd × feeRate</code> (<code>use-wallet.ts:365-371</code>); the correct inline path passes <code>burnValueUsd</code> (<code>BurnPage.tsx:841-861</code>). Found by 3 independent auditors; verified.</td>
+<td>Pass <code>Number(claim.usdValue)</code>; rename the param to <code>burnValueUsd</code>.</td></tr>
+<tr><td>4</td><td><span class="sev crit">CRIT</span></td><td><b>Miner-fee replay key fails open + unvalidated hash into JSON-RPC body</b></td>
+<td>The "this fee was already used" check can silently stop working for a crafted hash string, so one real fee could mint unlimited miners. (Needs a live probe to confirm the JSON-injection precondition; the fail-open key alone is real.)</td>
+<td><code>mining-api.mo</code> never canonicalizes <code>feeTxHash</code> (no ClaimIdentity import — verified); raw hash interpolated into the RPC body (<code>verification.mo:39-47</code>, <code>:54-61</code>); <code>isMinerFeeConsumed</code>/<code>consumeMinerFee</code> no-op on canonicalization error (<code>mining.mo:606-618</code>) while the claim path canonicalizes first (<code>grit-api.mo:395</code>).</td>
+<td>Validate + canonicalize <code>feeTxHash</code> (32-byte hex) before ANY RPC; fail closed in <code>minerFeeKey</code> consumers.</td></tr>
+<tr><td>5</td><td><span class="sev high">HIGH</span></td><td><b>Disarming FeePaid silently disables the fee-amount floor</b></td>
+<td>If an admin ever uses the emergency disarm switch, the "did you pay enough?" check vanishes entirely — any dust payment buys full GRIT. (The miner path refuses instead — the claim path doesn't.)</td>
+<td><code>paidValueWei</code> only set inside <code>if (fee.requireFeePaidEvent)</code> (<code>grit-api.mo:245-260</code>); floor block requires <code>?paid</code> (<code>:344</code>); miner path guards (<code>mining-api.mo:127-129</code>).</td>
+<td>Enforce the floor from tx-level value when disarmed, or refuse fee-bearing claims while disarmed (mirror the miner path).</td></tr>
+<tr><td>6</td><td><span class="sev high">HIGH</span></td><td><b>Free unauthenticated claim spam + public sweep → permanent cycle drain</b></td>
+<td>Anyone on the internet can create unlimited fake claim records and force full verification sweeps forever — the robot does expensive chain lookups for nothing, forever, by design (no expiry).</td>
+<td>Record stored before any proof (<code>grit-api.mo:472-488</code>); shape-only validation (<code>claim-identity.mo:29-67</code>); <code>recheckPendingClaims</code> public (<code>:1049</code>); no expiry (<code>grit.mo:365-372</code>); serial per-claim awaits, no batch cap (<code>:1074-1082</code>). Found by 3 auditors.</td>
+<td>Require the receipt to exist before storing; cap per-sweep batch; per-caller pending limit; rate-limit the sweep.</td></tr>
+<tr><td>7</td><td><span class="sev high">HIGH</span></td><td><b>Fee-stage failure is a dead end — no way to pay a NEW fee</b></td>
+<td>If your fee fails for a structural reason (underpaid, wrong recipient), the only button re-runs the <i>same</i> failed payment proof. Your escape is a brand-new burn — real tokens destroyed twice.</td>
+<td><code>#failed</code> maps only to Retry Claim (<code>claim-recovery.ts:42-60</code>); <code>handleRetryClaim</code> re-sends <code>claim.feeTxHash ?? ""</code> — the old doomed hash (<code>BurnHistoryPage.tsx:376-380</code>, verified); <code>retryFeeClaim</code> refuses non-pending claims (<code>grit-api.mo:1128-1143</code>). Backend resurrection WOULD accept a fresh hash (<code>grit.mo:83-93</code>) — the UI never offers one.</td>
+<td>Offer Pay Fee for <code>#failed</code> claims with <code>amountBurned > 0</code>; resurrect with <code>feeTxHash: ""</code>.</td></tr>
+<tr><td>8</td><td><span class="sev high">HIGH</span></td><td><b>Frontend price picker lacks the backend's dust-pair/base-token filter</b></td>
+<td>The fee you're shown (and the sanity check) can be computed from a garbage price quote — the exact bug class that once priced kVCM 11× too high was fixed in the canister but not in the webpage.</td>
+<td><code>utils/dexscreener.ts:21-49</code> — highest-liquidity pair with any priceUsd; <code>baseToken.address</code> and chainId never checked; backend fixed this class (<code>price-oracle.mo:70-82,139</code>).</td>
+<td>Port the base-token + chainId filter (or consume the backend oracle).</td></tr>
+<tr><td>9</td><td><span class="sev high">HIGH</span></td><td><b>Adoption wipes paid-fee evidence → repeatable fee griefing</b></td>
+<td>The same adoption mechanic (fixing one attack) enables another: a griefer can repeatedly erase the record of your paid fee, forcing you to pay again each time.</td>
+<td>Adoption sets <code>feeTxHash := null</code> on claims that may carry a paid hash (<code>grit.mo:235-239</code>); the erased hash can never be re-verified (claimant-locked <code>grit-api.mo:1119-1121</code>).</td>
+<td>Restrict adoption to fee-less / #failed claims.</td></tr>
+<tr><td>10</td><td><span class="sev high">HIGH</span></td><td><b>Timer credits at current price while the floor used claim-time price</b></td>
+<td>The reward and the fee check can be priced at different moments — honest users can be failed after a price drop (fee sunk), and deliberate timing can tilt the ratio.</td>
+<td>Credit: current price (<code>grit-api.mo:807,883</code>, <code>:1027-1039</code>); floor: stored claim-time usd (<code>:853</code>, <code>:978</code>); user-driven retry: current (<code>:1186</code>).</td>
+<td>One comparator policy: floor at fee-payment-time price, credit at credit-time price, stored explicitly.</td></tr>
+<tr><td>11</td><td><span class="sev high">HIGH</span></td><td><b>No durable record of the burn before the claim exists</b></td>
+<td>Close the browser tab in the wrong 105-second window after burning and your burned tokens vanish from the app's view — no claim row, nothing to retry. (Miner attempts got localStorage persistence; burns didn't.)</td>
+<td>Hash only in React state (<code>BurnPage.tsx:756,830</code>); claim submitted only after 15s+≤90s (<code>:787-837</code>); no manual-hash recovery input anywhere.</td>
+<td>Persist {hash, token, chain} to localStorage before broadcasting + auto-resume; add "claim by hash" to Burn History.</td></tr>
+<tr><td>12</td><td><span class="sev high">HIGH</span></td><td><b>Smart-contract wallets can never create a miner</b></td>
+<td>If you pay the miner fee from a Safe/multisig, the robot forever says "still confirming" — the proof compares two different addresses that are legitimately different for contract wallets.</td>
+<td><code>feePaidPayerMatches(receipt, collector, feeTx.from)</code> (<code>mining-api.mo:175-178</code>): event payer = msg.sender (the Safe) vs tx.from = EOA executor → PENDING forever → transient retry loop.</td>
+<td>Accept the event payer as the sender identity (the collector's own attestation), as the claim path does for relayed txs.</td></tr>
+<tr><td>13</td><td><span class="sev med">MED</span></td><td>Deterministic createMiner errors retry forever silently</td><td>"Insufficient GRIT balance" and friends are unclassified → the tile retries every 30s forever with no message.</td><td><code>mining.mo:63-67</code> strings absent from <code>classifyCreateError</code> (<code>use-miner-creation.ts:184-210</code>) → transient.</td><td>Map every deterministic error to action_needed (the known pitfall).</td></tr>
+<tr><td>14</td><td><span class="sev med">MED</span></td><td>Boot re-seeding reverts admin config on every upgrade</td><td>Every canister upgrade silently resets the issuance rate and miner fees to the seeded defaults — an admin's live changes don't survive.</td><td><code>main.mo:245-280</code> plain assignments each boot; also bypasses the F1 allowlist guard (<code>mining-api.mo:662-682</code>).</td><td>Seed only when empty / behind seedVersion.</td></tr>
+<tr><td>15</td><td><span class="sev med">MED</span></td><td>kVCM retirement proof is fabricable</td><td>The "real carbon retirement" proof never checks WHICH contract emitted the event — a crafted contract can fake the shape (costs the tokens moved, so proof-strength not free money).</td><td><code>findRetirementLog</code> matches topic0 only, emitter unchecked (<code>verification.mo:1236-1331</code>); <code>sumAamTransfers</code> same (<code>:1336-1470</code>).</td><td>Require <code>log.address == aggregator/AAM</code>.</td></tr>
+<tr><td>16</td><td><span class="sev med">MED</span></td><td>Time-window burn gate never enforced backend-side</td><td>The admin's burn time-window config is dead code — the backend only knows launch/NFT gates, so the window is UI-only theater.</td><td><code>gate.gateEnabled/gateStartTime/gateEndTime</code> written (<code>allowlist-api.mo:208-218</code>), never read in claim/miner paths.</td><td>Enforce the window in initiateClaim + createMiner.</td></tr>
+<tr><td>17</td><td><span class="sev med">MED</span></td><td>Block-cycle timer can die permanently on one trap</td><td>The claim recheck timer got the crash-proof pattern; the mining block timer didn't — one unexpected error stops all block production until a manual upgrade.</td><td><code>main.mo:660-663</code> recurringTimer + re-throw (<code>:644-650</code>); repo documents the exact death mode (<code>:699-706</code>); rollover re-arms after the body (<code>:341-349</code>).</td><td>Fire-once re-arm-first + try/catch on the block cycle.</td></tr>
+<tr><td>18</td><td><span class="sev med">MED</span></td><td>Unknown chain silently becomes Ethereum; receipt wait fails open</td><td>Any unexpected chain name/spelling sends fees on Ethereum and skips the burn-receipt wait — a config typo becomes lost fees.</td><td><code>types.ts:112 ?? 1</code>; ladder defaults <code>:1</code> (<code>BurnHistoryPage.tsx:323-330,404-411</code>); <code>waitBurnReceipt</code> settled:true for unknown chains (<code>kvcm-retirement.ts:867-868</code>).</td><td>Reject unknown chains; fail closed on the receipt wait.</td></tr>
+<tr><td>19</td><td><span class="sev med">MED</span></td><td>Frontend/oracle divergence can fail honest fees permanently</td><td>The webpage prices ETH on CoinGecko, the canister's floor uses DexScreener pools — if they disagree beyond 7%, your correctly-sized fee is rejected and the money is sunk.</td><td><code>use-wallet.ts:36-47</code> CoinGecko vs <code>grit-api.mo:154-177</code> → DexScreener; 700bps tolerance (<code>fee-amount.mo:28</code>).</td><td>Compute the fee from the backend's own native price.</td></tr>
+<tr><td>20</td><td><span class="sev low">LOW</span></td><td>Drift/dead code family</td><td>Several comments promise protections or expiry rules that don't exist; a price cache is write-only; two explorer maps disagree on fallbacks; five RPC lists with three stale.</td><td><code>claim-recovery.ts:18-20</code> (35-min age-out myth) · <code>grit-api.mo:152-153</code> (celo-skip myth) · <code>use-wallet.ts:332</code> · priceCache write-only (<code>price-oracle.mo:42,62</code>) · <code>evm-rpc.ts:7-11</code> + <code>useNftOwnership.ts:8-13</code> dead sets · explorer maps <code>types.ts:116-126</code> vs <code>BurnHistoryPage.tsx:41-52</code> · unreachable error re-check <code>grit-api.mo:114</code> · dead <code>retry_fee</code> action.</td><td>Single-source each; delete dead code (repo hygiene rule).</td></tr>
+<tr><td>21</td><td><span class="sev info">INFO</span></td><td>Accepted risks (owner decisions on record)</td><td>DexScreener deepest-pool oracle is capital-manipulable (W2A/W2B descoped) · frontend 6.9% cross-check is caller-elected (3 of 4 call sites pass 0) · no minimum burn/dust floor · no second-fee-in-flight guard (double-pay orphans the first).</td><td><code>grit-api.mo:618</code> · <code>BurnPage.tsx:811</code> · fee sizing <code>grit-api.mo:1169</code> overwrite.</td><td>Owner call.</td></tr>
+</table>
+
+<h2>8 · What holds (verified sound — don't re-litigate)</h2>
+<ul>
+<li><b>Double-credit protection:</b> CAS guard re-reads authoritative status immediately before mutation, no await between (<code>grit.mo:113-201</code>) — repeated/concurrent verification is idempotent.</li>
+<li><b>Zero-credit terminalization:</b> W4/F2 refusal (<code>grit.mo:157-160</code>).</li>
+<li><b>Claim-first ordering:</b> the burn is always in Burn History before any fee is charged (<code>BurnPage.tsx:821-837</code>).</li>
+<li><b>Canonical identity:</b> one tx = one claim across all spellings; validate-before-outcall (<code>claim-identity.mo</code>).</li>
+<li><b>Fee↔miner payload separation:</b> 1+len+32 vs 1+len+4, mutually exclusive decoders (<code>verification.mo:291-318</code> vs <code>:930-972</code>) — a claim fee can never pay for a miner and vice versa.</li>
+<li><b>D1 armed-anywhere:</b> omitting/misspelling feeChain can't skip the miner gate (<code>mining-api.mo:95-131</code>, <code>mining.mo:550-591</code>).</li>
+<li><b>Miner-fee single use:</b> all awaits before one await-free tail (replay check → debit → insert → consume-on-success) (<code>mining-api.mo:212-233</code>).</li>
+<li><b>Self-healing claim timer:</b> fire-once re-arm-first + try/catch (<code>main.mo:723-736</code>) — one bad response can't kill it.</li>
+<li><b>AKK-10 decode:</b> FeePaid value from ABI head word 1, validated against live receipts (<code>fee-amount.mo:74-124</code>); zero-payment failure (F1 fix) when armed and priced.</li>
+<li><b>Transient-vs-structural discipline:</b> RPC artifacts keep claims pending; only structural mismatches fail (<code>grit-api.mo:698-717, :863-880, :990-1013</code>).</li>
+<li><b>Non-JSON RPC junk rejection</b> on both fee/receipt fetch paths (<code>verification.mo:775</code>, <code>grit-api.mo:95-96</code>).</li>
+<li><b>No-expiry recovery model:</b> every stuck claim stays user-recoverable; failed claims resurrectable by the original claimant only.</li>
+</ul>
+
+<h2>9 · Recommended fix order</h2>
+<div class="callout red"><b>Before any more main/live traffic:</b> F1 (adoption race) + F2 (usd=0 floor skip) + F4 (miner replay key) — all three are canister-side, small, and each is a direct money door. F3 (fee sizing) is a one-line frontend fix ×3 call sites — ship with the same push.</div>
+<div class="callout"><b>Next wave:</b> F5 (disarm floor), F7 (new-fee dead end), F8 (frontend price filter), F11 (durable burn record), F12 (Safe wallets), F6 (spam DoS). Then the MED drift/config items as a hygiene pass.</div>
+<div class="meta" style="margin-top:18px">Produced read-only. Tree <code>audit-burn-mine-ro</code> untouched. Companion ground-truth doc: <code>knowledge/burn-to-mine-flow-map.md</code>.</div>
+</body>
+</html>

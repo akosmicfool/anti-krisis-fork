@@ -158,6 +158,7 @@ export const PublicProfile = IDL.Record({
   'tribeId' : IDL.Opt(IDL.Text),
   'superpowers' : IDL.Text,
   'displayName' : IDL.Text,
+  'interests' : IDL.Text,
   'born' : IDL.Text,
   'socials' : IDL.Vec(SocialLink),
   'coverImage' : IDL.Text,
@@ -192,6 +193,7 @@ export const ProfileInput = IDL.Record({
   'username' : IDL.Text,
   'superpowers' : IDL.Text,
   'displayName' : IDL.Text,
+  'interests' : IDL.Text,
   'born' : IDL.Text,
   'socials' : IDL.Vec(SocialLink),
   'coverImage' : IDL.Text,
@@ -206,6 +208,7 @@ export const Profile = IDL.Record({
   'username' : IDL.Text,
   'superpowers' : IDL.Text,
   'displayName' : IDL.Text,
+  'interests' : IDL.Text,
   'born' : IDL.Text,
   'socials' : IDL.Vec(SocialLink),
   'coverImage' : IDL.Text,
@@ -343,7 +346,6 @@ export const idlService = IDL.Service({
   'getFeePercent' : IDL.Func([], [IDL.Float64], ['query']),
   'getFeeRecipient' : IDL.Func([], [IDL.Opt(IDL.Text)], ['query']),
   'getGritIssuanceRate' : IDL.Func([], [IDL.Nat], ['query']),
-  'getHistoryBasedAk69Stockpile' : IDL.Func([], [IDL.Float64], ['query']),
   'getIsLaunched' : IDL.Func([], [IDL.Bool], ['query']),
   'getLaunchGate' : IDL.Func(
       [],
@@ -370,6 +372,7 @@ export const idlService = IDL.Service({
       ],
       ['query'],
     ),
+  'getLedgerAkkSupply' : IDL.Func([], [IDL.Nat], []),
   'getLedgerMintingAccount' : IDL.Func([], [IDL.Opt(Account)], []),
   'getMinerCreationFees' : IDL.Func([], [IDL.Vec(ChainFeeEntry)], ['query']),
   'getMintRetryStats' : IDL.Func(
@@ -396,6 +399,7 @@ export const idlService = IDL.Service({
       [IDL.Vec(IDL.Tuple(IDL.Text, IDL.Float64))],
       ['query'],
     ),
+  'getPlayerCount' : IDL.Func([], [IDL.Nat], ['query']),
   'getPlayerRank' : IDL.Func(
       [IDL.Principal, IDL.Text],
       [IDL.Opt(IDL.Nat)],
@@ -464,6 +468,7 @@ export const idlService = IDL.Service({
       ['query'],
     ),
   'getTribeByName' : IDL.Func([IDL.Text], [IDL.Opt(Tribe)], ['query']),
+  'getTribeCount' : IDL.Func([], [IDL.Nat], ['query']),
   'getTribeLiveStats' : IDL.Func(
       [TribeId],
       [
@@ -489,6 +494,11 @@ export const idlService = IDL.Service({
       ['query'],
     ),
   'getTribeScore' : IDL.Func([IDL.Text, IDL.Text], [IDL.Float64], ['query']),
+  'getTribeWindowedTotals' : IDL.Func(
+      [IDL.Text],
+      [IDL.Record({ 'totalGrit' : IDL.Nat, 'totalAkk' : IDL.Nat })],
+      ['query'],
+    ),
   'getUserMiningStats' : IDL.Func(
       [],
       [
@@ -764,6 +774,7 @@ export const idlFactory = ({ IDL }) => {
     'tribeId' : IDL.Opt(IDL.Text),
     'superpowers' : IDL.Text,
     'displayName' : IDL.Text,
+    'interests' : IDL.Text,
     'born' : IDL.Text,
     'socials' : IDL.Vec(SocialLink),
     'coverImage' : IDL.Text,
@@ -798,6 +809,7 @@ export const idlFactory = ({ IDL }) => {
     'username' : IDL.Text,
     'superpowers' : IDL.Text,
     'displayName' : IDL.Text,
+    'interests' : IDL.Text,
     'born' : IDL.Text,
     'socials' : IDL.Vec(SocialLink),
     'coverImage' : IDL.Text,
@@ -812,6 +824,7 @@ export const idlFactory = ({ IDL }) => {
     'username' : IDL.Text,
     'superpowers' : IDL.Text,
     'displayName' : IDL.Text,
+    'interests' : IDL.Text,
     'born' : IDL.Text,
     'socials' : IDL.Vec(SocialLink),
     'coverImage' : IDL.Text,
@@ -953,7 +966,6 @@ export const idlFactory = ({ IDL }) => {
     'getFeePercent' : IDL.Func([], [IDL.Float64], ['query']),
     'getFeeRecipient' : IDL.Func([], [IDL.Opt(IDL.Text)], ['query']),
     'getGritIssuanceRate' : IDL.Func([], [IDL.Nat], ['query']),
-    'getHistoryBasedAk69Stockpile' : IDL.Func([], [IDL.Float64], ['query']),
     'getIsLaunched' : IDL.Func([], [IDL.Bool], ['query']),
     'getLaunchGate' : IDL.Func(
         [],
@@ -980,6 +992,7 @@ export const idlFactory = ({ IDL }) => {
         ],
         ['query'],
       ),
+    'getLedgerAkkSupply' : IDL.Func([], [IDL.Nat], []),
     'getLedgerMintingAccount' : IDL.Func([], [IDL.Opt(Account)], []),
     'getMinerCreationFees' : IDL.Func([], [IDL.Vec(ChainFeeEntry)], ['query']),
     'getMintRetryStats' : IDL.Func(
@@ -1006,6 +1019,7 @@ export const idlFactory = ({ IDL }) => {
         [IDL.Vec(IDL.Tuple(IDL.Text, IDL.Float64))],
         ['query'],
       ),
+    'getPlayerCount' : IDL.Func([], [IDL.Nat], ['query']),
     'getPlayerRank' : IDL.Func(
         [IDL.Principal, IDL.Text],
         [IDL.Opt(IDL.Nat)],
@@ -1078,6 +1092,7 @@ export const idlFactory = ({ IDL }) => {
         ['query'],
       ),
     'getTribeByName' : IDL.Func([IDL.Text], [IDL.Opt(Tribe)], ['query']),
+    'getTribeCount' : IDL.Func([], [IDL.Nat], ['query']),
     'getTribeLiveStats' : IDL.Func(
         [TribeId],
         [
@@ -1103,6 +1118,11 @@ export const idlFactory = ({ IDL }) => {
         ['query'],
       ),
     'getTribeScore' : IDL.Func([IDL.Text, IDL.Text], [IDL.Float64], ['query']),
+    'getTribeWindowedTotals' : IDL.Func(
+        [IDL.Text],
+        [IDL.Record({ 'totalGrit' : IDL.Nat, 'totalAkk' : IDL.Nat })],
+        ['query'],
+      ),
     'getUserMiningStats' : IDL.Func(
         [],
         [

@@ -1,12 +1,15 @@
 import { VideoSection } from "@/components/VideoSection";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { useAboutTab } from "@/hooks/useAboutTab";
+import {
+  type WhitepaperBlock,
+  whitepaperSections,
+  whitepaperSubtitle,
+  whitepaperTitle,
+} from "@/content/whitepaper";
+import { type AboutTab, useAboutTab } from "@/hooks/useAboutTab";
 import { faqData } from "@/pages/FaqsPage";
 import { ChevronDown, Info } from "lucide-react";
 import { useState } from "react";
-
-// ─── Types ───────────────────────────────────────────────────────────────────
-type AboutTab = "tldr" | "genesis" | "manifesto" | "regnets" | "faqs";
 
 // ─── Section Components ──────────────────────────────────────────────────────
 function TldrTab() {
@@ -14,10 +17,10 @@ function TldrTab() {
     <div className="space-y-10" data-ocid="about.tldr.section">
       {/* KEY DEFINITIONS */}
       <section className="space-y-4">
-        <h2 className="font-display text-2xl uppercase tracking-widest text-foreground border-b border-border pb-2">
+        <h2 className="font-display text-3xl uppercase tracking-widest text-white border-b border-border pb-2">
           KEY DEFINITIONS
         </h2>
-        <ul className="space-y-2 text-sm text-muted-foreground leading-relaxed">
+        <ul className="space-y-2 text-sm text-white leading-relaxed">
           <li className="flex gap-2">
             <span className="text-accent shrink-0">→</span>
             <span>
@@ -68,17 +71,17 @@ function TldrTab() {
 
       {/* ANTI KRISIS PROTOCOL */}
       <section className="space-y-4">
-        <h2 className="font-display text-2xl uppercase tracking-widest text-foreground border-b border-border pb-2">
+        <h2 className="font-display text-3xl uppercase tracking-widest text-white border-b border-border pb-2">
           ANTI KRISIS PROTOCOL
         </h2>
 
         <div className="space-y-6">
           {/* ABSTRACT */}
           <div className="space-y-2">
-            <h3 className="font-mono text-sm uppercase tracking-widest text-primary">
+            <h3 className="font-mono text-sm uppercase tracking-widest text-accent">
               ABSTRACT
             </h3>
-            <ul className="space-y-2 text-sm text-muted-foreground leading-relaxed">
+            <ul className="space-y-2 text-sm text-white leading-relaxed">
               <li className="flex gap-2">
                 <span className="text-accent shrink-0">→</span>
                 <span>
@@ -112,10 +115,10 @@ function TldrTab() {
 
           {/* HOW IT WORKS */}
           <div className="space-y-2">
-            <h3 className="font-mono text-sm uppercase tracking-widest text-primary">
+            <h3 className="font-mono text-sm uppercase tracking-widest text-accent">
               HOW IT WORKS
             </h3>
-            <ul className="space-y-2 text-sm text-muted-foreground leading-relaxed">
+            <ul className="space-y-2 text-sm text-white leading-relaxed">
               <li className="flex gap-2">
                 <span className="text-accent shrink-0">→</span>
                 <span>
@@ -142,10 +145,10 @@ function TldrTab() {
 
           {/* MINING DETAILS */}
           <div className="space-y-2">
-            <h3 className="font-mono text-sm uppercase tracking-widest text-primary">
+            <h3 className="font-mono text-sm uppercase tracking-widest text-accent">
               MINING DETAILS
             </h3>
-            <ul className="space-y-2 text-sm text-muted-foreground leading-relaxed">
+            <ul className="space-y-2 text-sm text-white leading-relaxed">
               <li className="flex gap-2">
                 <span className="text-accent shrink-0">→</span>
                 <span>
@@ -192,7 +195,7 @@ function TldrTab() {
 
           {/* STARTING PARAMETERS */}
           <div className="space-y-2">
-            <h3 className="font-mono text-sm uppercase tracking-widest text-primary">
+            <h3 className="font-mono text-sm uppercase tracking-widest text-accent">
               STARTING PARAMETERS
             </h3>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -208,10 +211,10 @@ function TldrTab() {
                   key={label}
                   className="border border-border bg-card/50 p-3"
                 >
-                  <div className="font-mono text-xs uppercase tracking-widest text-muted-foreground">
+                  <div className="font-mono text-xs uppercase tracking-widest text-white">
                     {label}
                   </div>
-                  <div className="font-display text-lg text-foreground mt-0.5">
+                  <div className="font-display text-lg text-white mt-0.5">
                     {value}
                   </div>
                 </div>
@@ -221,10 +224,10 @@ function TldrTab() {
 
           {/* IMPLICATIONS */}
           <div className="space-y-2">
-            <h3 className="font-mono text-sm uppercase tracking-widest text-primary">
+            <h3 className="font-mono text-sm uppercase tracking-widest text-accent">
               IMPLICATIONS
             </h3>
-            <ul className="space-y-2 text-sm text-muted-foreground leading-relaxed">
+            <ul className="space-y-2 text-sm text-white leading-relaxed">
               <li className="flex gap-2">
                 <span className="text-accent shrink-0">→</span>
                 <span>
@@ -258,10 +261,10 @@ function TldrTab() {
 
           {/* GOVERNANCE */}
           <div className="space-y-2">
-            <h3 className="font-mono text-sm uppercase tracking-widest text-primary">
+            <h3 className="font-mono text-sm uppercase tracking-widest text-accent">
               GOVERNANCE
             </h3>
-            <ul className="space-y-2 text-sm text-muted-foreground leading-relaxed">
+            <ul className="space-y-2 text-sm text-white leading-relaxed">
               <li className="flex gap-2">
                 <span className="text-accent shrink-0">→</span>
                 <span>
@@ -302,7 +305,7 @@ function FaqsTab() {
     <div className="space-y-12" data-ocid="about.faqs.section">
       {faqData.map((category) => (
         <section key={category.title} className="space-y-4">
-          <h2 className="font-display text-2xl md:text-3xl text-accent uppercase tracking-widest border-b border-border pb-2">
+          <h2 className="font-display text-3xl text-white uppercase tracking-widest border-b border-border pb-2">
             {category.title}
           </h2>
           <div className="space-y-2">
@@ -322,7 +325,7 @@ function FaqsTab() {
                     aria-expanded={isOpen}
                     data-ocid={`about.faq.toggle.${category.title.toLowerCase()}.${idx + 1}`}
                   >
-                    <span className="font-body text-sm md:text-base text-foreground pr-4">
+                    <span className="font-body text-sm md:text-base text-accent pr-4">
                       {item.question}
                     </span>
                     <ChevronDown
@@ -333,7 +336,7 @@ function FaqsTab() {
                     className={`overflow-hidden transition-all duration-300 ease-in-out ${isOpen ? "max-h-[800px] opacity-100" : "max-h-0 opacity-0"}`}
                   >
                     <div className="px-4 pb-4 pt-1 border-t border-border/50">
-                      <p className="font-body text-sm text-muted-foreground leading-relaxed">
+                      <p className="font-body text-sm text-white leading-relaxed">
                         {item.answer}
                       </p>
                     </div>
@@ -581,7 +584,7 @@ function RegnetsTab() {
               className="w-full flex items-center justify-between gap-3 px-4 py-3 text-left hover:bg-muted/20 transition-smooth"
               data-ocid={`about.regnets.network_toggle.${ni + 1}`}
             >
-              <span className="font-display text-xl uppercase tracking-widest text-foreground">
+              <span className="font-display text-xl uppercase tracking-widest text-white">
                 {net.name}
               </span>
               <ChevronDown
@@ -609,7 +612,7 @@ function RegnetsTab() {
                         className="w-full flex items-center justify-between gap-3 px-3 py-2 text-left hover:bg-muted/20 transition-smooth"
                         data-ocid={`about.regnets.section_toggle.${ni + 1}.${si + 1}`}
                       >
-                        <span className="font-mono text-xs uppercase tracking-widest text-primary">
+                        <span className="font-mono text-xs tracking-widest text-accent">
                           {sec.title}
                         </span>
                         <ChevronDown
@@ -617,7 +620,7 @@ function RegnetsTab() {
                         />
                       </button>
                       {isSecOpen && (
-                        <div className="px-3 pb-3 text-sm text-muted-foreground leading-relaxed border-t border-border/40 pt-2">
+                        <div className="px-3 pb-3 text-sm text-white leading-relaxed border-t border-border/40 pt-2">
                           {sec.content}
                         </div>
                       )}
@@ -637,10 +640,10 @@ function GenesisTab() {
   return (
     <div className="space-y-10" data-ocid="about.genesis.section">
       <section className="space-y-4">
-        <h2 className="font-display text-2xl uppercase tracking-widest text-foreground border-b border-border pb-2">
+        <h2 className="font-display text-3xl uppercase tracking-widest text-white border-b border-border pb-2">
           AK69 GENESIS LORE
         </h2>
-        <div className="space-y-4 text-sm text-muted-foreground leading-relaxed">
+        <div className="space-y-4 text-sm text-white leading-relaxed">
           <p>
             History remembers 1969 for what humanity showed the world, but not
             for what it tried to hide.
@@ -696,7 +699,7 @@ function GenesisTab() {
             But when the moment comes, when coordination decides everything,
             there will be those who are ready.
           </p>
-          <p className="text-accent">They will carry AK69.</p>
+          <p className="text-white">They will carry AK69.</p>
         </div>
         <a
           href="https://manifold.xyz/@antikrisis/id/4104231152"
@@ -716,10 +719,10 @@ function ManifestoTab() {
   return (
     <div className="space-y-10" data-ocid="about.manifesto.section">
       <section className="space-y-4">
-        <h2 className="font-display text-2xl uppercase tracking-widest text-foreground border-b border-border pb-2">
+        <h2 className="font-display text-3xl uppercase tracking-widest text-white border-b border-border pb-2">
           A KOOKY MANIFESTO
         </h2>
-        <div className="space-y-4 text-sm text-muted-foreground leading-relaxed">
+        <div className="space-y-4 text-sm text-white leading-relaxed">
           <p>The game is broken.</p>
           <p>Everyone knows it.</p>
           <p>Almost no one knows how to stop playing.</p>
@@ -763,7 +766,7 @@ function ManifestoTab() {
             In times of collapse, sincerity alone breaks and nihilism leads
             nowhere.
           </p>
-          <p className="text-accent">Together, we become anti-fragile.</p>
+          <p className="text-white">Together, we become anti-fragile.</p>
           <p>Kooks survive and help others survive.</p>
           <p>
             By fusing care with comedy, action with irony, structure with
@@ -771,12 +774,12 @@ function ManifestoTab() {
           </p>
           <p>The old game is to compete until everyone dies.</p>
           <p>The new game is to coordinate until everyone thrives.</p>
-          <p className="text-accent">We call it Anti Krisis.</p>
+          <p className="text-white">We call it Anti Krisis.</p>
           <p>The metacrisis is real and daunting.</p>
           <p>And it needs all of us to unite.</p>
           <p>The window is closing sooner than we think.</p>
           <p>If you&apos;ve read this, you&apos;re already playing.</p>
-          <p className="text-accent">Now play like you mean it.</p>
+          <p className="text-white">Now play like you mean it.</p>
         </div>
         <a
           href="https://manifold.xyz/@antikrisis/id/4076980464"
@@ -792,6 +795,146 @@ function ManifestoTab() {
   );
 }
 
+// ─── Whitepaper Tab ──────────────────────────────────────────────────────────
+function WhitepaperFormula() {
+  return (
+    <div
+      className="flex justify-center py-6"
+      data-ocid="about.whitepaper.formula"
+    >
+      <div className="font-mono text-base sm:text-lg text-white">
+        <div className="flex items-center gap-3">
+          <span>
+            p<sub className="text-xs">i</sub> =
+          </span>
+          <span className="inline-flex flex-col items-center text-center">
+            <span className="px-3 pb-1">
+              x<sub className="text-xs">i</sub>
+              <sup className="text-xs">r</sup>
+            </span>
+            <span className="w-full border-t border-white" />
+            <span className="px-3 pt-1">
+              Σ<sub className="text-xs">j=1</sub>
+              <sup className="text-xs">n</sup> x<sub className="text-xs">j</sub>
+              <sup className="text-xs">r</sup>
+            </span>
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function WhitepaperBlockView({ block }: { block: WhitepaperBlock }) {
+  switch (block.kind) {
+    case "p":
+      return (
+        <p className="text-sm text-white leading-relaxed">
+          {block.lead && (
+            <strong className="font-semibold">{block.lead} </strong>
+          )}
+          {block.text}
+        </p>
+      );
+    case "h4":
+      return (
+        <h4 className="font-mono text-sm uppercase tracking-widest text-accent pt-2">
+          {block.text}
+        </h4>
+      );
+    case "ul":
+      return (
+        <ul className="space-y-2 text-sm text-white leading-relaxed">
+          {block.items.map((item) => (
+            <li
+              key={`${item.lead ?? ""}${item.text}`.slice(0, 64)}
+              className="flex gap-2"
+            >
+              <span className="text-accent shrink-0">→</span>
+              <span>
+                {item.lead && (
+                  <strong className="font-semibold">{item.lead} </strong>
+                )}
+                {item.text}
+              </span>
+            </li>
+          ))}
+        </ul>
+      );
+    case "formula":
+      return <WhitepaperFormula />;
+    case "refs":
+      return (
+        <ul className="space-y-2 text-sm text-white leading-relaxed list-decimal list-inside">
+          {block.items.map((ref) => (
+            <li key={ref}>{ref}</li>
+          ))}
+        </ul>
+      );
+  }
+}
+
+function WhitepaperTab() {
+  const [openIndex, setOpenIndex] = useState<string | null>(null);
+
+  const handleToggle = (key: string) => {
+    setOpenIndex((prev) => (prev === key ? null : key));
+  };
+
+  return (
+    <div className="space-y-8" data-ocid="about.whitepaper.section">
+      <section className="space-y-2">
+        <h2 className="font-display text-3xl text-white uppercase tracking-widest border-b border-border pb-2">
+          {whitepaperTitle}
+        </h2>
+        <p className="font-mono text-xs uppercase tracking-widest text-white">
+          {whitepaperSubtitle}
+        </p>
+      </section>
+      <div className="space-y-2">
+        {whitepaperSections.map((section) => {
+          const key = section.num;
+          const isOpen = openIndex === key;
+          return (
+            <div
+              key={key}
+              className="border border-border bg-card overflow-hidden"
+              data-ocid={`about.whitepaper.item.${section.num}`}
+            >
+              <button
+                type="button"
+                onClick={() => handleToggle(key)}
+                className="w-full flex items-center justify-between px-4 py-3 text-left transition-smooth hover:bg-muted/20 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+                aria-expanded={isOpen}
+                data-ocid={`about.whitepaper.toggle.${section.num}`}
+              >
+                <span className="font-body text-sm md:text-base text-accent pr-4 uppercase">
+                  {section.num}. {section.title}
+                </span>
+                <ChevronDown
+                  className={`h-4 w-4 text-accent flex-shrink-0 transition-transform duration-200 ${isOpen ? "rotate-180" : ""}`}
+                />
+              </button>
+              <div
+                className={`overflow-hidden transition-all duration-300 ease-in-out ${isOpen ? "max-h-[3000px] opacity-100" : "max-h-0 opacity-0"}`}
+              >
+                <div className="px-4 pb-4 pt-1 border-t border-border/50 space-y-4">
+                  {section.blocks.map((block, idx) => (
+                    <WhitepaperBlockView
+                      key={`${section.num}-${block.kind}-${idx}`}
+                      block={block}
+                    />
+                  ))}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // ─── About Page ──────────────────────────────────────────────────────────────
 export function AboutPage() {
   const [activeTab, setActiveTab] = useAboutTab();
@@ -803,12 +946,12 @@ export function AboutPage() {
     >
       {/* Page header */}
       <div className="min-w-0">
-        <h1 className="text-4xl sm:text-5xl font-display font-black tracking-tighter text-foreground uppercase flex items-center gap-3">
+        <h1 className="text-4xl sm:text-5xl font-display font-black tracking-tighter text-white uppercase flex items-center gap-3">
           <Info className="h-7 w-7 sm:h-8 sm:w-8 text-accent" />
           ABOUT
         </h1>
         <p className="text-white text-sm mt-1 max-w-md">
-          Protocol documentation, definitions, and design rationale
+          All you&apos;d want to know about Anti Krisis
         </p>
       </div>
 
@@ -824,35 +967,42 @@ export function AboutPage() {
         >
           <TabsTrigger
             value="tldr"
-            className="font-accent text-sm uppercase tracking-widest h-9 px-3 sm:px-4 data-[state=active]:bg-card data-[state=active]:text-[#00ff41] text-white hover:text-[#00ff41] transition-smooth"
+            className="font-accent text-sm uppercase tracking-widest h-9 px-3 sm:px-4 data-[state=active]:bg-card data-[state=active]:text-accent dark:data-[state=active]:text-accent text-white dark:text-white hover:text-[#00ff41] transition-smooth"
             data-ocid="about.tldr_tab"
           >
             TLDR
           </TabsTrigger>
           <TabsTrigger
+            value="whitepaper"
+            className="font-accent text-sm uppercase tracking-widest h-9 px-3 sm:px-4 data-[state=active]:bg-card data-[state=active]:text-accent dark:data-[state=active]:text-accent text-white dark:text-white hover:text-[#00ff41] transition-smooth"
+            data-ocid="about.whitepaper_tab"
+          >
+            WHITEPAPER
+          </TabsTrigger>
+          <TabsTrigger
             value="genesis"
-            className="font-accent text-sm uppercase tracking-widest h-9 px-3 sm:px-4 data-[state=active]:bg-card data-[state=active]:text-[#00ff41] text-white hover:text-[#00ff41] transition-smooth"
+            className="font-accent text-sm uppercase tracking-widest h-9 px-3 sm:px-4 data-[state=active]:bg-card data-[state=active]:text-accent dark:data-[state=active]:text-accent text-white dark:text-white hover:text-[#00ff41] transition-smooth"
             data-ocid="about.genesis_tab"
           >
             GENESIS
           </TabsTrigger>
           <TabsTrigger
             value="manifesto"
-            className="font-accent text-sm uppercase tracking-widest h-9 px-3 sm:px-4 data-[state=active]:bg-card data-[state=active]:text-[#00ff41] text-white hover:text-[#00ff41] transition-smooth"
+            className="font-accent text-sm uppercase tracking-widest h-9 px-3 sm:px-4 data-[state=active]:bg-card data-[state=active]:text-accent dark:data-[state=active]:text-accent text-white dark:text-white hover:text-[#00ff41] transition-smooth"
             data-ocid="about.manifesto_tab"
           >
             MANIFESTO
           </TabsTrigger>
           <TabsTrigger
             value="regnets"
-            className="font-accent text-sm uppercase tracking-widest h-9 px-3 sm:px-4 data-[state=active]:bg-card data-[state=active]:text-[#00ff41] text-white hover:text-[#00ff41] transition-smooth"
+            className="font-accent text-sm uppercase tracking-widest h-9 px-3 sm:px-4 data-[state=active]:bg-card data-[state=active]:text-accent dark:data-[state=active]:text-accent text-white dark:text-white hover:text-[#00ff41] transition-smooth"
             data-ocid="about.regnets_tab"
           >
             REGNETS
           </TabsTrigger>
           <TabsTrigger
             value="faqs"
-            className="font-accent text-sm uppercase tracking-widest h-9 px-3 sm:px-4 data-[state=active]:bg-card data-[state=active]:text-[#00ff41] text-white hover:text-[#00ff41] transition-smooth"
+            className="font-accent text-sm uppercase tracking-widest h-9 px-3 sm:px-4 data-[state=active]:bg-card data-[state=active]:text-accent dark:data-[state=active]:text-accent text-white dark:text-white hover:text-[#00ff41] transition-smooth"
             data-ocid="about.faqs_tab"
           >
             FAQs
@@ -861,6 +1011,9 @@ export function AboutPage() {
 
         <TabsContent value="tldr" className="mt-6">
           <TldrTab />
+        </TabsContent>
+        <TabsContent value="whitepaper" className="mt-6">
+          <WhitepaperTab />
         </TabsContent>
         <TabsContent value="genesis" className="mt-6">
           <GenesisTab />

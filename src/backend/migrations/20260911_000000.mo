@@ -398,7 +398,7 @@ module {
         var akkTransferFee = old.miningState.akkTransferFee;
         // No fee tx can have been consumed before this build — the gate did
         // not exist. Every miner created so far predates paid creation.
-        minerFeeTxs = Map.empty<Text, Bool>();
+        minerFeeTxs = Map.empty();
       };
       blockTimerState = old.blockTimerState;
       profileState = old.profileState;

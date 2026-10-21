@@ -27,7 +27,7 @@ module {
   /// Normalize a transaction hash to the canonical identity.
   /// Accepts: 0x/0X/no prefix, any casing, exactly 64 hex chars.
   public func canonicalTxHash(input : Text) : CanonicalResult {
-    let chars = Text.toArray(input);
+    let chars = input.toArray();
     let n = chars.size();
     if (n == 0) {
       return #err("tx hash is empty");

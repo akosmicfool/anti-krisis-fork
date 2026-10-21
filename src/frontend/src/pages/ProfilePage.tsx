@@ -1,8 +1,10 @@
+import { createActor } from "@/backend";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
+import { useActor } from "@caffeineai/core-infrastructure";
 import { Principal } from "@icp-sdk/core/principal";
 import { Link, useNavigate } from "@tanstack/react-router";
 import {
@@ -26,6 +28,7 @@ import { toast } from "sonner";
 import { CreateTribeModal } from "../components/CreateTribeModal";
 import { EditTribeModal } from "../components/EditTribeModal";
 import { HighlightsSection } from "../components/HighlightsSection";
+import { RankSkoreTiles } from "../components/RankSkoreTiles";
 import { TransferOwnershipModal } from "../components/TransferOwnershipModal";
 import { useAuth } from "../hooks/use-auth";
 import {
@@ -34,7 +37,6 @@ import {
   useGetMyOwnedTribes,
   useGetMyProfile,
   useGetMyTribe,
-  useGetTribeLeaderboard,
   useJoinTribe,
   useLeaveTribe,
   useSaveMyProfile,
@@ -42,9 +44,9 @@ import {
   useUpdatePlayerBadge,
 } from "../hooks/use-backend";
 import type { SocialLink } from "../hooks/use-backend";
-import { useTestScore } from "../hooks/use-test-score";
 import { useNftOwnership } from "../hooks/useNftOwnership";
-import { type Tribe, formatGrit } from "../types";
+import { formatGrit } from "../lib/format";
+import type { Tribe } from "../types";
 
 const DEFAULT_COVER = "/assets/images/placeholder.svg";
 const DEFAULT_AVATAR = "/assets/images/placeholder.svg";
@@ -56,6 +58,7 @@ interface FormState {
   location: string;
   born: string;
   superpowers: string;
+  interests: string;
   profilePicture: string;
   coverImage: string;
   evmAddress: string;
@@ -69,6 +72,7 @@ const EMPTY_FORM: FormState = {
   location: "",
   born: "",
   superpowers: "",
+  interests: "",
   profilePicture: "",
   coverImage: "",
   evmAddress: "",
@@ -139,28 +143,6 @@ export function ProfilePage() {
   const leaveTribe = useLeaveTribe();
 
   const [editMode, setEditMode] = useState(false);
-  const { testScore, testBadgeLevel } = useTestScore();
-
-  // Interests — stored in localStorage keyed by principal
-  const interestsKey = principalText ? `interests_${principalText}` : null;
-  const [interests, setInterests] = useState<string>(() => {
-    if (!interestsKey) return "";
-    try {
-      return localStorage.getItem(interestsKey) ?? "";
-    } catch {
-      return "";
-    }
-  });
-
-  // Persist interests to localStorage on change (only when key is available)
-  useEffect(() => {
-    if (!interestsKey) return;
-    try {
-      localStorage.setItem(interestsKey, interests);
-    } catch {
-      // ignore storage errors
-    }
-  }, [interests, interestsKey]);
 
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [usernameError, setUsernameError] = useState("");
@@ -216,6 +198,7 @@ export function ProfilePage() {
         location: profile.location ?? "",
         born: profile.born ?? "",
         superpowers: profile.superpowers ?? "",
+        interests: profile.interests ?? "",
         profilePicture: profile.profilePicture ?? "",
         coverImage: profile.coverImage ?? "",
         evmAddress: profile.evmAddress ?? "",
@@ -251,6 +234,7 @@ export function ProfilePage() {
         location: profile.location ?? "",
         born: profile.born ?? "",
         superpowers: profile.superpowers ?? "",
+        interests: profile.interests ?? "",
         profilePicture: profile.profilePicture ?? "",
         coverImage: profile.coverImage ?? "",
         evmAddress: profile.evmAddress ?? "",
@@ -275,6 +259,7 @@ export function ProfilePage() {
         location: form.location.trim(),
         born: form.born.trim(),
         superpowers: form.superpowers.trim(),
+        interests: form.interests.trim(),
         profilePicture: form.profilePicture,
         coverImage: form.coverImage,
         evmAddress: form.evmAddress.trim() ? form.evmAddress.trim() : null,
@@ -645,187 +630,190 @@ export function ProfilePage() {
       ═══════════════════════════════════════════════════════════════════ */}
       {(editMode ||
         form.bio ||
-        form.socials.filter((l) => l.name && l.url).length > 0) && (
-        <section
-          className="border border-border p-4 bg-card mb-6"
-          data-ocid="profile.bio_links_section"
+        form.socials.filter((l) => l.name && l.url).length > 0 ||
+        !!principalText) && (
+        <div
+          className="flex flex-col sm:flex-row gap-4 mb-6 items-stretch"
+          data-ocid="profile.bio_links_row"
         >
-          <div className="flex flex-col sm:flex-row gap-6">
-            {/* Left column — Bio */}
-            {(editMode || form.bio) && (
-              <div className="flex-1 min-w-0">
-                <SectionHeader white>Bio</SectionHeader>
-                {editMode ? (
-                  <div className="space-y-1">
-                    <Label htmlFor="bio" className="block">
-                      <FieldLabel>About You</FieldLabel>
-                    </Label>
-                    <Textarea
-                      id="bio"
-                      value={form.bio}
-                      onChange={(e) => handleChange("bio", e.target.value)}
-                      placeholder="Tell the world who you are..."
-                      rows={4}
-                      maxLength={500}
-                      className="bg-input border-border text-foreground font-mono text-sm resize-none focus:ring-accent focus:border-accent"
-                      data-ocid="profile.bio_textarea"
-                    />
-                  </div>
-                ) : (
-                  <p
-                    className="font-mono text-sm text-foreground whitespace-pre-wrap"
+          {/* Bio */}
+          {(editMode || form.bio) && (
+            <section className="border border-border p-4 bg-card flex-1 min-w-0">
+              <SectionHeader white>Bio</SectionHeader>
+              {editMode ? (
+                <div className="space-y-1">
+                  <Label htmlFor="bio" className="block">
+                    <FieldLabel>About You</FieldLabel>
+                  </Label>
+                  <Textarea
+                    id="bio"
+                    value={form.bio}
+                    onChange={(e) => handleChange("bio", e.target.value)}
+                    placeholder="Tell the world who you are..."
+                    rows={4}
+                    maxLength={500}
+                    className="bg-input border-border text-foreground font-mono text-sm resize-none focus:ring-accent focus:border-accent"
                     data-ocid="profile.bio_textarea"
-                  >
-                    {form.bio}
-                  </p>
-                )}
-              </div>
-            )}
+                  />
+                </div>
+              ) : (
+                <p
+                  className="font-mono text-sm md:text-base text-foreground whitespace-pre-wrap"
+                  data-ocid="profile.bio_textarea"
+                >
+                  {form.bio}
+                </p>
+              )}
+            </section>
+          )}
 
-            {/* Right column — Links */}
-            {(editMode ||
-              form.socials.filter((l) => l.name && l.url).length > 0) && (
-              <div
-                className="flex-1 min-w-0"
-                data-ocid="profile.socials_section"
-              >
-                <SectionHeader white>Links</SectionHeader>
-                {editMode ? (
-                  <div>
-                    <p
-                      style={{
-                        fontFamily: "Handjet",
-                        color: "#a0a0a0",
-                        fontSize: "0.75rem",
-                        textTransform: "uppercase",
-                        letterSpacing: "0.05em",
-                        marginBottom: "0.5rem",
-                      }}
-                    >
-                      Your Links
-                    </p>
-                    {form.socials.map((link, i) => (
-                      <div
-                        key={link.id || `social-${i}`}
-                        style={{
-                          display: "flex",
-                          gap: "0.5rem",
-                          marginBottom: "0.5rem",
-                          alignItems: "center",
-                        }}
-                        data-ocid={`profile.socials.item.${i + 1}`}
-                      >
-                        <Input
-                          type="text"
-                          value={link.name}
-                          onChange={(e) => {
-                            const s = [...form.socials];
-                            s[i] = { ...s[i], name: e.target.value };
-                            setForm((p) => ({ ...p, socials: s }));
-                          }}
-                          placeholder="Link Name"
-                          maxLength={100}
-                          className="bg-input border-border text-foreground font-mono text-sm focus:ring-accent focus:border-accent"
-                          data-ocid={`profile.socials.name_input.${i + 1}`}
-                        />
-                        <Input
-                          type="url"
-                          value={link.url}
-                          onChange={(e) => {
-                            const s = [...form.socials];
-                            s[i] = { ...s[i], url: e.target.value };
-                            setForm((p) => ({ ...p, socials: s }));
-                          }}
-                          placeholder="https://..."
-                          maxLength={100}
-                          className="bg-input border-border text-foreground font-mono text-sm focus:ring-accent focus:border-accent"
-                          data-ocid={`profile.socials.url_input.${i + 1}`}
-                        />
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const s = form.socials.filter((_, j) => j !== i);
-                            setForm((p) => ({ ...p, socials: s }));
-                          }}
-                          style={{
-                            background: "none",
-                            border: "1px solid #333",
-                            color: "#888",
-                            padding: "0.25rem 0.5rem",
-                            cursor: "pointer",
-                            fontFamily: "Handjet",
-                            flexShrink: 0,
-                          }}
-                          aria-label="Remove link"
-                          data-ocid={`profile.socials.delete_button.${i + 1}`}
-                        >
-                          ×
-                        </button>
-                      </div>
-                    ))}
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setForm((p) => ({
-                          ...p,
-                          socials: [
-                            ...p.socials,
-                            { name: "", url: "", id: Date.now().toString() },
-                          ],
-                        }))
-                      }
-                      style={{
-                        background: "none",
-                        border: "1px solid #00ff41",
-                        color: "#00ff41",
-                        padding: "0.25rem 0.75rem",
-                        cursor: "pointer",
-                        fontFamily: "Handjet",
-                        fontSize: "0.8rem",
-                        marginTop: "0.25rem",
-                      }}
-                      data-ocid="profile.socials.add_button"
-                    >
-                      + Add Link
-                    </button>
-                  </div>
-                ) : (
-                  form.socials.filter((l) => l.name && l.url).length > 0 && (
+          {/* Links */}
+          {(editMode ||
+            form.socials.filter((l) => l.name && l.url).length > 0) && (
+            <section
+              className="border border-border p-4 bg-card flex-1 min-w-0"
+              data-ocid="profile.socials_section"
+            >
+              <SectionHeader white>Links</SectionHeader>
+              {editMode ? (
+                <div>
+                  <p
+                    style={{
+                      fontFamily: "Handjet",
+                      color: "#a0a0a0",
+                      fontSize: "0.75rem",
+                      textTransform: "uppercase",
+                      letterSpacing: "0.05em",
+                      marginBottom: "0.5rem",
+                    }}
+                  >
+                    Your Links
+                  </p>
+                  {form.socials.map((link, i) => (
                     <div
+                      key={link.id || `social-${i}`}
                       style={{
                         display: "flex",
-                        flexWrap: "wrap",
-                        gap: "0.75rem",
+                        gap: "0.5rem",
+                        marginBottom: "0.5rem",
+                        alignItems: "center",
                       }}
+                      data-ocid={`profile.socials.item.${i + 1}`}
                     >
-                      {form.socials.map((link, i) =>
-                        link.name && link.url ? (
-                          <a
-                            key={`social-view-${i}-${link.name}`}
-                            href={link.url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            style={{
-                              color: "#00ff41",
-                              fontFamily: "Tomorrow",
-                              fontSize: "0.9rem",
-                              textDecoration: "none",
-                              borderBottom: "1px solid #00ff41",
-                              paddingBottom: "1px",
-                            }}
-                            data-ocid={`profile.socials.link.${i + 1}`}
-                          >
-                            {link.name}
-                          </a>
-                        ) : null,
-                      )}
+                      <Input
+                        type="text"
+                        value={link.name}
+                        onChange={(e) => {
+                          const s = [...form.socials];
+                          s[i] = { ...s[i], name: e.target.value };
+                          setForm((p) => ({ ...p, socials: s }));
+                        }}
+                        placeholder="Link Name"
+                        maxLength={100}
+                        className="bg-input border-border text-foreground font-mono text-sm focus:ring-accent focus:border-accent"
+                        data-ocid={`profile.socials.name_input.${i + 1}`}
+                      />
+                      <Input
+                        type="url"
+                        value={link.url}
+                        onChange={(e) => {
+                          const s = [...form.socials];
+                          s[i] = { ...s[i], url: e.target.value };
+                          setForm((p) => ({ ...p, socials: s }));
+                        }}
+                        placeholder="https://..."
+                        maxLength={100}
+                        className="bg-input border-border text-foreground font-mono text-sm focus:ring-accent focus:border-accent"
+                        data-ocid={`profile.socials.url_input.${i + 1}`}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const s = form.socials.filter((_, j) => j !== i);
+                          setForm((p) => ({ ...p, socials: s }));
+                        }}
+                        style={{
+                          background: "none",
+                          border: "1px solid #333",
+                          color: "#888",
+                          padding: "0.25rem 0.5rem",
+                          cursor: "var(--cursor-hand)",
+                          fontFamily: "Handjet",
+                          flexShrink: 0,
+                        }}
+                        aria-label="Remove link"
+                        data-ocid={`profile.socials.delete_button.${i + 1}`}
+                      >
+                        ×
+                      </button>
                     </div>
-                  )
-                )}
-              </div>
-            )}
-          </div>
-        </section>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setForm((p) => ({
+                        ...p,
+                        socials: [
+                          ...p.socials,
+                          { name: "", url: "", id: Date.now().toString() },
+                        ],
+                      }))
+                    }
+                    style={{
+                      background: "none",
+                      border: "1px solid #00ff41",
+                      color: "#00ff41",
+                      padding: "0.25rem 0.75rem",
+                      cursor: "var(--cursor-hand)",
+                      fontFamily: "Handjet",
+                      fontSize: "0.8rem",
+                      marginTop: "0.25rem",
+                    }}
+                    data-ocid="profile.socials.add_button"
+                  >
+                    + Add Link
+                  </button>
+                </div>
+              ) : (
+                form.socials.filter((l) => l.name && l.url).length > 0 && (
+                  <div
+                    style={{
+                      display: "flex",
+                      flexWrap: "wrap",
+                      gap: "0.75rem",
+                    }}
+                  >
+                    {form.socials.map((link, i) =>
+                      link.name && link.url ? (
+                        <a
+                          key={`social-view-${i}-${link.name}`}
+                          href={link.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          style={{
+                            color: "#00ff41",
+                            fontFamily: "Tomorrow",
+                            fontSize: "0.9rem",
+                            textDecoration: "none",
+                            borderBottom: "1px solid #00ff41",
+                            paddingBottom: "1px",
+                          }}
+                          data-ocid={`profile.socials.link.${i + 1}`}
+                        >
+                          {link.name}
+                        </a>
+                      ) : null,
+                    )}
+                  </div>
+                )
+              )}
+            </section>
+          )}
+          {/* RANK · SKORE — right end of the BIO line; full-width pair on mobile */}
+          {principalText && (
+            <RankSkoreTiles principal={Principal.fromText(principalText)} />
+          )}
+        </div>
       )}
 
       {/* ═══════════════════════════════════════════════════════════════════
@@ -838,18 +826,14 @@ export function ProfilePage() {
           hasOgBadge={profile?.hasOgBadge ?? false}
           canClaimBadge={canClaimBadge}
           onClaimBadge={handleClaimBadge}
-          playerBadgeLevel={
-            testScore !== null
-              ? testBadgeLevel
-              : Number(profile?.playerBadgeLevel ?? 0n)
-          }
+          playerBadgeLevel={Number(profile?.playerBadgeLevel ?? 0n)}
         />
       )}
 
       {/* ═══════════════════════════════════════════════════════════════════
           SECTION 4 — SUPERPOWERS + INTERESTS (two columns)
       ═══════════════════════════════════════════════════════════════════ */}
-      {(editMode || form.superpowers || interests) && (
+      {(editMode || form.superpowers || form.interests) && (
         <section
           className="border border-border p-4 bg-card mb-6"
           data-ocid="profile.superpowers_interests_section"
@@ -878,7 +862,7 @@ export function ProfilePage() {
                   </div>
                 ) : (
                   <p
-                    className="font-mono text-sm text-foreground"
+                    className="font-mono text-sm md:text-base text-foreground"
                     data-ocid="profile.superpowers_input"
                   >
                     {form.superpowers}
@@ -888,7 +872,7 @@ export function ProfilePage() {
             )}
 
             {/* Right column — Interests */}
-            {(editMode || interests) && (
+            {(editMode || form.interests) && (
               <div
                 className="flex-1 min-w-0"
                 data-ocid="profile.interests_section"
@@ -901,8 +885,10 @@ export function ProfilePage() {
                     </Label>
                     <Textarea
                       id="interests"
-                      value={interests}
-                      onChange={(e) => setInterests(e.target.value)}
+                      value={form.interests}
+                      onChange={(e) =>
+                        handleChange("interests", e.target.value)
+                      }
                       placeholder="Regenerative finance, game theory, coordination"
                       rows={3}
                       maxLength={300}
@@ -912,10 +898,10 @@ export function ProfilePage() {
                   </div>
                 ) : (
                   <p
-                    className="font-mono text-sm text-foreground whitespace-pre-wrap"
+                    className="font-mono text-sm md:text-base text-foreground whitespace-pre-wrap"
                     data-ocid="profile.interests_textarea"
                   >
-                    {interests}
+                    {form.interests}
                   </p>
                 )}
               </div>
@@ -1021,6 +1007,38 @@ async function copyToClipboard(text: string): Promise<boolean> {
 
 // ─── Tribe Card ───────────────────────────────────────────────────────────────
 
+// All-time rank/score for a single tribe. Uses the dedicated endpoints so tribes
+// outside the top-6 leaderboard still render real values (the leaderboard array
+// only ever contains six entries).
+function useTribeRankAndScore(tribeId: string) {
+  const { actor, isFetching } = useActor(createActor);
+  const [rank, setRank] = useState<bigint | null>(null);
+  const [score, setScore] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (isFetching || !actor) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const [tribeRank, tribeScore] = await Promise.all([
+          actor.getTribeRank(tribeId, "alltime"),
+          actor.getTribeScore(tribeId, "alltime"),
+        ]);
+        if (cancelled) return;
+        setRank(tribeRank);
+        setScore(tribeScore);
+      } catch {
+        // keep the "—" fallbacks if the fetch fails
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [actor, isFetching, tribeId]);
+
+  return { rank, score };
+}
+
 function TribeCard({
   tribe,
   isMine,
@@ -1038,12 +1056,7 @@ function TribeCard({
   onTransfer?: () => void;
   leaveLoading?: boolean;
 }) {
-  const { data: tribeLeaderboard } = useGetTribeLeaderboard("alltime");
-  const leaderboardEntry = tribeLeaderboard?.find(
-    (entry) => entry.tribeId === tribe.id,
-  );
-  const rank = leaderboardEntry?.rank ?? 0;
-  const score = leaderboardEntry?.score ?? 0;
+  const { rank, score } = useTribeRankAndScore(tribe.id);
 
   const [copied, setCopied] = useState(false);
 
@@ -1139,15 +1152,15 @@ function TribeCard({
                   Rank
                 </span>
                 <span className="font-mono text-xs text-foreground">
-                  {rank > 0 ? `#${rank}` : "—"}
+                  {rank !== null ? `#${rank}` : "—"}
                 </span>
               </span>
               <span className="flex items-center gap-1">
                 <span className="font-accent text-sm uppercase tracking-widest text-white">
-                  Score
+                  Skore
                 </span>
                 <span className="font-mono text-xs text-foreground">
-                  {score > 0 ? score.toFixed(2) : "—"}
+                  {score !== null ? score.toFixed(2) : "—"}
                 </span>
               </span>
             </div>
@@ -1330,7 +1343,7 @@ function TribesSection({
         </h2>
       </div>
       {myTribe && (
-        <h3 className="font-display text-sm uppercase tracking-widest text-white mt-4 mb-2">
+        <h3 className="font-display text-[22px] uppercase tracking-widest text-white mt-4 mb-2">
           MY TRIBE
         </h3>
       )}

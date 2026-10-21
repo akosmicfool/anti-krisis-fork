@@ -11,7 +11,7 @@ import { useEffect, useState } from "react";
 import { useMinerCreationFees, useMyBalance } from "../hooks/use-backend";
 import type { UseMinerCreationReturn } from "../hooks/use-miner-creation";
 import { useWallet } from "../hooks/use-wallet";
-import { formatGrit } from "../types";
+import { formatGrit } from "../lib/format";
 
 export interface CreateMinerPrefill {
   name: string;
@@ -151,7 +151,10 @@ export function CreateMinerModal({
         data-ocid="mining.create_miner_dialog"
       >
         <DialogHeader>
-          <DialogTitle className="font-display font-black uppercase tracking-widest flex items-center gap-2">
+          <DialogTitle
+            className="font-display font-black uppercase tracking-widest flex items-center gap-2"
+            style={{ fontSize: "22px" }}
+          >
             <Cpu className="h-5 w-5 text-accent" />
             Create Miner
           </DialogTitle>
@@ -304,7 +307,7 @@ export function CreateMinerModal({
               data-ocid="mining.create_background_hint"
             >
               Your fee is paid. This keeps running — you can close this dialog
-              and follow it from MY MINERS.
+              and follow it from MINERS.
             </p>
           )}
 

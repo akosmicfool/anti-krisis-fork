@@ -141,6 +141,38 @@ function newAttemptId(): string {
 // ─── Error mapping ────────────────────────────────────────────────────────────
 
 /**
+ * Deterministic `MiningLib.createMiner` validation rejections, verbatim from
+ * the backend (`src/backend/lib/mining.mo`; the mixin propagates each `#err`
+ * text unchanged). They carry no code prefix and can NEVER succeed on a
+ * retry — the 30s loop must stop and surface the fix action instead.
+ *
+ * CreateMinerModal already pre-validates name / load / balance for the
+ * normal flow (its `canCreate`), so these are the backstop for the retry
+ * loop (e.g. a persisted attempt whose balance was spent elsewhere) and for
+ * direct callers.
+ */
+const DETERMINISTIC_CREATE_ERRORS = [
+  "Miner name cannot be empty",
+  "Must load at least 1 GRIT",
+  "Mining rate must be between 1 and 10 billion GRIT/day",
+  "Insufficient GRIT balance",
+] as const;
+
+/** Plain-language wording for the deterministic validation rejections. */
+const VALIDATION_ERROR_MESSAGES: Record<
+  (typeof DETERMINISTIC_CREATE_ERRORS)[number],
+  string
+> = {
+  "Miner name cannot be empty": "Enter a name for your miner.",
+  "Must load at least 1 GRIT":
+    "Load at least 1 GRIT into the miner before creating it.",
+  "Mining rate must be between 1 and 10 billion GRIT/day":
+    "Pick a mining rate between 1 and 10 B GRIT/day.",
+  "Insufficient GRIT balance":
+    "Not enough GRIT balance — top up your balance and retry.",
+};
+
+/**
  * Maps backend miner-fee gate errors to user-facing messages (unknown
  * prefixes fall through to the raw message). Shared by the modal and the
  * pending-miner tiles so both show the same wording.
@@ -164,8 +196,11 @@ export function minerFeeErrorMessage(err: unknown): string {
       "The creation fee is not fully configured. Contact an admin.",
     MINER_FEE_CHAIN_UNSUPPORTED:
       "No creation fee is configured for this chain right now. Pick a supported chain or contact an admin.",
+    MINER_FEE_TX_INVALID:
+      "The fee transaction hash looks invalid — restart the miner creation so a fresh fee payment is made.",
     PENDING:
       "The fee transaction is not confirmed yet. Try again in a few seconds.",
+    ...VALIDATION_ERROR_MESSAGES,
   };
   const code = Object.keys(map).find((key) => raw.startsWith(key));
   return code ? map[code] : raw;
@@ -198,8 +233,22 @@ function classifyCreateError(raw: string): CreateOutcome {
     raw.startsWith("MINER_FEE_NOT_CONFIGURED") ||
     // Deterministic rejection (chain un-armed at runtime): retrying can never
     // succeed, and only an admin can re-arm it.
-    raw.startsWith("MINER_FEE_CHAIN_UNSUPPORTED")
+    raw.startsWith("MINER_FEE_CHAIN_UNSUPPORTED") ||
+    // Deterministic rejection (boundary validation): an unspellable hash can
+    // never verify, so the 30s retry loop would spin forever — the attempt
+    // must be restarted with a fresh fee payment.
+    raw.startsWith("MINER_FEE_TX_INVALID")
   ) {
+    return {
+      kind: "action_needed",
+      message: minerFeeErrorMessage(new Error(raw)),
+    };
+  }
+  // Deterministic MiningLib validation rejections (empty name / no GRIT
+  // loaded / out-of-range rate / insufficient balance) — plain `#err` text,
+  // no code prefix. Retrying can never succeed: the user must change the
+  // attempt or top up, so surface that action instead of looping.
+  if (DETERMINISTIC_CREATE_ERRORS.some((msg) => raw.startsWith(msg))) {
     return {
       kind: "action_needed",
       message: minerFeeErrorMessage(new Error(raw)),

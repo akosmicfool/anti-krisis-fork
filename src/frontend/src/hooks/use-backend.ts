@@ -18,9 +18,25 @@ import type {
   ProfileInput,
   Tribe,
   TribeId,
+  TribeMemberWithRole,
 } from "../backend";
 import { fetchDexScreenerPrice } from "../utils/dexscreener";
 import { useAuth } from "./use-auth";
+import { useTopTribesAlltime } from "./use-score";
+
+// ─── Cache policy (one cache per backend method) ─────────────────────────────
+//
+// Every backend method gets ONE query key, shared by every surface that reads
+// it, so two pages can never show different values for the same stat:
+//   - per-method keys: ["tribe", tribeId], ["tribeMembers", tribeId],
+//     ["blockHistory", limit], ["blockHistoryPage", page, size],
+//     ["playerRank", principal], ["playerScore", principal, "alltime"], ...
+//   - stats / leaderboards poll every 30s (staleTime 30s where noted);
+//     the all-time tribe leaderboard lives in use-score.ts::useTopTribesAlltime
+//     (key ["topTribes","alltime"], staleTime 15s, poll 30s);
+//   - global default staleTime is 10s (main.tsx:81-88) for everything else.
+// When adding a hook: reuse an existing key if the backend method is already
+// fetched elsewhere; otherwise pick a key and keep this list current.
 
 export function profileErrorMessage(err: ProfileError | string): string {
   switch (err) {
@@ -171,18 +187,6 @@ export function useMyClaimHistory() {
     refetchInterval: 8_000,
     refetchOnWindowFocus: true,
     refetchOnMount: "always",
-  });
-}
-
-export function useAllClaimHistory() {
-  const { actor, isFetching } = useActorInstance();
-  return useQuery<ClaimRecord[]>({
-    queryKey: ["allClaimHistory"],
-    queryFn: async () => {
-      if (!actor) return [];
-      return actor.getAllClaimHistory();
-    },
-    enabled: !!actor && !isFetching,
   });
 }
 
@@ -603,30 +607,6 @@ export function useMyMiners() {
   });
 }
 
-export function useCurrentBlockInfo() {
-  const { actor, isFetching } = useActorInstance();
-  return useQuery<{
-    nextBlockIn: bigint;
-    blockNumber: bigint;
-    lastBlockTime: bigint;
-    isMiningActive: boolean;
-  }>({
-    queryKey: ["currentBlockInfo"],
-    queryFn: async () => {
-      if (!actor)
-        return {
-          nextBlockIn: 690n,
-          blockNumber: 0n,
-          lastBlockTime: 0n,
-          isMiningActive: false,
-        };
-      return actor.getCurrentBlockInfo();
-    },
-    enabled: !!actor && !isFetching,
-    refetchInterval: 10_000,
-  });
-}
-
 export function useBlockHistory(limit: bigint) {
   const { actor, isFetching } = useActorInstance();
   return useQuery<BlockRecord[]>({
@@ -636,6 +616,9 @@ export function useBlockHistory(limit: bigint) {
       return actor.getBlockHistory(limit);
     },
     enabled: !!actor && !isFetching,
+    // Same policy as useGetBlockHistoryPage below: 30s stale / 30s poll so a
+    // new block appears on the Mine page and Block History at the same cadence.
+    staleTime: 30_000,
     refetchInterval: 30_000,
   });
 }
@@ -709,12 +692,17 @@ export function useUserMiningStats() {
 
 // ─── GRIT Issuance Rate ─────────────────────────────────────────────────────
 
+// Fallback used when the query has no data (actor absent or call failed).
+// Mirrors the backend's launch default — AllowlistLib.DEFAULT_GRIT_ISSUANCE_RATE
+// (100B GRIT per $1.00 burned; the seed only fills a pristine field).
+export const GRIT_ISSUANCE_RATE_FALLBACK = 100_000_000_000n;
+
 export function useGetGritIssuanceRate() {
   const { actor, isFetching } = useActorInstance();
   return useQuery<bigint>({
     queryKey: ["getGritIssuanceRate"],
     queryFn: async () => {
-      if (!actor) return BigInt(1_000_000_000);
+      if (!actor) return GRIT_ISSUANCE_RATE_FALLBACK;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return (
         actor as unknown as Record<string, () => Promise<bigint>>
@@ -752,7 +740,10 @@ export function useGetBlockHistoryPage(page: bigint, pageSize: bigint) {
       return actor.getBlockHistoryPage(page, pageSize);
     },
     enabled: !!actor && !isFetching,
+    // Same policy as useBlockHistory above: 30s stale / 30s poll so a new
+    // block appears on the Mine page and Block History at the same cadence.
     staleTime: 30_000,
+    refetchInterval: 30_000,
   });
 }
 
@@ -928,6 +919,7 @@ export function useGetMyProfile() {
     location: string;
     born: string;
     superpowers: string;
+    interests: string;
     profilePicture: string;
     coverImage: string;
     evmAddress: string | null;
@@ -948,6 +940,7 @@ export function useGetMyProfile() {
         location: (p.location as string) ?? "",
         born: (p.born as string) ?? "",
         superpowers: (p.superpowers as string) ?? "",
+        interests: (p.interests as string) ?? "",
         profilePicture: (p.profilePicture as string) ?? "",
         coverImage: (p.coverImage as string) ?? "",
         evmAddress: (p.evmAddress as string | null | undefined) ?? null,
@@ -977,6 +970,7 @@ export function useSaveMyProfile() {
       location: string;
       born: string;
       superpowers: string;
+      interests?: string;
       profilePicture: string;
       coverImage: string;
       evmAddress: string | null;
@@ -986,6 +980,9 @@ export function useSaveMyProfile() {
       const result = await actor.saveMyProfile({
         ...input,
         username: input.username.trim(),
+        // Interests is a required Candid Text on ProfileInput; the
+        // first-time username modal has none, so default it to empty.
+        interests: input.interests ?? "",
       } as unknown as ProfileInput);
       if (result.__kind__ === "err") {
         const code = result.err;
@@ -1011,6 +1008,7 @@ export function useSaveMyProfile() {
         location: (p.location as string) ?? "",
         born: (p.born as string) ?? "",
         superpowers: (p.superpowers as string) ?? "",
+        interests: (p.interests as string) ?? "",
         profilePicture: (p.profilePicture as string) ?? "",
         coverImage: (p.coverImage as string) ?? "",
         evmAddress: (p.evmAddress as string | null | undefined) ?? null,
@@ -1066,6 +1064,21 @@ export function useGetTribeMembers(tribeId: TribeId | null) {
   });
 }
 
+// Member list with roles — the cache the tribe page's "MEMBERS (n/150)"
+// header reads. Join/leave invalidate it (see useJoinTribe / useLeaveTribe).
+export function useGetTribeMembersWithRoles(tribeId: TribeId | null) {
+  const { actor, isFetching } = useActorInstance();
+  return useQuery<TribeMemberWithRole[]>({
+    queryKey: ["tribeMembersWithRoles", tribeId],
+    queryFn: async () => {
+      if (!actor || !tribeId) return [];
+      return actor.getTribeMembersWithRoles(tribeId);
+    },
+    enabled: !!actor && !isFetching && !!tribeId,
+    staleTime: 30_000,
+  });
+}
+
 export function useGetMyTribe() {
   const { actor, isFetching } = useActorInstance();
   return useQuery<Tribe | null>({
@@ -1080,20 +1093,11 @@ export function useGetMyTribe() {
   });
 }
 
-export function useGetTribeLeaderboard(timescale = "alltime") {
-  const { actor, isFetching } = useActorInstance();
-  return useQuery({
-    queryKey: ["tribeLeaderboard", timescale],
-    queryFn: async () => {
-      if (!actor) return [];
-      const result = await actor.getTopTribes(timescale);
-      return result;
-    },
-    enabled: !!actor && !isFetching,
-    staleTime: 15_000,
-    refetchOnWindowFocus: true,
-  });
-}
+// All-time tribe leaderboard. Delegates to the one shared cache in
+// use-score.ts (["topTribes","alltime"]) — never define a second query for
+// getTopTribes here. This wrapper has zero callers today (D20 removes it);
+// it exists only so the name does not hide a duplicate cache.
+export const useGetTribeLeaderboard = useTopTribesAlltime;
 
 export function useGetMyOwnedTribes() {
   const { actor, isFetching } = useActorInstance();
@@ -1164,6 +1168,11 @@ export function useJoinTribe() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["myTribe"] });
       qc.invalidateQueries({ queryKey: ["searchTribes"] });
+      // D19: the tribe page's MEMBERS tile (["tribe", id]) and "MEMBERS (n/150)"
+      // header (["tribeMembersWithRoles", id]) must converge to server truth
+      // right after the join — no optimistic ±1 drift.
+      qc.invalidateQueries({ queryKey: ["tribe"] });
+      qc.invalidateQueries({ queryKey: ["tribeMembersWithRoles"] });
     },
   });
 }
@@ -1182,6 +1191,9 @@ export function useLeaveTribe() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["myTribe"] });
       qc.invalidateQueries({ queryKey: ["myOwnedTribes"] });
+      // Same D19 convergence as useJoinTribe above.
+      qc.invalidateQueries({ queryKey: ["tribe"] });
+      qc.invalidateQueries({ queryKey: ["tribeMembersWithRoles"] });
     },
   });
 }
@@ -1288,6 +1300,7 @@ export function useProtocolStats() {
     activeMiners: bigint;
     totalMiners: bigint;
     totalGritSpent: bigint;
+    blocksUntilHalving: bigint;
     isMiningActive: boolean;
   }>({
     queryKey: ["protocolStats"],
@@ -1301,6 +1314,7 @@ export function useProtocolStats() {
           activeMiners: 0n,
           totalMiners: 0n,
           totalGritSpent: 0n,
+          blocksUntilHalving: 0n,
           isMiningActive: false,
         };
       return actor.getProtocolStats();

@@ -181,7 +181,9 @@ await Test.test("consumed: consume marks exactly that hash", func() : async () {
   let s = MiningLib.newMiningState();
   MiningLib.consumeMinerFee(s, "base", "0x" # BURN64);
   require(MiningLib.isMinerFeeConsumed(s, "base", "0x" # BURN64), "consumed hash must read back");
-  require(not MiningLib.isMinerFeeConsumed(s, "base", "0x" # "ff" # BURN64), "a different hash stays unconsumed");
+  // A DIFFERENT valid hash stays unconsumed. (Not a malformed spelling: an
+  // unspellable string is no longer a "different hash" — it fails CLOSED, §9.)
+  require(not MiningLib.isMinerFeeConsumed(s, "base", "0x1123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"), "a different valid hash stays unconsumed");
 });
 
 await Test.test("consumed: W1A identity — any spelling maps to the canonical entry", func() : async () {
@@ -410,5 +412,252 @@ await Test.test("D1: armed anywhere + an armed chain returns the configured fee"
   switch (gateDecision(s, ?"base")) {
     case (#required(f)) { require(f == 6_900_000_000_000, "the armed chain's fee is the gate") };
     case (_) { Runtime.trap("an armed chain must yield a required fee") };
+  };
+});
+
+// ── 9. F4 (audit v341): miner-fee hash boundary — canonicalize + fail closed ─
+//
+// Finding #4: createMiner used the caller-supplied feeTxHash RAW — the raw
+// value reached the JSON-RPC body and the replay key (minerFeeKey) FAILED OPEN
+// on unspellable hashes (isMinerFeeConsumed => false), so a crafted spelling
+// could verify against a real payment's receipt yet never be consumed — one
+// real fee, unlimited miners. Fix under test: the createMiner boundary
+// canonicalizes via MiningLib.canonicalMinerFeeHash BEFORE any RPC (rejecting
+// malformed input with MINER_FEE_TX_INVALID), and the consumed-set answers
+// FAIL CLOSED for spellings that have no key.
+
+func expectKey(r : { #ok : Text; #err : Text }) : Text {
+  switch (r) {
+    case (#ok(k)) { k };
+    case (#err(e)) { Runtime.trap("expected a key, got: " # e) };
+  };
+};
+
+await Test.test("F4: minerFeeKey folds 0X/mixed-case/prefixless spellings to ONE key", func() : async () {
+  let k0 = expectKey(MiningLib.minerFeeKey("base", "0x" # BURN64));
+  let k1 = expectKey(MiningLib.minerFeeKey("base", BURN64));
+  let k2 = expectKey(MiningLib.minerFeeKey("base", "0X" # BURN64.toUpper()));
+  let k3 = expectKey(MiningLib.minerFeeKey("base", "0x0123456789ABCDEF0123456789abcdef0123456789abcdef0123456789ABCDEF"));
+  require(k0 == k1, "prefixless spelling must fold");
+  require(k0 == k2, "0X-upper spelling must fold");
+  require(k0 == k3, "mixed-case spelling must fold");
+  require(k0 == "base:0x" # BURN64, "the key is chain + canonical hash");
+});
+
+await Test.test("F4: isMinerFeeConsumed FAILS CLOSED on an unspellable hash", func() : async () {
+  let s = MiningLib.newMiningState();
+  // A hash that cannot produce a key can never be PROVEN unused — refuse.
+  require(MiningLib.isMinerFeeConsumed(s, "base", "not-a-transaction-hash"), "unspellable hash must read as consumed");
+  require(MiningLib.isMinerFeeConsumed(s, "base", ""), "empty hash must read as consumed");
+  require(MiningLib.isMinerFeeConsumed(s, "base", "0x1234"), "short hash must read as consumed");
+});
+
+await Test.test("F4: consumeMinerFee stays a no-op for an unspellable hash", func() : async () {
+  let s = MiningLib.newMiningState();
+  MiningLib.consumeMinerFee(s, "base", "not-a-transaction-hash");
+  // No entry may be written for a hash that has no key, and no OTHER entry
+  // may appear as a side effect.
+  require(not MiningLib.isMinerFeeConsumed(s, "base", "0x" # BURN64), "no unrelated entry may appear");
+});
+
+await Test.test("F4: boundary rejects a garbage hash with MINER_FEE_TX_INVALID", func() : async () {
+  // canonicalMinerFeeHash is the EXACT function the createMiner boundary
+  // calls before any RPC/outcall; its #err is returned to the caller
+  // verbatim, so this pins the wire contract the frontend classifier keys on.
+  switch (MiningLib.canonicalMinerFeeHash("not-a-transaction-hash")) {
+    case (#ok(c)) { Runtime.trap("garbage hash must be rejected, got #ok(" # c # ")") };
+    case (#err(e)) {
+      require(e.startsWith(#text "MINER_FEE_TX_INVALID"), "rejection code must be MINER_FEE_TX_INVALID, got: " # e);
+    };
+  };
+});
+
+await Test.test("F4: boundary rejects malformed shapes and folds valid spellings", func() : async () {
+  // Rejections (none of these may ever reach an RPC):
+  let bad : [Text] = [
+    "0x",                                        // bare prefix
+    "",                                          // empty
+    "0x1234",                                    // far too short
+    BURN64 # "a",                                // 65 chars
+    "z123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", // 64 chars, one non-hex char
+  ];
+  for (h in bad.values()) {
+    switch (MiningLib.canonicalMinerFeeHash(h)) {
+      case (#ok(c)) { Runtime.trap("malformed hash must be rejected, got #ok(" # c # ")") };
+      case (#err(_)) {};
+    };
+  };
+  // Acceptance: every spelling of a real hash folds to ONE canonical value.
+  let canon = "0x" # BURN64;
+  let spellings : [Text] = [
+    canon,
+    BURN64,
+    "0X" # BURN64.toUpper(),
+    "0x0123456789ABCDEF0123456789abcdef0123456789abcdef0123456789ABCDEF",
+  ];
+  for (h in spellings.values()) {
+    switch (MiningLib.canonicalMinerFeeHash(h)) {
+      case (#ok(c)) { require(c == canon, "canonical form must be 0x + lowercase, got " # c) };
+      case (#err(e)) { Runtime.trap("valid spelling rejected: " # e) };
+    };
+  };
+});
+
+// ── 10. finding #12: contract-wallet payer acceptance (Safe/multisig) ──────
+//
+// The miner gate used to require the FeePaid event's payer (= the collector's
+// msg.sender) to equal the fee tx sender. A Safe/multisig pays with
+// msg.sender = the wallet CONTRACT while tx.from is the executing EOA —
+// legitimately different — so that equality returned PENDING forever and the
+// fee was stranded. The fix (mining-api.mo step 4): the collector's own event
+// is the authenticity anchor — a #found event is ACCEPTED regardless of the
+// payer; only #missing/#unparseable (stale/partial receipts) stay PENDING.
+// Sender-equality adds nothing on the miner path: no burn is bound, and the
+// MINE payload already names the caller (step 5) with the value floor (step 6).
+//
+// No mixin is importable in this suite: the acceptance pipeline the mixin
+// implements is mirrored here in pure form (same approach as the §8 gate
+// decision) and each rule pinned against a byte-shaped receipt.
+
+let SAFE_WALLET = "0x1f9840a85d5af5bf1d1762f925bdaddc4201f984"; // contract wallet: the collector's msg.sender
+let EXECUTOR_EOA = "0x2222222222222222222222222222222222222222"; // Safe owner: signs the tx, so tx.from
+// ABI address topic: 12 zero bytes + the 20-byte address.
+let SAFE_PAYER_TOPIC = "0x000000000000000000000000" # "1f9840a85d5af5bf1d1762f925bdaddc4201f984";
+let FEEPAID_TOPIC0 = "0x6306705606f6bb80eb21422af69622d33b086a84411f822776f54f64b5daa027";
+let MINE_FEE_WEI = 6_900_000_000_000; // 6.9e12 wei — the configured ETH/Base/OP fee
+
+func pad64(h : Text) : Text {
+  var out = "";
+  var i : Nat = 64 - h.size();
+  while (i > 0) { out #= "0"; i -= 1 };
+  out # h;
+};
+
+func uint256Word(v : Nat) : Text {
+  let digits = "0123456789abcdef";
+  var x = v;
+  var h = "";
+  while (x > 0) {
+    h := Text.fromChar(Text.toArray(digits)[x % 16]) # h;
+    x := x / 16;
+  };
+  if (h == "") { h := "0" };
+  pad64(h);
+};
+
+// MINE payload bytes for a principal text (no 0x prefix): len ‖ principal ‖ "MINE".
+func minePayloadBytes(principalText : Text) : Text {
+  let digits = "0123456789abcdef";
+  let n = principalText.size();
+  Text.fromChar(Text.toArray(digits)[n / 16])
+    # Text.fromChar(Text.toArray(digits)[n % 16])
+    # hexOfText(principalText)
+    # MINE_TAG_HEX;
+};
+
+// FeePaid log data: [offset=0x40, value, bindingLen, binding...] — the real
+// ABI-head layout the decoder is validated against.
+func minerFeeData(valueWei : Nat, bindingBytesHex : Text) : Text {
+  "0x" # pad64("40") # uint256Word(valueWei) # uint256Word(bindingBytesHex.size() / 2) # pad64(bindingBytesHex);
+};
+
+// A receipt carrying ONE FeePaid log from the collector, emitted for
+// `payerTopic`, with `dataHex` — the shape the gate hands the event scan.
+func feePaidReceipt(payerTopic : Text, dataHex : Text) : Text {
+  "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"status\":\"0x1\",\"logs\":["
+    # "{\"address\":\"" # COLLECTOR # "\",\"topics\":[\"" # FEEPAID_TOPIC0 # "\",\"" # payerTopic # "\"],\"data\":\"" # dataHex # "\"}"
+    # "]}}";
+};
+
+// The acceptance decision createMiner implements after finding #12, mirrored
+// in pure form: #found event → binding names the caller → value floor. There
+// is NO payer == tx.from step.
+func minerFeeAcceptance(
+  receipt : Text,
+  feeTx : VerifyLib.TxByHash,
+  wallet : Text,
+  principalText : Text,
+  requiredWei : Nat,
+) : { #ok; #err : Text } {
+  let (paidValueWei, eventBindingHex) = switch (VerifyLib.feePaidLogValue(receipt, wallet, "")) {
+    case (#found(r)) { (r.valueWei, r.bindingHex) };
+    case (#unparseable) { return #err("PENDING: fee event unreadable — retry in a moment") };
+    case (#missing) { return #err("PENDING: fee event not found in the receipt — stale or partial receipt, retry") };
+  };
+  switch (VerifyLib.verifyMinerFeeBinding(feeTx, wallet, principalText, eventBindingHex)) {
+    case (#ok) {};
+    case (#err(e)) { return #err(e) };
+  };
+  switch (VerifyLib.minerFeeShortfall(paidValueWei, requiredWei)) {
+    case null {};
+    case (?missing) { return #err("MINER_FEE_UNDERPAID: short by " # Nat.toText(missing)) };
+  };
+  #ok;
+};
+
+func expectAcceptance(r : { #ok; #err : Text }, msg : Text) {
+  switch (r) {
+    case (#ok) {};
+    case (#err(e)) { Runtime.trap(msg # " — got: " # e) };
+  };
+};
+
+func expectPending(r : { #ok; #err : Text }, msg : Text) {
+  switch (r) {
+    case (#ok) { Runtime.trap(msg # " — must not be accepted") };
+    case (#err(e)) {
+      if (not e.startsWith(#text "PENDING")) {
+        Runtime.trap(msg # " — must stay retriable (PENDING), got: " # e);
+      };
+    };
+  };
+};
+
+await Test.test("F12: Safe-wallet payment (event payer = wallet contract ≠ tx.from EOA) is ACCEPTED", func() : async () {
+  let receipt = feePaidReceipt(SAFE_PAYER_TOPIC, minerFeeData(MINE_FEE_WEI, minePayloadBytes(PRINCIPAL)));
+  // The finding's premise, executable: the payer the collector saw is the
+  // wallet CONTRACT, and the old rule (still the claim path's rule) keys on
+  // tx.from — so it rejects this legitimate payment. That is exactly the
+  // PENDING-forever loop finding #12 removed from the miner path.
+  require(SAFE_WALLET != EXECUTOR_EOA, "the vector must have payer ≠ tx.from");
+  require(VerifyLib.feePaidPayerMatches(receipt, COLLECTOR, SAFE_WALLET), "fixture: the event must name the wallet contract as payer");
+  require(not VerifyLib.feePaidPayerMatches(receipt, COLLECTOR, EXECUTOR_EOA), "premise: the old tx.from equality rejects this payment");
+  // The new pipeline: no payer step — the #found event + binding + floor accept.
+  expectAcceptance(
+    minerFeeAcceptance(receipt, tx(EXECUTOR_EOA, COLLECTOR, MINER_BINDING), COLLECTOR, PRINCIPAL, MINE_FEE_WEI),
+    "a Safe-wallet payment must be accepted",
+  );
+});
+
+await Test.test("F12: a receipt without the event stays PENDING (stale/partial — retriable, never definitive)", func() : async () {
+  let noEvent = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"status\":\"0x1\",\"logs\":[]}}";
+  expectPending(
+    minerFeeAcceptance(noEvent, tx(EXECUTOR_EOA, COLLECTOR, MINER_BINDING), COLLECTOR, PRINCIPAL, MINE_FEE_WEI),
+    "a missing FeePaid event",
+  );
+});
+
+await Test.test("F12: an unreadable event data field stays PENDING", func() : async () {
+  let truncated = feePaidReceipt(SAFE_PAYER_TOPIC, "0x1234"); // too short to decode
+  expectPending(
+    minerFeeAcceptance(truncated, tx(EXECUTOR_EOA, COLLECTOR, MINER_BINDING), COLLECTOR, PRINCIPAL, MINE_FEE_WEI),
+    "an unparseable event",
+  );
+});
+
+await Test.test("F12: event acceptance does not relax the binding — a foreign principal is rejected", func() : async () {
+  let foreign = minePayloadBytes(OTHER_PRINCIPAL); // 08 ‖ "aaaaa-aa" ‖ MINE
+  let receipt = feePaidReceipt(SAFE_PAYER_TOPIC, minerFeeData(MINE_FEE_WEI, foreign));
+  switch (minerFeeAcceptance(receipt, tx(EXECUTOR_EOA, COLLECTOR, "0x" # foreign), COLLECTOR, PRINCIPAL, MINE_FEE_WEI)) {
+    case (#ok) { Runtime.trap("a binding naming another principal must fail") };
+    case (#err(e)) { require(e.startsWith(#text "MINER_FEE_BINDING"), "expected a binding failure, got: " # e) };
+  };
+});
+
+await Test.test("F12: event acceptance does not relax the value floor — underpayment is rejected", func() : async () {
+  let receipt = feePaidReceipt(SAFE_PAYER_TOPIC, minerFeeData(MINE_FEE_WEI - 1, minePayloadBytes(PRINCIPAL)));
+  switch (minerFeeAcceptance(receipt, tx(EXECUTOR_EOA, COLLECTOR, MINER_BINDING), COLLECTOR, PRINCIPAL, MINE_FEE_WEI)) {
+    case (#ok) { Runtime.trap("1 wei under the required fee must be rejected") };
+    case (#err(e)) { require(e.startsWith(#text "MINER_FEE_UNDERPAID"), "expected MINER_FEE_UNDERPAID, got: " # e) };
   };
 });

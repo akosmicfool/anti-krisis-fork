@@ -6,6 +6,7 @@ import { Link, useParams } from "@tanstack/react-router";
 import { Calendar, MapPin, Users } from "lucide-react";
 import { useEffect, useState } from "react";
 import { HighlightsSection } from "../components/HighlightsSection";
+import { RankSkoreTiles } from "../components/RankSkoreTiles";
 import type { SocialLink } from "../hooks/use-backend";
 
 interface PublicProfile {
@@ -15,10 +16,12 @@ interface PublicProfile {
   location: string;
   born: string;
   superpowers: string;
+  interests: string;
   profilePicture: string;
   coverImage: string;
   evmAddress: string | null;
   hasOgBadge: boolean;
+  playerBadgeLevel: bigint;
   socials: SocialLink[];
   tribeId?: string | null;
 }
@@ -74,10 +77,12 @@ export function PublicProfilePage() {
           location: (p.location as string) ?? "",
           born: (p.born as string) ?? "",
           superpowers: (p.superpowers as string) ?? "",
+          interests: (p.interests as string) ?? "",
           profilePicture: (p.profilePicture as string) ?? "",
           coverImage: (p.coverImage as string) ?? "",
           evmAddress: (p.evmAddress as string | null | undefined) ?? null,
           hasOgBadge: (p.hasOgBadge as boolean | undefined) ?? false,
+          playerBadgeLevel: (p.playerBadgeLevel as bigint | undefined) ?? 0n,
           socials: Array.isArray(p.socials)
             ? (p.socials as SocialLink[]).map((s, idx) => ({
                 ...s,
@@ -280,9 +285,9 @@ export function PublicProfilePage() {
       {/* ════════════════════════════════════════════════════════════════
           SECTION 2 — BIO + LINKS (side by side)
       ════════════════════════════════════════════════════════════════ */}
-      {(profile.bio || visibleSocials.length > 0) && (
+      {(profile.bio || visibleSocials.length > 0 || resolvedPrincipal) && (
         <div
-          className="flex flex-col sm:flex-row gap-4 mb-6"
+          className="flex flex-col sm:flex-row gap-4 mb-6 items-stretch"
           data-ocid="public-profile.bio_links_row"
         >
           {/* Bio */}
@@ -292,7 +297,7 @@ export function PublicProfilePage() {
               data-ocid="public-profile.bio_section"
             >
               <SectionHeader>Bio</SectionHeader>
-              <p className="font-mono text-sm text-foreground leading-relaxed whitespace-pre-wrap">
+              <p className="font-mono text-sm md:text-base text-foreground leading-relaxed whitespace-pre-wrap">
                 {profile.bio}
               </p>
             </section>
@@ -320,6 +325,10 @@ export function PublicProfilePage() {
               </div>
             </section>
           )}
+          {/* RANK · SKORE — right end of the BIO line; full-width pair on mobile */}
+          {resolvedPrincipal && (
+            <RankSkoreTiles principal={resolvedPrincipal} />
+          )}
         </div>
       )}
 
@@ -331,16 +340,14 @@ export function PublicProfilePage() {
           type="player"
           principal={resolvedPrincipal}
           hasOgBadge={profile.hasOgBadge}
+          playerBadgeLevel={Number(profile.playerBadgeLevel ?? 0n)}
         />
       )}
 
       {/* ════════════════════════════════════════════════════════════════
           SECTION 4 — SUPERPOWERS + INTERESTS (side by side)
       ════════════════════════════════════════════════════════════════ */}
-      {(profile.superpowers ||
-        !!localStorage.getItem(
-          `interests_${resolvedPrincipal?.toText() ?? ""}`,
-        )) && (
+      {(profile.superpowers || profile.interests) && (
         <div
           className="flex flex-col sm:flex-row gap-4 mb-6"
           data-ocid="public-profile.superpowers_interests_row"
@@ -353,7 +360,7 @@ export function PublicProfilePage() {
             >
               <SectionHeader>Superpowers</SectionHeader>
               <p
-                className="font-mono text-sm text-foreground"
+                className="font-mono text-sm md:text-base text-foreground"
                 data-ocid="public-profile.superpowers"
               >
                 {profile.superpowers}
@@ -361,23 +368,20 @@ export function PublicProfilePage() {
             </section>
           )}
           {/* Interests */}
-          {resolvedPrincipal &&
-            localStorage.getItem(`interests_${resolvedPrincipal.toText()}`) && (
-              <section
-                className="border border-border p-4 bg-card flex-1 min-w-0"
-                data-ocid="public-profile.interests_section"
+          {profile.interests && (
+            <section
+              className="border border-border p-4 bg-card flex-1 min-w-0"
+              data-ocid="public-profile.interests_section"
+            >
+              <SectionHeader>Interests</SectionHeader>
+              <p
+                className="font-mono text-sm md:text-base text-foreground leading-relaxed whitespace-pre-wrap"
+                data-ocid="public-profile.interests"
               >
-                <SectionHeader>Interests</SectionHeader>
-                <p
-                  className="font-mono text-sm text-foreground leading-relaxed whitespace-pre-wrap"
-                  data-ocid="public-profile.interests"
-                >
-                  {localStorage.getItem(
-                    `interests_${resolvedPrincipal.toText()}`,
-                  )}
-                </p>
-              </section>
-            )}
+                {profile.interests}
+              </p>
+            </section>
+          )}
         </div>
       )}
     </div>

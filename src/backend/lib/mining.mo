@@ -601,20 +601,46 @@ module {
     };
   };
 
+  /// Boundary validation for the caller-supplied miner-creation fee hash
+  /// (audit finding #4). The createMiner mixin calls this IMMEDIATELY after
+  /// extracting a non-null feeTxHash and BEFORE any RPC: the raw string must
+  /// never be interpolated into a JSON-RPC body (verification.mo
+  /// buildTxByHashRequestBody) nor used to derive the consumed-set key.
+  /// Returns the canonical hash, or the exact rejection the boundary returns
+  /// — the frontend classifier keys on the MINER_FEE_TX_INVALID code, so the
+  /// text is defined HERE, once. Public and pure so the boundary contract is
+  /// unit-testable (this harness cannot instantiate a mixin).
+  public func canonicalMinerFeeHash(txHash : Text) : { #ok : Text; #err : Text } {
+    switch (ClaimIdentity.canonicalTxHash(txHash)) {
+      case (#ok(canonical)) { #ok(canonical) };
+      case (#err(_)) {
+        #err("MINER_FEE_TX_INVALID: fee transaction hash is not a valid 32-byte transaction hash");
+      };
+    };
+  };
+
   /// Mark a miner-creation fee tx as consumed (single-use). Call only after
   /// the fee has fully verified — this is the "tearing the ticket" step.
   public func consumeMinerFee(state : State, chain : Text, txHash : Text) : () {
     switch (minerFeeKey(chain, txHash)) {
       case (#ok(key)) { state.minerFeeTxs.add(key, true) };
-      case (#err(_)) {}; // unspellable hash can't have passed verification
+      // Nothing to consume for a hash with no key. Unreachable from the
+      // mixin after the canonicalMinerFeeHash boundary check — kept as a
+      // defensive no-op so a mis-called consume can never trap or half-write.
+      case (#err(_)) {};
     };
   };
 
   /// Has this fee tx already been used for a creation on `chain`?
+  /// FAIL CLOSED (audit finding #4): a hash that cannot be canonicalized
+  /// cannot be looked up, so it can never be PROVEN unused — answer true
+  /// (treat as consumed) instead of handing a crafted spelling a replay
+  /// bypass. Unreachable from the mixin after the boundary check; kept as a
+  /// defensive barrier for any other caller.
   public func isMinerFeeConsumed(state : State, chain : Text, txHash : Text) : Bool {
     switch (minerFeeKey(chain, txHash)) {
       case (#ok(key)) { state.minerFeeTxs.get(key) != null };
-      case (#err(_)) { false }; // unspellable hash was never stored
+      case (#err(_)) { true }; // fail closed — never a free pass
     };
   };
 
@@ -688,13 +714,13 @@ module {
     {
       var akkLedgerId = null;
       var nextMinerId = 0;
-      miners = Map.empty<MinerId, MiningTypes.MinerRecord>();
-      akkBalances = Map.empty<Principal, Nat>();
-      gritSpentByUser = Map.empty<Principal, Nat>();
-      totalAkkWonByUser = Map.empty<Principal, Nat>();
+      miners = Map.empty();
+      akkBalances = Map.empty();
+      gritSpentByUser = Map.empty();
+      totalAkkWonByUser = Map.empty();
       var blockNumber = 0;
       var totalAkkMined = 0;
-      minerCreationFees = Map.empty<Text, Nat>();
+      minerCreationFees = Map.empty();
       blockHistory = List.empty();
       var lastBlockWasEmpty = false;
       pendingMints = List.empty();
@@ -704,7 +730,7 @@ module {
       var totalMintSucceeded = 0;
       var totalMintAbandoned = 0;
       var akkTransferFee = 10_000;
-      minerFeeTxs = Map.empty<Text, Bool>();
+      minerFeeTxs = Map.empty();
     };
   };
 

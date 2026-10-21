@@ -18,6 +18,7 @@ module {
     hasOgBadge       : Bool;  // true once the user has claimed the OG NFT badge on ICP
     playerBadgeLevel : Nat;   // 0=none, 1=Player(690), 2=SuperPlayer(6900), 3=AlphaPlayer(69000)
     miningStreak     : Nat;   // consecutive days with gritEarned > 0 in daily snapshots
+    interests        : Text;  // free-text interests shown on the public profile (D14)
   };
 
   public type ProfileInput = {
@@ -31,6 +32,7 @@ module {
     coverImage     : Text;
     socials        : [SocialLink];
     evmAddress     : ?Text; // optional Ethereum wallet address for NFT badge checks
+    interests      : Text;  // free-text interests (D14)
     // hasOgBadge is intentionally absent from ProfileInput — it can only be set via claimOgBadge()
   };
 
@@ -51,6 +53,7 @@ module {
     playerBadgeLevel : Nat;
     miningStreak     : Nat;
     tribeId          : ?Text; // the tribe this user currently belongs to (null if none)
+    interests        : Text;  // free-text interests (D14) — a stored field, not the viewer's localStorage
   };
 
   public type ProfileError = {

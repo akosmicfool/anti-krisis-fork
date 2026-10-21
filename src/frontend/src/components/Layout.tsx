@@ -26,7 +26,12 @@ import { useVideo } from "../context/VideoContext";
 import { useAuth } from "../hooks/use-auth";
 import { useIsAdmin } from "../hooks/use-backend";
 import { useProfileSetup } from "../hooks/use-profile-setup";
-import { formatGrit, truncateAddress } from "../types";
+import {
+  PixelSnowBackground,
+  SNOW_GREEN,
+  SNOW_RED,
+} from "./PixelSnowBackground";
+import { PlayModeBanner } from "./PlayModeBanner";
 import { UsernamePromptModal } from "./UsernamePromptModal";
 import { WalletButton } from "./WalletButton";
 
@@ -58,7 +63,7 @@ function MuteButton() {
       type="button"
       onClick={toggleMute}
       className="w-8 h-8 rounded-full flex items-center justify-center transition-all border border-[#00ff41]/40 hover:border-[#00ff41] hover:shadow-[0_0_8px_rgba(0,255,65,0.4)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#00ff41] bg-transparent text-accent"
-      aria-label={isMuted ? "Unmute video" : "Mute video"}
+      aria-label={isMuted ? "Unmute music" : "Mute music"}
       data-ocid="header.mute_toggle_button"
     >
       {isMuted ? (
@@ -147,6 +152,7 @@ export function Layout({ children, isAdmin = false }: LayoutProps) {
   const navigate = useNavigate();
 
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [snowRed, setSnowRed] = useState(false);
 
   // Username prompt: show for authenticated users who haven't set a username yet
   const { needsUsername, isLoading: profileSetupLoading } = useProfileSetup();
@@ -155,7 +161,14 @@ export function Layout({ children, isAdmin = false }: LayoutProps) {
     isAuthenticated && !profileSetupLoading && needsUsername && !modalDismissed;
 
   return (
-    <div className="min-h-screen flex flex-col bg-background">
+    <div className="min-h-screen isolate flex flex-col bg-background">
+      {/* App-wide pixel snow background (behind all content) */}
+      <PixelSnowBackground palette={snowRed ? SNOW_RED : SNOW_GREEN} />
+
+      {/* Play-mode reminder banner — dismissible for the session, reappears
+          on every app refresh (plain component state, never persisted) */}
+      <PlayModeBanner />
+
       {/* Header */}
       <header className="sticky top-0 z-40 bg-card border-b border-border">
         <div className="max-w-7xl mx-auto px-4 h-14 flex items-center gap-3">
@@ -178,18 +191,19 @@ export function Layout({ children, isAdmin = false }: LayoutProps) {
               ocid="nav.akore_link"
             />
             <NavLink
+              to="/skore"
+              icon={<Trophy className="h-3 w-3" />}
+              label="SKORE"
+              ocid="nav.score_link"
+            />
+
+            <NavLink
               to="/about"
               icon={<Info className="h-3 w-3" />}
               label="ABOUT"
               ocid="nav.about_link"
             />
 
-            <NavLink
-              to="/score"
-              icon={<Trophy className="h-3 w-3" />}
-              label="SKORE"
-              ocid="nav.score_link"
-            />
             {adminVisible && isAuthenticated && (
               <NavLink
                 to="/admin"
@@ -203,7 +217,56 @@ export function Layout({ children, isAdmin = false }: LayoutProps) {
           {/* Right side */}
           <div className="ml-auto flex items-center gap-2 sm:gap-3">
             <MuteButton />
-            <WalletButton />
+            {/* Snow colour toggle: green 3-tone <-> red 3-tone */}
+            <button
+              type="button"
+              onClick={() => setSnowRed((v) => !v)}
+              aria-pressed={snowRed}
+              aria-label="Toggle snow color"
+              data-ocid="header.snow_color_toggle"
+              className={
+                snowRed
+                  ? "w-8 h-8 rounded-full flex items-center justify-center transition-all border border-[#e0554d]/60 hover:border-[#e0554d] hover:shadow-[0_0_8px_rgba(224,85,77,0.4)] bg-transparent text-[#e0554d]"
+                  : "w-8 h-8 rounded-full flex items-center justify-center transition-all border border-[#00ff41]/40 hover:border-[#00ff41] hover:shadow-[0_0_8px_rgba(0,255,65,0.4)] bg-transparent text-accent"
+              }
+            >
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                aria-hidden="true"
+              >
+                <line x1="12" y1="2" x2="12" y2="22" />
+                <line x1="2" y1="12" x2="22" y2="12" />
+                <line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />
+                <line x1="19.07" y1="4.93" x2="4.93" y2="19.07" />
+              </svg>
+            </button>
+            {isAuthenticated ? (
+              <WalletButton />
+            ) : (
+              <>
+                {/* Signed out: mobile shows Login in the wallet slot; desktop keeps WalletButton */}
+                <div className="hidden sm:flex">
+                  <WalletButton />
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={login}
+                  disabled={isLoading}
+                  className="border-[#00ff41]/40 bg-[#00ff41]/5 hover:bg-[#00ff41]/10 hover:border-[#00ff41] hover:shadow-[0_0_8px_rgba(0,255,65,0.3)] gap-1.5 text-xs font-accent uppercase tracking-widest text-[#00ff41] transition-all sm:hidden"
+                  data-ocid="nav.mobile_header_login_button"
+                >
+                  <LogIn className="h-3.5 w-3.5" />
+                  {isLoading ? "Loading…" : "Login"}
+                </Button>
+              </>
+            )}
 
             {/* ICP Identity */}
             {isAuthenticated ? (
@@ -226,10 +289,10 @@ export function Layout({ children, isAdmin = false }: LayoutProps) {
                 >
                   <DropdownMenuItem
                     onClick={() => navigate({ to: "/profile" })}
-                    className="gap-2 text-xs font-accent uppercase tracking-widest cursor-pointer text-white hover:text-foreground focus:text-foreground"
+                    className="gap-2 text-xs font-accent uppercase tracking-widest cursor-pointer text-white hover:text-accent-foreground focus:text-accent-foreground group"
                     data-ocid="nav.profile_item"
                   >
-                    <User className="h-3.5 w-3.5" />
+                    <User className="h-3.5 w-3.5 group-hover:text-accent-foreground group-focus:text-accent-foreground" />
                     Profile
                   </DropdownMenuItem>
                   {adminVisible && (
@@ -237,10 +300,10 @@ export function Layout({ children, isAdmin = false }: LayoutProps) {
                       <DropdownMenuSeparator className="bg-border" />
                       <DropdownMenuItem
                         onClick={() => navigate({ to: "/admin" })}
-                        className="gap-2 text-xs font-accent uppercase tracking-widest cursor-pointer text-accent hover:text-accent focus:text-accent"
+                        className="gap-2 text-xs font-accent uppercase tracking-widest cursor-pointer text-accent hover:text-accent-foreground focus:text-accent-foreground group"
                         data-ocid="nav.admin_settings_item"
                       >
-                        <ShieldCheck className="h-3.5 w-3.5 text-accent" />
+                        <ShieldCheck className="h-3.5 w-3.5 text-accent group-hover:text-accent-foreground group-focus:text-accent-foreground" />
                         Admin Settings
                       </DropdownMenuItem>
                     </>
@@ -248,10 +311,10 @@ export function Layout({ children, isAdmin = false }: LayoutProps) {
                   <DropdownMenuSeparator className="bg-border" />
                   <DropdownMenuItem
                     onClick={logout}
-                    className="gap-2 text-xs font-accent uppercase tracking-widest cursor-pointer text-destructive hover:text-destructive focus:text-destructive"
+                    className="gap-2 text-xs font-accent uppercase tracking-widest cursor-pointer text-destructive hover:text-accent-foreground focus:text-accent-foreground group"
                     data-ocid="nav.logout_item"
                   >
-                    <LogOut className="h-3.5 w-3.5 text-destructive" />
+                    <LogOut className="h-3.5 w-3.5 text-destructive group-hover:text-accent-foreground group-focus:text-accent-foreground" />
                     Logout
                   </DropdownMenuItem>
                 </DropdownMenuContent>
@@ -304,18 +367,17 @@ export function Layout({ children, isAdmin = false }: LayoutProps) {
                   show: true,
                 },
                 {
+                  to: "/skore",
+                  icon: <Trophy className="h-3.5 w-3.5" />,
+                  label: "SKORE",
+                  ocid: "nav.mobile_score_link",
+                  show: true,
+                },
+                {
                   to: "/about",
                   icon: <Info className="h-3.5 w-3.5" />,
                   label: "ABOUT",
                   ocid: "nav.mobile_about_link",
-                  show: true,
-                },
-
-                {
-                  to: "/score",
-                  icon: <Trophy className="h-3.5 w-3.5" />,
-                  label: "SKORE",
-                  ocid: "nav.mobile_score_link",
                   show: true,
                 },
                 {
@@ -393,7 +455,7 @@ export function Layout({ children, isAdmin = false }: LayoutProps) {
       )}
 
       {/* Main content */}
-      <main className="flex-1 bg-background" data-ocid="layout.main">
+      <main className="flex-1 bg-transparent" data-ocid="layout.main">
         {children}
       </main>
 

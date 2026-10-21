@@ -81,6 +81,7 @@ type PublicProfile =
    displayName: text;
    evmAddress: opt text;
    hasOgBadge: bool;
+   interests: text;
    location: text;
    miningStreak: nat;
    playerBadgeLevel: nat;
@@ -97,6 +98,7 @@ type ProfileInput =
    coverImage: text;
    displayName: text;
    evmAddress: opt text;
+   interests: text;
    location: text;
    profilePicture: text;
    socials: vec SocialLink;
@@ -122,6 +124,7 @@ type Profile =
    displayName: text;
    evmAddress: opt text;
    hasOgBadge: bool;
+   interests: text;
    location: text;
    miningStreak: nat;
    playerBadgeLevel: nat;
@@ -359,7 +362,6 @@ service : {
   getFeePercent: () -> (float64) query;
   getFeeRecipient: () -> (opt text) query;
   getGritIssuanceRate: () -> (nat) query;
-  getHistoryBasedAk69Stockpile: () -> (float64) query;
   getIsLaunched: () -> (bool) query;
   getLaunchGate: () ->
    (record {
@@ -376,6 +378,7 @@ service : {
       startTime: int;
       timeWindowEnabled: bool;
     }) query;
+  getLedgerAkkSupply: () -> (nat);
   getLedgerMintingAccount: () -> (opt Account);
   getMinerCreationFees: () -> (vec ChainFeeEntry) query;
   getMintRetryStats: () ->
@@ -397,6 +400,7 @@ service : {
           text;
           float64;
         }) query;
+  getPlayerCount: () -> (nat) query;
   getPlayerRank: ("principal": principal, timescale: text) -> (opt nat) query;
   getPlayerScore: ("principal": principal, timescale: text) ->
    (float64) query;
@@ -439,6 +443,7 @@ service : {
                                                  float64;
                                                }) query;
   getTribeByName: (name: text) -> (opt Tribe) query;
+  getTribeCount: () -> (nat) query;
   getTribeLiveStats: (tribeId: TribeId) ->
    (opt record {
           memberCount: nat;
@@ -450,6 +455,11 @@ service : {
    (vec TribeMemberWithRole) query;
   getTribeRank: (tribeId: text, timescale: text) -> (opt nat) query;
   getTribeScore: (tribeId: text, timescale: text) -> (float64) query;
+  getTribeWindowedTotals: (tribeId: text) ->
+   (record {
+      totalAkk: nat;
+      totalGrit: nat;
+    }) query;
   getUserMiningStats: () ->
    (record {
       akkWon: nat;

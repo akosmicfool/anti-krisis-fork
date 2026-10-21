@@ -51,14 +51,6 @@ export function truncateAddress(address: string, chars = 6): string {
   return `${address.slice(0, chars)}…${address.slice(-4)}`;
 }
 
-export function formatGrit(amount: bigint): string {
-  const num = Number(amount);
-  if (num >= 1_000_000_000) return `${(num / 1_000_000_000).toFixed(2)}B`;
-  if (num >= 1_000_000) return `${(num / 1_000_000).toFixed(2)}M`;
-  if (num >= 1_000) return `${(num / 1_000).toFixed(2)}K`;
-  return num.toLocaleString();
-}
-
 /**
  * Format a USD dollar value:
  * - non-finite         → '$0.00'
@@ -83,8 +75,6 @@ export function formatUSDValue(usd: number): string {
 
 export const CHAIN_LABELS: Record<string, string> = {
   ethereum: "Ethereum",
-  arbitrum: "Arbitrum",
-  polygon: "Polygon",
   optimism: "Optimism",
   base: "Base",
   celo: "Celo",
@@ -99,21 +89,46 @@ export const CHAIN_IDS: Record<number, string> = {
   42220: "celo",
 };
 
-/** Maps a chain string identifier to its numeric EVM chain ID. */
-export function getChainId(chain: string): number {
-  const map: Record<string, number> = {
-    ethereum: 1,
-    arbitrum: 42161,
-    polygon: 137,
-    optimism: 10,
-    base: 8453,
-    celo: 42220,
-  };
-  return map[chain] ?? 1;
+/**
+ * Chain names this app build can burn on END-TO-END — the 4 chains with
+ * allowlisted tokens, a wrapped-native fee price, and receipt RPC coverage.
+ * A name outside this map is unsupported and must fail loudly: the old
+ * `?? 1` silently burned and fee'd on Ethereum for any unexpected name
+ * (finding #18).
+ */
+const CHAIN_ID_BY_NAME: Record<string, number> = {
+  ethereum: 1,
+  optimism: 10,
+  base: 8453,
+  celo: 42220,
+};
+
+/**
+ * Maps a chain string identifier to its numeric EVM chain ID.
+ * Returns null for any chain this build does not support — callers MUST
+ * abort the operation and surface UNSUPPORTED_CHAIN_MSG, never default.
+ */
+export function getChainId(chain: string): number | null {
+  return CHAIN_ID_BY_NAME[chain] ?? null;
 }
 
-/** Returns the block explorer URL for a given tx hash and chain. */
-export function getExplorerUrl(txHash: string, chain: string): string {
+/**
+ * Shown when a token or claim names a chain this app build cannot burn on.
+ * Same fail-loudly rule as LIVE_PRICE_UNAVAILABLE_MSG — never proceed on a
+ * guessed chain.
+ */
+export const UNSUPPORTED_CHAIN_MSG =
+  "This token's chain isn't supported by this app build — ask an admin to update the app before burning.";
+
+/**
+ * Returns the block explorer URL for a tx hash on a given chain, or "" when
+ * the chain is unknown — callers must hide the link then. Never fall back to
+ * a FOREIGN explorer: a Celo tx shown on Etherscan reads "not found" and
+ * sends debugging down the wrong path (the celoscan lesson). Single source —
+ * BurnHistoryPage used to carry a duplicate map that disagreed on the
+ * fallback (etherscan vs basescan).
+ */
+export function explorerUrl(chain: string, txHash: string): string {
   const bases: Record<string, string> = {
     ethereum: "https://etherscan.io/tx/",
     arbitrum: "https://arbiscan.io/tx/",
@@ -122,5 +137,6 @@ export function getExplorerUrl(txHash: string, chain: string): string {
     base: "https://basescan.org/tx/",
     celo: "https://celoscan.io/tx/",
   };
-  return `${bases[chain] ?? "https://etherscan.io/tx/"}${txHash}`;
+  const base = bases[chain];
+  return base ? `${base}${txHash}` : "";
 }

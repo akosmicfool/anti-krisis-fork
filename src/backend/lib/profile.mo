@@ -29,6 +29,7 @@ module {
       playerBadgeLevel = profile.playerBadgeLevel;
       miningStreak     = profile.miningStreak;
       tribeId          = tribeId;
+      interests        = profile.interests;
     };
   };
 
@@ -97,6 +98,32 @@ module {
     true;
   };
 
+  /// Player badge tiers keyed to the all-time AK69 score (see
+  /// types/profile.mo): 1 = Player (>= 690), 2 = SuperPlayer (>= 6 900),
+  /// 3 = AlphaPlayer (>= 69 000).
+  public func badgeLevelForScore(score : Float) : Nat {
+    if (score >= 69000.0) 3
+    else if (score >= 6900.0) 2
+    else if (score >= 690.0)  1
+    else 0;
+  };
+
+  /// The badge level a profile must DISPLAY: the stored ratchet raised to the
+  /// tier the current score earns. The stored value is only written when the
+  /// owner triggers updatePlayerBadgeLevel (their own profile page mounts), so
+  /// a player who already qualifies must still show the badge on their PUBLIC
+  /// profile before any ratchet write ever ran. Never lowers the stored tier.
+  public func effectiveBadgeLevel(stored : Nat, score : Float) : Nat {
+    let earned = badgeLevelForScore(score);
+    if (earned > stored) earned else stored;
+  };
+
+  /// Project the displayed badge level onto a PublicProfile view. Everything
+  /// else on the profile passes through untouched.
+  public func withBadgeScore(pub : ProfileTypes.PublicProfile, score : Float) : ProfileTypes.PublicProfile {
+    { pub with playerBadgeLevel = effectiveBadgeLevel(pub.playerBadgeLevel, score) };
+  };
+
   /// Recompute and store playerBadgeLevel for the given principal based on their current AK69 score.
   /// Badge level only ever increases (ratchet: never decreases once earned).
   /// Returns false if the profile does not exist.
@@ -108,10 +135,7 @@ module {
     switch (state.profiles.get(caller)) {
       case null false;
       case (?existing) {
-        let newLevel : Nat = if (score >= 69000.0) 3
-          else if (score >= 6900.0) 2
-          else if (score >= 690.0)  1
-          else 0;
+        let newLevel = badgeLevelForScore(score);
         // Ratchet: only upgrade, never downgrade
         let finalLevel = if (newLevel > existing.playerBadgeLevel) newLevel else existing.playerBadgeLevel;
         state.profiles.add(caller, { existing with playerBadgeLevel = finalLevel });
@@ -186,6 +210,7 @@ module {
       hasOgBadge       = existingOgBadge;
       playerBadgeLevel = existingBadgeLevel;
       miningStreak     = existingStreak;
+      interests        = cleaned.interests;
     };
     state.profiles.add(caller, profile);
     #ok(profile);

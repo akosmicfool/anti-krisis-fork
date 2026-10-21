@@ -235,6 +235,19 @@ module {
   // kVCM Transfer logs whose destination is this address.
   let AAM_ADDRESS : Text = "0x1c24239309398220883207681602bff4d10fbde1";
 
+  // KlimaDAO Retirement Aggregator (Base mainnet, chain 8453) — the EIP-2535
+  // diamond that `retireCreditViaKlima` is called on. Copied verbatim from the
+  // frontend constant KVCM_RETIREMENT.aggregator
+  // (src/frontend/src/lib/kvcm-retirement.ts:40), which is the `to` of every
+  // retire tx this backend verifies. Live-verified 2026-09-18: eth_getLogs for
+  // CARBON_RETIRED_TOPIC0 on Base (blocks 50M+) returns this address as the
+  // ONLY emitter, and a real retirement receipt (tx 0x6b0b6b1f…) shows the
+  // AggregatorRetired log emitted here — its RetireFacet runs via delegatecall,
+  // so the log address is the diamond itself, not the facet.
+  // Do not derive or substitute this value: the emitter check in
+  // findRetirementLog is only as good as the address pinned here.
+  let KLIMA_AGGREGATOR_ADDRESS : Text = "0xda0a793d7c32ab80bcdab7f8c725c96db22464f4";
+
   /// Parse a hex string (with optional "0x" prefix) to Nat.
   func hexToNat(hex : Text) : Nat {
     var result : Nat = 0;
@@ -1230,9 +1243,11 @@ module {
 
   type RetirementLogResult = { #ok : Nat; #err : Text };
 
-  /// Find the KlimaDAO Retirement Aggregator `CarbonRetired` event log in the
+  /// Find the KlimaDAO Retirement Aggregator `AggregatorRetired` event log in the
   /// transaction receipt and extract the `retiredAmount` (the last uint256 word
   /// of the ABI-encoded event data). Returns #ok(amount) on success.
+  /// Only logs emitted by KLIMA_AGGREGATOR_ADDRESS count — a matching topic0
+  /// from any other contract is skipped (see #15).
   func findRetirementLog(arr : [Char]) : RetirementLogResult {
     let jsonLen = arr.size();
 
@@ -1298,29 +1313,43 @@ module {
 
             let logArr = arr.sliceToArray(logObjStart.toInt(), logObjEnd.toInt());
 
-            // Extract the ABI-encoded data field. The CarbonRetired event data is:
-            //   carbonBridge (uint8), retiringEntityString (string), beneficiaryString (string),
-            //   retirementMessage (string), poolToken (address), retiredAmount (uint256)
-            // retiredAmount is the last 32-byte word (64 hex chars) of the data.
-            switch (extractStringField(logArr, 0, "data")) {
-              case null {
-                return #err("CarbonRetired log data field not found in JSON");
-              };
-              case (?dataHex) {
-                let hexSize = dataHex.size();
-                let stripped = if (hexSize >= 2 and
-                    dataHex.toArray()[0] == '0' and
-                    (dataHex.toArray()[1] == 'x' or dataHex.toArray()[1] == 'X'))
-                  { hexSize - 2 : Nat } else { hexSize };
-                if (stripped < 64) {
-                  return #err("CarbonRetired data field too short (no retiredAmount encoded)");
+            // #15: the log only proves a Klima retirement when the KlimaDAO
+            // aggregator itself emitted it. Any contract can emit an event
+            // with the same topic0 (and anyone can move kVCM into the AAM),
+            // so a topic-only match is fabricable. Skip look-alike logs and
+            // keep scanning for a genuine aggregator log.
+            let emittedByAggregator = switch (extractStringField(logArr, 0, "address")) {
+              case null { false };
+              case (?addr) { normAddr(addr) == normAddr(KLIMA_AGGREGATOR_ADDRESS) };
+            };
+
+            if (not emittedByAggregator) {
+              searchFrom := topicPos + CARBON_RETIRED_TOPIC0.size();
+            } else {
+              // Extract the ABI-encoded data field. The CarbonRetired event data is:
+              //   carbonBridge (uint8), retiringEntityString (string), beneficiaryString (string),
+              //   retirementMessage (string), poolToken (address), retiredAmount (uint256)
+              // retiredAmount is the last 32-byte word (64 hex chars) of the data.
+              switch (extractStringField(logArr, 0, "data")) {
+                case null {
+                  return #err("CarbonRetired log data field not found in JSON");
                 };
-                let amountHex = sliceChars(dataHex.toArray(), hexSize - 64, hexSize);
-                let amount = hexToNat(amountHex);
-                if (amount == 0) {
-                  return #err("Retired amount is zero");
+                case (?dataHex) {
+                  let hexSize = dataHex.size();
+                  let stripped = if (hexSize >= 2 and
+                      dataHex.toArray()[0] == '0' and
+                      (dataHex.toArray()[1] == 'x' or dataHex.toArray()[1] == 'X'))
+                    { hexSize - 2 : Nat } else { hexSize };
+                  if (stripped < 64) {
+                    return #err("CarbonRetired data field too short (no retiredAmount encoded)");
+                  };
+                  let amountHex = sliceChars(dataHex.toArray(), hexSize - 64, hexSize);
+                  let amount = hexToNat(amountHex);
+                  if (amount == 0) {
+                    return #err("Retired amount is zero");
+                  };
+                  return #ok(amount);
                 };
-                return #ok(amount);
               };
             };
           };
@@ -1472,7 +1501,9 @@ module {
   /// Parse the JSON RPC response and verify a KlimaDAO Retirement Aggregator
   /// retirement receipt (retireCreditViaKlima) on the Base chain.
   /// A kVCM burn claim is confirmed only when the on-chain retirement succeeded:
-  /// the receipt must have status 0x1 AND contain an AggregatorRetired event log.
+  /// the receipt must have status 0x1 AND contain an AggregatorRetired event log
+  /// EMITTED BY the KlimaDAO aggregator (KLIMA_AGGREGATOR_ADDRESS — a look-alike
+  /// event from any other contract proves nothing, #15).
   /// The burned amount credited is the kVCM actually pulled from the user
   /// (sum of expectedToken Transfer logs into the AAM).
   /// Returns #err("PENDING") when the transaction is not yet mined/indexed (retriable).

@@ -83,7 +83,10 @@ export function WithdrawModal({ akkBalance, onClose }: WithdrawModalProps) {
   const amtNum = Number(amount);
   const amtE8s =
     amount && !Number.isNaN(amtNum) ? BigInt(Math.floor(amtNum * 1e8)) : 0n;
-  const netReceived = amtNum > 0 ? Math.max(0, amtNum - FEE_AKK) : 0;
+  // The transfer fee is charged ON TOP of the amount: the recipient receives
+  // the full amount (draft path moves exactly `amount`; the live ICRC-1 send
+  // passes `amount` with the fee added by the ledger).
+  const netReceived = amtNum > 0 ? amtNum : 0;
 
   async function handleWithdraw() {
     if (!actor) {
@@ -231,7 +234,7 @@ export function WithdrawModal({ akkBalance, onClose }: WithdrawModalProps) {
             <div className="space-y-1.5">
               <Label
                 htmlFor="withdraw-address"
-                className="font-accent text-xs uppercase tracking-widest text-muted-foreground"
+                className="font-accent text-xs uppercase tracking-widest text-white"
               >
                 ICP Principal Address
               </Label>
@@ -248,14 +251,33 @@ export function WithdrawModal({ akkBalance, onClose }: WithdrawModalProps) {
                 data-ocid="withdraw.address_input"
               />
               <p className="font-body text-[11px] text-muted-foreground">
-                Recommended: Oisy or Plug wallets
+                Recommended wallets:{" "}
+                <a
+                  href="https://oisy.com/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[#00ff41] underline underline-offset-2 hover:text-[#00ff41]/80 transition-colors"
+                  data-ocid="withdraw.oisy_link"
+                >
+                  Oisy
+                </a>{" "}
+                or{" "}
+                <a
+                  href="https://plugwallet.ooo/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[#00ff41] underline underline-offset-2 hover:text-[#00ff41]/80 transition-colors"
+                  data-ocid="withdraw.plug_link"
+                >
+                  Plug
+                </a>
               </p>
             </div>
 
             <div className="space-y-1.5">
               <Label
                 htmlFor="withdraw-amount"
-                className="font-accent text-xs uppercase tracking-widest text-muted-foreground"
+                className="font-accent text-xs uppercase tracking-widest text-white"
               >
                 Amount (AKK)
               </Label>
@@ -274,7 +296,7 @@ export function WithdrawModal({ akkBalance, onClose }: WithdrawModalProps) {
                 className="font-body text-sm bg-transparent border-[#00ff41]/25 focus:border-[#00ff41]/60 placeholder:text-muted-foreground/40"
                 data-ocid="withdraw.amount_input"
               />
-              {amtNum > FEE_AKK && (
+              {amtNum > 0 && (
                 <p className="font-body text-[11px] text-[#00ff41]/70">
                   You receive:{" "}
                   <span className="text-[#00ff41]">
@@ -282,8 +304,7 @@ export function WithdrawModal({ akkBalance, onClose }: WithdrawModalProps) {
                       maximumFractionDigits: 8,
                     })}{" "}
                     AKK
-                  </span>{" "}
-                  (after fee)
+                  </span>
                 </p>
               )}
             </div>

@@ -164,8 +164,10 @@ mixin (
   // surface permanently; do not reintroduce them.
 
   /// Admin: set the GRIT issuance rate (GRIT minted per $1.00 of token burned).
-  /// Default is 1_000_000_000_000 (1 trillion GRIT per $1.00).
+  /// Default is 100_000_000_000 (100 billion GRIT per $1.00).
   /// Once setLaunched() has been called, this rate is permanently locked and cannot be changed.
+  /// The boot seed respects both this setter and the lock (see
+  /// AllowlistLib.seedGritIssuanceRate).
   public shared ({ caller }) func setGritIssuanceRate(rate : Nat) : async () {
     if (not AllowlistLib.isAdmin(admin, caller)) {
       Runtime.trap("Unauthorized: caller is not admin");

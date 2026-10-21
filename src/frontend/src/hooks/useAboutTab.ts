@@ -1,10 +1,17 @@
 import { useSearch } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 
-export type AboutTab = "tldr" | "genesis" | "manifesto" | "regnets" | "faqs";
+export type AboutTab =
+  | "tldr"
+  | "whitepaper"
+  | "genesis"
+  | "manifesto"
+  | "regnets"
+  | "faqs";
 
 const VALID_TABS: AboutTab[] = [
   "tldr",
+  "whitepaper",
   "genesis",
   "manifesto",
   "regnets",

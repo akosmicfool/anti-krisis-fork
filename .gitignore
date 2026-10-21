@@ -8,3 +8,7 @@ node_modules/
 .DS_Store
 akk-ledger/.icp/cache/
 .icp/
+
+# Sibling git worktrees live here for task isolation — never part of the app.
+# The Caffeine packager ships everything unignored (203 MB with worktrees in).
+.worktrees/

@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { http, createPublicClient } from "viem";
 import { mainnet } from "viem/chains";
 import { useAccount } from "wagmi";
+import { TX_INDEX_RPCS } from "../lib/kvcm-retirement";
 import { fetchDexScreenerPrice } from "../utils/dexscreener";
 import { ETH_RPC_ENDPOINTS } from "../utils/evm-rpc";
 
@@ -23,11 +24,7 @@ const ACQUIRE_TOKENS: AcquireToken[] = [
     chainId: 8453,
     contract: "0x2E6C05f1f7D1f4Eb9A088bf12257f1647682b754",
     link: "https://bridge.eco/?to=0x2E6C05f1f7D1f4Eb9A088bf12257f1647682b754&toChain=8453",
-    rpcEndpoints: [
-      "https://mainnet.base.org",
-      "https://base.publicnode.com",
-      "https://rpc.ankr.com/base",
-    ],
+    rpcEndpoints: [...TX_INDEX_RPCS[8453]],
   },
   {
     ticker: "kVCM",
@@ -35,11 +32,7 @@ const ACQUIRE_TOKENS: AcquireToken[] = [
     chainId: 8453,
     contract: "0x00fBAC94Fec8D4089d3fe979F39454F48c71A65d",
     link: "https://bridge.eco/?to=0x00fBAC94Fec8D4089d3fe979F39454F48c71A65d&toChain=8453",
-    rpcEndpoints: [
-      "https://mainnet.base.org",
-      "https://base.publicnode.com",
-      "https://rpc.ankr.com/base",
-    ],
+    rpcEndpoints: [...TX_INDEX_RPCS[8453]],
   },
   {
     ticker: "GIV",
@@ -47,11 +40,7 @@ const ACQUIRE_TOKENS: AcquireToken[] = [
     chainId: 10,
     contract: "0x528CDc92eAB044E1E39FE43B9514bfdAB4412B98",
     link: "https://bridge.eco/?to=0x528CDc92eAB044E1E39FE43B9514bfdAB4412B98&toChain=10",
-    rpcEndpoints: [
-      "https://mainnet.optimism.io",
-      "https://optimism.publicnode.com",
-      "https://rpc.ankr.com/optimism",
-    ],
+    rpcEndpoints: [...TX_INDEX_RPCS[10]],
   },
   {
     ticker: "axlREGEN",
@@ -59,11 +48,7 @@ const ACQUIRE_TOKENS: AcquireToken[] = [
     chainId: 42220,
     contract: "0x2e6c05f1f7d1f4eb9a088bf12257f1647682b754",
     link: "https://bridge.eco/?to=0x2e6c05f1f7d1f4eb9a088bf12257f1647682b754&toChain=42220",
-    rpcEndpoints: [
-      "https://forno.celo.org",
-      "https://celo.publicnode.com",
-      "https://rpc.ankr.com/celo",
-    ],
+    rpcEndpoints: [...TX_INDEX_RPCS[42220]],
   },
   {
     ticker: "TGN",
@@ -71,11 +56,7 @@ const ACQUIRE_TOKENS: AcquireToken[] = [
     chainId: 8453,
     contract: "0xd75dfa972c6136f1c594fec1945302f885e1ab29",
     link: "https://www.hydrex.fi/swap?tokenIn=ETH&tokenOut=0xd75dfa972c6136f1c594fec1945302f885e1ab29",
-    rpcEndpoints: [
-      "https://mainnet.base.org",
-      "https://base.publicnode.com",
-      "https://rpc.ankr.com/base",
-    ],
+    rpcEndpoints: [...TX_INDEX_RPCS[8453]],
   },
   {
     ticker: "IMPT",
@@ -254,7 +235,7 @@ export function AcquireSection() {
       {/* Section header */}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0">
-          <h1 className="text-[2.4rem] sm:text-[3rem] font-display font-black tracking-tighter text-foreground uppercase flex items-center gap-2.5">
+          <h1 className="text-4xl sm:text-5xl font-display font-black tracking-tighter text-foreground uppercase flex items-center gap-2.5">
             <ShoppingCart className="h-[1.53rem] w-[1.53rem] text-accent" />
             ACQUIRE
           </h1>
@@ -263,8 +244,8 @@ export function AcquireSection() {
             <span className="text-accent font-mono font-bold">
               RegNet tokens
             </span>{" "}
-            via the links provided (or any DEX or CEX of your preference). Skip
-            if you already own these tokens.
+            on supported chains. Use provided links or buy from any preferred
+            exchange . Skip if you have them already.
           </p>
         </div>
       </div>

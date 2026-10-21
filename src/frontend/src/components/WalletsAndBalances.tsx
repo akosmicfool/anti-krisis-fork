@@ -18,16 +18,18 @@ import {
   useLiveTokenPrice,
   useMyBalance,
 } from "../hooks/use-backend";
+import { useMyAk69Score } from "../hooks/use-score";
 import { useWallet } from "../hooks/use-wallet";
+import { formatGrit } from "../lib/format";
 import {
   CHAIN_IDS,
   CHAIN_LABELS,
-  formatGrit,
   formatUSDValue,
   truncateAddress,
 } from "../types";
 import type { AllowlistedToken } from "../types";
 import { ETH_RPC_ENDPOINTS } from "../utils/evm-rpc";
+import { ChainLogo } from "./ChainLogo";
 
 const ERC20_BALANCE_OF_ABI = [
   {
@@ -81,8 +83,8 @@ function formatTokenBalance(raw: bigint, decimals: number): string {
   const value = Number(raw) / divisor;
   if (value === 0) return "0";
   if (value < 0.0001) return "<0.0001";
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(3)}M`;
-  if (value >= 1_000) return `${(value / 1_000).toFixed(3)}K`;
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(3)} M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(3)} K`;
   return value.toLocaleString("en-US", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 3,
@@ -163,7 +165,7 @@ function ChainSwitcherInline() {
           className="w-6 h-6 rounded-full flex items-center justify-center font-mono text-[9px] font-bold uppercase tracking-tight transition-all border border-[#00ff41]/40 hover:border-[#00ff41] hover:shadow-[0_0_6px_rgba(0,255,65,0.4)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#00ff41]"
           style={{ backgroundColor: `${active.color}22`, color: active.color }}
         >
-          {active.abbr}
+          <ChainLogo id={active.chainId} className="w-4 h-4 object-contain" />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent
@@ -188,7 +190,10 @@ function ChainSwitcherInline() {
                   borderColor: `${chain.color}55`,
                 }}
               >
-                {chain.abbr}
+                <ChainLogo
+                  id={chain.chainId}
+                  className="w-3.5 h-3.5 object-contain"
+                />
               </span>
               <span className="font-mono text-xs uppercase tracking-widest text-foreground">
                 {chain.label}
@@ -213,11 +218,23 @@ export function WalletsAndBalances({
   const { address, isConnected, connectMetaMask, disconnect } = useWallet();
   const [copiedEvm, setCopiedEvm] = useState(false);
   const [copiedIcp, setCopiedIcp] = useState(false);
+  // Refresh-button animation: the icon spins for a beat after every click
+  const [refreshing, setRefreshing] = useState(false);
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+    },
+    [],
+  );
   const qc = useQueryClient();
 
   // ICP balances
   const { data: gritBalance, isLoading: gritLoading } = useMyBalance();
   const { data: akkBalance, isLoading: akkLoading } = useAkkBalance();
+  // AK69 = the player's all-time meta-score (shares the "playerScore" cache)
+  const { data: ak69Score, isLoading: ak69Loading } =
+    useMyAk69Score(icpPrincipal);
 
   // Chain name -> chain ID helper
   function getChainIdFromName(chainName: string): number | undefined {
@@ -429,6 +446,10 @@ export function WalletsAndBalances({
     refetchEvm();
     qc.invalidateQueries({ queryKey: ["myBalance"] });
     qc.invalidateQueries({ queryKey: ["akkBalance"] });
+    qc.invalidateQueries({ queryKey: ["playerScore"] });
+    setRefreshing(true);
+    if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+    refreshTimerRef.current = setTimeout(() => setRefreshing(false), 900);
   }
 
   function copyAddress(text: string, which: "evm" | "icp") {
@@ -456,7 +477,8 @@ export function WalletsAndBalances({
     >
       {/* Panel title */}
       <div className="px-3 py-2.5 border-b border-[#00ff41]/20 flex items-center justify-between">
-        <span className="font-display text-lg tracking-widest text-[#00ff41] uppercase">
+        <span className="flex items-center gap-1.5 font-display text-lg tracking-widest text-[#00ff41] uppercase">
+          <Wallet className="h-4 w-4 text-[#00ff41]" />
           Wallets &amp; Balances
         </span>
         <div className="flex items-center gap-1.5">
@@ -467,10 +489,11 @@ export function WalletsAndBalances({
             className="p-1 text-[#00ff41]/60 hover:text-[#00ff41] transition-colors"
             data-ocid="wallets.refresh_button"
           >
-            <RefreshCw className="h-3 w-3" />
+            <RefreshCw
+              className={`h-3 w-3 ${refreshing ? "animate-spin" : ""}`}
+            />
           </button>
           <ChainSwitcherInline />
-          <Wallet className="h-3.5 w-3.5 text-[#00ff41]/60" />
         </div>
       </div>
 
@@ -493,52 +516,28 @@ export function WalletsAndBalances({
       )}
 
       <div className="max-h-[380px] overflow-y-auto">
-        {/* ── EVM TOKENS — one section per chain ─────────────────── */}
-        {!isConnected ? (
-          <div className="px-3 pt-2 pb-1">
-            <p className="font-accent text-base tracking-widest text-[#00ff41] uppercase mb-1">
-              EVM Tokens
-            </p>
-            <p className="text-xs font-body text-muted-foreground py-0.5">
-              Connect wallet to see balances
-            </p>
-          </div>
-        ) : (
-          CHAIN_ORDER.filter((c) => tokensByChain[c].length > 0).map(
-            (chainKey) => (
-              <div key={chainKey} className="px-3 pt-2 pb-0.5">
-                <p className="font-accent text-base tracking-widest text-[#00ff41] uppercase mb-1">
-                  {CHAIN_LABELS[chainKey] ?? chainKey}
-                </p>
-                <div
-                  className="space-y-0.5"
-                  data-ocid={`wallets.${chainKey}_token_list`}
-                >
-                  {tokensByChain[chainKey].map((token, idx) => {
-                    const rawResult = getBalanceForToken(chainKey, idx);
-                    return (
-                      <TokenRow
-                        key={`${token.tokenAddress}-${token.chain}`}
-                        token={token}
-                        raw={rawResult ?? undefined}
-                        evmLoading={evmLoading}
-                        idx={idx}
-                        chainKey={chainKey}
-                      />
-                    );
-                  })}
-                </div>
-                <Separator className="bg-[#00ff41]/10 mt-1" />
-              </div>
-            ),
-          )
-        )}
-
-        {/* ── INTERNET COMPUTER ──────────────────────────────────────────── */}
+        {/* ── INTERNET COMPUTER (top of the list) ─────────────────────────── */}
         <div className="px-3 pt-2 pb-1">
           <p className="font-accent text-base tracking-widest text-[#00ff41] uppercase mb-2">
             Internet Computer
           </p>
+
+          {/* AK69 row */}
+          <div
+            className="flex items-center justify-between py-0.5 w-full"
+            data-ocid="wallets.ak69_balance_row"
+          >
+            {ak69Loading ? (
+              <Skeleton className="h-3 w-32" />
+            ) : (
+              <>
+                <span className="font-body text-xs text-white">AK69</span>
+                <span className="font-body text-xs text-white text-right">
+                  {ak69Score !== undefined ? ak69Score.toFixed(2) : "—"}
+                </span>
+              </>
+            )}
+          </div>
 
           {/* AKK row */}
           <div
@@ -583,6 +582,48 @@ export function WalletsAndBalances({
         </div>
 
         <Separator className="bg-[#00ff41]/10 mx-3" />
+
+        {/* ── EVM TOKENS — one section per chain ─────────────────── */}
+        {!isConnected ? (
+          <div className="px-3 pt-2 pb-1">
+            <p className="font-accent text-base tracking-widest text-[#00ff41] uppercase mb-1">
+              EVM Tokens
+            </p>
+            <p className="text-xs font-body text-muted-foreground py-0.5">
+              Connect wallet to see balances
+            </p>
+            <Separator className="bg-[#00ff41]/10 mt-1" />
+          </div>
+        ) : (
+          CHAIN_ORDER.filter((c) => tokensByChain[c].length > 0).map(
+            (chainKey) => (
+              <div key={chainKey} className="px-3 pt-2 pb-0.5">
+                <p className="font-accent text-base tracking-widest text-[#00ff41] uppercase mb-1">
+                  {CHAIN_LABELS[chainKey] ?? chainKey}
+                </p>
+                <div
+                  className="space-y-0.5"
+                  data-ocid={`wallets.${chainKey}_token_list`}
+                >
+                  {tokensByChain[chainKey].map((token, idx) => {
+                    const rawResult = getBalanceForToken(chainKey, idx);
+                    return (
+                      <TokenRow
+                        key={`${token.tokenAddress}-${token.chain}`}
+                        token={token}
+                        raw={rawResult ?? undefined}
+                        evmLoading={evmLoading}
+                        idx={idx}
+                        chainKey={chainKey}
+                      />
+                    );
+                  })}
+                </div>
+                <Separator className="bg-[#00ff41]/10 mt-1" />
+              </div>
+            ),
+          )
+        )}
 
         {/* ── FOOTER ADDRESSES ─────────────────────────────────────── */}
         <div className="px-3 pt-1.5 pb-1.5 space-y-0.5">

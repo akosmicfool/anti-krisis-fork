@@ -32,7 +32,8 @@ import type {
   MinerAttempt,
   MinerAttemptStatus,
 } from "../hooks/use-miner-creation";
-import { CHAIN_LABELS, formatGrit, truncateAddress } from "../types";
+import { formatGrit } from "../lib/format";
+import { CHAIN_LABELS, truncateAddress } from "../types";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function formatAkk(amount: bigint): string {
@@ -53,22 +54,44 @@ function formatTimestamp(ts: bigint): string {
   return new Date(Number(ts / 1_000_000n)).toLocaleString();
 }
 
+// ─── Stat-cell dividers ───────────────────────────────────────────────────────
+// The four miner stats sit 2x2 on mobile and in a single sm+ row. The grid is
+// GAPLESS — cells carry their own padding — so every column/row boundary is a
+// shared edge and each rule sits dead-centre on it. Inset rules ("clipped on
+// all sides"): every segment stops 8px short of the block edges AND 8px short
+// of the perpendicular rule at the centre, so the crossing gaps are equal on
+// both sides and the lines never touch each other. Verticals run between the
+// columns at EVERY size (mobile: one centre rule; sm+: between each column
+// pair); the horizontal rule only exists where the grid wraps to two rows.
+// Cells stretch to their row track so the rule segments stay equal-length.
+const STAT_CELL =
+  "relative flex flex-col items-center justify-between gap-1 min-w-0 px-1.5 sm:px-2 py-3";
+const RULE_V =
+  "after:absolute after:content-[''] after:right-0 after:top-2 after:bottom-2 after:w-px after:bg-border";
+const RULE_V_SM =
+  "sm:after:absolute sm:after:content-[''] sm:after:right-0 sm:after:top-2 sm:after:bottom-2 sm:after:w-px sm:after:bg-border";
+const RULE_H =
+  "max-sm:before:absolute max-sm:before:content-[''] max-sm:before:bottom-0 max-sm:before:left-2 max-sm:before:right-2 max-sm:before:h-px max-sm:before:bg-border";
+const STAT_CELL_TOP_LEFT = `${STAT_CELL} ${RULE_V} ${RULE_H}`;
+const STAT_CELL_TOP_RIGHT = `${STAT_CELL} ${RULE_V_SM} ${RULE_H}`;
+const STAT_CELL_BOTTOM_LEFT = `${STAT_CELL} ${RULE_V}`;
+
 // ─── Status badge ─────────────────────────────────────────────────────────────
 function MinerStatusBadge({ status }: { status: MinerStatus }) {
   if (status === MinerStatus.active)
     return (
-      <span className="inline-flex items-center px-2 py-0.5 rounded border font-accent text-sm uppercase tracking-widest bg-emerald-500/15 text-emerald-400 border-emerald-500/30">
+      <span className="inline-flex items-center px-2 py-0.5 rounded border font-accent text-[10px] uppercase tracking-widest bg-emerald-500/15 text-emerald-400 border-emerald-500/30">
         Active
       </span>
     );
   if (status === MinerStatus.paused)
     return (
-      <span className="inline-flex items-center px-2 py-0.5 rounded border font-accent text-sm uppercase tracking-widest bg-yellow-500/15 text-yellow-400 border-yellow-500/30">
+      <span className="inline-flex items-center px-2 py-0.5 rounded border font-accent text-[10px] uppercase tracking-widest bg-yellow-500/15 text-yellow-400 border-yellow-500/30">
         Paused
       </span>
     );
   return (
-    <span className="inline-flex items-center px-2 py-0.5 rounded border font-accent text-sm uppercase tracking-widest bg-red-500/15 text-red-400 border-red-500/30">
+    <span className="inline-flex items-center px-2 py-0.5 rounded border font-accent text-[10px] uppercase tracking-widest bg-red-500/15 text-red-400 border-red-500/30">
       Exhausted
     </span>
   );
@@ -82,25 +105,25 @@ const PENDING_PILL: Record<
   confirming_fee: {
     label: "Confirming",
     className:
-      "inline-flex items-center gap-1 px-2 py-0.5 rounded border font-accent text-sm uppercase tracking-widest bg-amber-500/15 text-amber-400 border-amber-500/30",
+      "inline-flex items-center gap-1 px-2 py-0.5 rounded border font-accent text-[10px] uppercase tracking-widest bg-amber-500/15 text-amber-400 border-amber-500/30",
     spinner: true,
   },
   creating: {
     label: "Creating",
     className:
-      "inline-flex items-center gap-1 px-2 py-0.5 rounded border font-accent text-sm uppercase tracking-widest bg-amber-500/15 text-amber-400 border-amber-500/30",
+      "inline-flex items-center gap-1 px-2 py-0.5 rounded border font-accent text-[10px] uppercase tracking-widest bg-amber-500/15 text-amber-400 border-amber-500/30",
     spinner: true,
   },
   action_needed: {
     label: "Action Needed",
     className:
-      "inline-flex items-center gap-1 px-2 py-0.5 rounded border font-accent text-sm uppercase tracking-widest bg-amber-500/15 text-amber-400 border-amber-500/30",
+      "inline-flex items-center gap-1 px-2 py-0.5 rounded border font-accent text-[10px] uppercase tracking-widest bg-amber-500/15 text-amber-400 border-amber-500/30",
     spinner: false,
   },
   failed_fee: {
     label: "Fee Failed",
     className:
-      "inline-flex items-center gap-1 px-2 py-0.5 rounded border font-accent text-sm uppercase tracking-widest bg-red-500/15 text-red-400 border-red-500/30",
+      "inline-flex items-center gap-1 px-2 py-0.5 rounded border font-accent text-[10px] uppercase tracking-widest bg-red-500/15 text-red-400 border-red-500/30",
     spinner: false,
   },
 };
@@ -138,13 +161,13 @@ function PendingMinerCard({
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: index * 0.06 }}
-      className="bg-card border border-dashed border-border p-4 flex flex-col gap-3 transition-smooth"
+      className="bg-card border border-dashed border-border px-4 pt-4 pb-0 flex flex-col gap-3 transition-smooth"
       data-ocid={`mining.pending_miner_card.${index + 1}`}
     >
       {/* Top row: name / status pill / action — same slots as MinerCard */}
       <div className="flex flex-wrap items-center gap-2">
         <div className="flex flex-1 flex-wrap items-center gap-2 min-w-0">
-          <p className="font-display font-bold text-foreground truncate shrink-0 max-w-[150px] sm:max-w-[180px] text-[1.1rem] sm:text-[1.275rem]">
+          <p className="font-mono font-bold text-accent truncate shrink-0 max-w-[150px] sm:max-w-[180px] text-base sm:text-lg">
             {attempt.name}
           </p>
           <span
@@ -153,9 +176,6 @@ function PendingMinerCard({
           >
             {pill.spinner && <Loader2 className="h-3 w-3 animate-spin" />}
             {pill.label}
-          </span>
-          <span className="font-mono text-xs text-muted-foreground">
-            @ {formatRate(BigInt(attempt.rate))}
           </span>
         </div>
 
@@ -210,17 +230,19 @@ function PendingMinerCard({
         </p>
       )}
 
-      {/* Bottom stats — mirrors MinerCard's three-column layout */}
-      <div className="grid grid-cols-3 gap-1 sm:gap-2 border-t border-border/50 pt-3 items-end">
-        <div className="flex flex-col items-center justify-between gap-1">
+      {/* Bottom stats — mirrors MinerCard's four-column layout.
+          2x2 on mobile draws the column + row rules; the sm+ row keeps the
+          column rules. */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 border-t border-border/50 items-stretch">
+        <div className={STAT_CELL_TOP_LEFT}>
           <span className="font-mono text-[9px] sm:text-[10px] uppercase tracking-widest text-white text-center">
             GRIT LOAD
           </span>
-          <span className="font-mono text-xs sm:text-sm font-bold text-foreground text-center">
+          <span className="font-display text-lg sm:text-[22px] font-bold text-foreground text-center max-w-full truncate">
             {formatGrit(BigInt(attempt.gritAmount))}
           </span>
         </div>
-        <div className="flex flex-col items-center justify-between gap-1">
+        <div className={STAT_CELL_TOP_RIGHT}>
           <span className="font-mono text-[9px] sm:text-[10px] uppercase tracking-widest text-white text-center">
             STATUS
           </span>
@@ -231,14 +253,22 @@ function PendingMinerCard({
             {PENDING_PILL_DETAIL[attempt.status]}
           </span>
         </div>
-        <div className="flex flex-col items-center justify-between gap-1">
+        <div className={STAT_CELL_BOTTOM_LEFT}>
           <span className="font-mono text-[9px] sm:text-[10px] uppercase tracking-widest text-white text-center">
             FEE CHAIN
           </span>
-          <span className="font-mono text-xs sm:text-sm font-bold text-accent text-center">
+          <span className="font-mono text-xs sm:text-sm font-bold text-accent text-center max-w-full truncate">
             {attempt.feeChain
               ? (CHAIN_LABELS[attempt.feeChain] ?? attempt.feeChain)
               : "Free"}
+          </span>
+        </div>
+        <div className={STAT_CELL}>
+          <span className="font-mono text-[9px] sm:text-[10px] uppercase tracking-widest text-white text-center">
+            MINING RATE
+          </span>
+          <span className="font-display text-lg sm:text-[22px] font-bold text-foreground text-center max-w-full truncate">
+            {formatRate(BigInt(attempt.rate))}
           </span>
         </div>
       </div>
@@ -273,7 +303,9 @@ function StatCard({
         </span>
       </div>
       <p
-        className={valueClass ?? "font-mono font-bold text-xl text-foreground"}
+        className={
+          valueClass ?? "font-display font-bold text-[25px] text-foreground"
+        }
       >
         {value}
       </p>
@@ -299,22 +331,19 @@ function MinerCard({
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: index * 0.06 }}
       className={[
-        "bg-card border border-border p-4 flex flex-col gap-3 transition-smooth",
+        "bg-card border border-border px-4 pt-4 pb-0 flex flex-col gap-3 transition-smooth",
         isExhausted ? "opacity-50" : "",
       ].join(" ")}
       data-ocid={`mining.miner_card.${index + 1}`}
     >
-      {/* Top row: name / status badge / rate / edit — wraps on very narrow screens */}
+      {/* Top row: name / status badge / edit — wraps on very narrow screens */}
       <div className="flex flex-wrap items-center gap-2">
-        {/* Name + status badge @ rate */}
+        {/* Name + status badge */}
         <div className="flex flex-1 flex-wrap items-center gap-2 min-w-0">
-          <p className="font-display font-bold text-foreground truncate shrink-0 max-w-[150px] sm:max-w-[180px] text-[1.1rem] sm:text-[1.275rem]">
+          <p className="font-mono font-bold text-accent truncate shrink-0 max-w-[150px] sm:max-w-[180px] text-base sm:text-lg">
             {miner.name}
           </p>
           <MinerStatusBadge status={miner.status} />
-          <span className="font-mono text-xs text-muted-foreground">
-            @ {formatRate(miner.miningRate)}
-          </span>
         </div>
 
         {/* Edit button */}
@@ -330,37 +359,48 @@ function MinerCard({
         </Button>
       </div>
 
-      {/* Bottom stats: GRIT Spent | Blocks Mined | GRIT Balance */}
-      <div className="grid grid-cols-3 gap-1 sm:gap-2 border-t border-border/50 pt-3 items-end">
+      {/* Bottom stats: GRIT Spent | Blocks Mined | GRIT Balance | Mining Rate.
+          2x2 on mobile draws the column + row rules; the sm+ row keeps the
+          column rules. */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 border-t border-border/50 items-stretch">
         {/* GRIT Spent */}
-        <div className="flex flex-col items-center justify-between gap-1">
+        <div className={STAT_CELL_TOP_LEFT}>
           <span className="font-mono text-[9px] sm:text-[10px] uppercase tracking-widest text-white text-center">
             GRIT SPENT
           </span>
-          <span className="font-mono text-xs sm:text-sm font-bold text-foreground text-center">
+          <span className="font-display text-lg sm:text-[22px] font-bold text-foreground text-center max-w-full truncate">
             {formatGrit(
               (miner as MinerView & { gritSpent?: bigint }).gritSpent ?? 0n,
             )}
           </span>
         </div>
         {/* Blocks Mined */}
-        <div className="flex flex-col items-center justify-between gap-1">
+        <div className={STAT_CELL_TOP_RIGHT}>
           <span className="font-mono text-[9px] sm:text-[10px] uppercase tracking-widest text-white text-center">
             BLOCKS MINED
           </span>
-          <span className="font-mono text-xs sm:text-sm font-bold text-foreground text-center">
+          <span className="font-display text-lg sm:text-[22px] font-bold text-foreground text-center max-w-full truncate">
             {(
               (miner as MinerView & { blocksMined?: bigint }).blocksMined ?? 0n
             ).toString()}
           </span>
         </div>
         {/* GRIT Balance */}
-        <div className="flex flex-col items-center justify-between gap-1">
+        <div className={STAT_CELL_BOTTOM_LEFT}>
           <span className="font-mono text-[9px] sm:text-[10px] uppercase tracking-widest text-white text-center">
             GRIT BALANCE
           </span>
-          <span className="font-mono text-xs sm:text-sm font-bold text-accent text-center">
+          <span className="font-display text-lg sm:text-[22px] font-bold text-accent text-center max-w-full truncate">
             {formatGrit(miner.gritBalance)}
+          </span>
+        </div>
+        {/* Mining Rate */}
+        <div className={STAT_CELL}>
+          <span className="font-mono text-[9px] sm:text-[10px] uppercase tracking-widest text-white text-center">
+            MINING RATE
+          </span>
+          <span className="font-display text-lg sm:text-[22px] font-bold text-foreground text-center max-w-full truncate">
+            {formatRate(miner.miningRate)}
           </span>
         </div>
       </div>
@@ -380,7 +420,7 @@ function BlockHistoryRow({
     >
       {/* Top line: block number + winner address + reward */}
       <div className="flex items-center gap-2 flex-wrap">
-        <span className="text-muted-foreground tabular-nums shrink-0">
+        <span className="text-accent tabular-nums shrink-0">
           #{Number(block.blockNumber)}
         </span>
         <span className="text-foreground truncate flex-1 min-w-0">
@@ -468,20 +508,20 @@ export function MiningPage({ embedded = false }: { embedded?: boolean }) {
   return (
     <div
       className={
-        embedded ? "space-y-4" : "max-w-4xl mx-auto px-4 pt-4 pb-8 space-y-4"
+        embedded ? "space-y-6" : "max-w-4xl mx-auto px-4 pt-4 pb-8 space-y-6"
       }
       data-ocid="mining.page"
     >
       {/* Header */}
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div className="min-w-0">
-          <h1 className="text-[2.4rem] sm:text-[3rem] font-display font-black tracking-tighter text-foreground uppercase flex items-center gap-2.5">
+          <h1 className="text-4xl sm:text-5xl font-display font-black tracking-tighter text-foreground uppercase flex items-center gap-2.5">
             <PickaxeIcon className="h-[1.53rem] w-[1.53rem] text-accent" />
             MINE
           </h1>
           <p className="text-white text-sm mt-0.5">
             Spend GRIT to mine{" "}
-            <span className="text-accent font-mono">$AKK</span> — deploy miners,
+            <span className="text-accent font-mono">$AKK</span> — create miners,
             set rates, and compete for each block reward.
           </p>
         </div>
@@ -502,24 +542,27 @@ export function MiningPage({ embedded = false }: { embedded?: boolean }) {
       )}
 
       {/* Stats row */}
+      <h2 className="font-display font-normal text-xl sm:text-2xl uppercase tracking-widest text-white mb-3">
+        YOUR STATS
+      </h2>
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <StatCard
           label="BLOCKS MINED"
           value={miningStats ? miningStats.blocksMined.toString() : "0"}
           labelClass="text-[10px] sm:text-xs uppercase tracking-widest font-mono text-white"
-          valueClass="text-base sm:text-xl text-foreground font-bold font-mono truncate"
+          valueClass="text-xl sm:text-[25px] text-foreground font-bold font-display truncate"
         />
         <StatCard
           label="AKK WON"
           value={miningStats ? formatAkk(miningStats.akkWon) : "0"}
           labelClass="text-[10px] sm:text-xs uppercase tracking-widest font-mono text-white"
-          valueClass="text-base sm:text-2xl text-accent font-bold font-mono truncate"
+          valueClass="text-xl sm:text-[30px] text-accent font-bold font-display truncate"
         />
         <StatCard
           label="GRIT SPENT"
           value={miningStats ? formatGrit(miningStats.gritSpent) : "0"}
           labelClass="text-[10px] sm:text-xs uppercase tracking-widest font-mono text-white"
-          valueClass="text-base sm:text-2xl text-accent font-bold font-mono truncate"
+          valueClass="text-xl sm:text-[30px] text-accent font-bold font-display truncate"
         />
         <StatCard
           label="ACTIVE MINERS"
@@ -531,16 +574,18 @@ export function MiningPage({ embedded = false }: { embedded?: boolean }) {
               : "0"
           }
           labelClass="text-[10px] sm:text-xs uppercase tracking-widest font-mono text-white"
-          valueClass="text-base sm:text-xl text-foreground font-bold font-mono truncate"
+          valueClass="text-xl sm:text-[25px] text-foreground font-bold font-display truncate"
         />
       </div>
+
+      <div className="border-t border-border" />
 
       {/* Miners list */}
       <div data-ocid="mining.miners_section">
         <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-          <h2 className="font-display font-bold text-[1.43rem] uppercase tracking-widest text-accent flex items-center gap-2">
-            <Cpu className="h-4 w-4" />
-            MY MINERS
+          <h2 className="font-display font-semibold text-2xl sm:text-3xl uppercase tracking-widest text-white flex items-center gap-2">
+            <Cpu className="h-4 w-4 text-accent" />
+            MINERS
           </h2>
           {isAuthenticated && (
             <Button
@@ -637,13 +682,15 @@ export function MiningPage({ embedded = false }: { embedded?: boolean }) {
         )}
       </div>
 
+      <div className="border-t border-border" />
+
       {/* Block history */}
       <Card
         className="bg-card border-border"
         data-ocid="mining.block_history_card"
       >
         <CardHeader className="pb-0">
-          <CardTitle className="font-display text-xl sm:text-3xl uppercase tracking-widest text-white flex items-center gap-2">
+          <CardTitle className="font-display text-2xl sm:text-3xl uppercase tracking-widest text-white flex items-center gap-2">
             <Clock className="h-4 w-4 text-accent" />
             RECENT BLOCKS
           </CardTitle>
@@ -676,7 +723,7 @@ export function MiningPage({ embedded = false }: { embedded?: boolean }) {
                 ))}
               <div className="pt-3 text-center">
                 <Link
-                  to="/mining/blocks"
+                  to="/akore/blockhistory"
                   className="font-mono text-xs text-gray-400 hover:text-[#00ff41] hover:drop-shadow-[0_0_6px_#00ff41] uppercase tracking-widest transition-colors duration-200"
                   data-ocid="mining.blocks_history_link"
                 >

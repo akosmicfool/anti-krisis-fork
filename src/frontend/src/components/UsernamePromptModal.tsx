@@ -179,11 +179,14 @@ export function UsernamePromptModal({ onComplete }: Props) {
           >
             Welcome
           </h1>
+          <p className="font-accent text-sm text-muted-foreground tracking-wider">
+            to
+          </p>
           <p className="font-display text-2xl tracking-widest uppercase text-foreground">
-            Anti Krisis
+            Anti Krisis Arena ⚔️
           </p>
           <p className="font-accent text-sm text-muted-foreground mt-3 tracking-wider">
-            Choose your username to get started
+            choose a kooky username to enter
           </p>
         </div>
 
@@ -205,15 +208,15 @@ export function UsernamePromptModal({ onComplete }: Props) {
                 />
               ) : (
                 <div className="flex flex-col items-center justify-center h-full gap-1">
-                  <Camera className="h-6 w-6 text-muted-foreground group-hover:text-accent transition-smooth" />
-                  <span className="font-accent text-[9px] uppercase tracking-widest text-muted-foreground">
+                  <Camera className="h-6 w-6 text-white group-hover:text-accent transition-smooth" />
+                  <span className="font-accent text-[9px] uppercase tracking-widest text-white">
                     Photo
                   </span>
                 </div>
               )}
             </button>
             <span className="font-accent text-[10px] text-muted-foreground uppercase tracking-widest">
-              Profile Picture (optional)
+              (Optional)
             </span>
             <input
               ref={avatarRef}
@@ -228,7 +231,7 @@ export function UsernamePromptModal({ onComplete }: Props) {
           <div className="space-y-1.5">
             <label
               htmlFor="prompt-username"
-              className="block font-accent text-[10px] uppercase tracking-widest text-accent"
+              className="block font-accent text-[13px] uppercase tracking-widest text-accent"
             >
               Username *
             </label>
@@ -238,7 +241,7 @@ export function UsernamePromptModal({ onComplete }: Props) {
                 type="text"
                 value={username}
                 onChange={(e) => handleUsernameChange(e.target.value)}
-                placeholder="satoshi"
+                placeholder="unique handle"
                 maxLength={15}
                 autoComplete="off"
                 spellCheck={false}
@@ -283,7 +286,7 @@ export function UsernamePromptModal({ onComplete }: Props) {
           <div className="space-y-1.5">
             <label
               htmlFor="prompt-displayname"
-              className="block font-accent text-[10px] uppercase tracking-widest text-muted-foreground"
+              className="block font-accent text-[13px] uppercase tracking-widest text-white"
             >
               Display Name (optional)
             </label>
@@ -292,7 +295,7 @@ export function UsernamePromptModal({ onComplete }: Props) {
               type="text"
               value={displayName}
               onChange={(e) => setDisplayName(e.target.value.slice(0, 30))}
-              placeholder="Your full name or alias"
+              placeholder="nickname or alias"
               maxLength={30}
               className="w-full bg-input border border-border text-foreground font-mono text-sm px-3 py-2 focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent transition-smooth"
               data-ocid="username_prompt.display_name_input"
@@ -322,7 +325,7 @@ export function UsernamePromptModal({ onComplete }: Props) {
               color: canSubmit ? "#000" : "#006618",
               border: "1px solid #00ff41",
               boxShadow: canSubmit ? "0 0 12px rgba(0,255,65,0.5)" : "none",
-              cursor: canSubmit ? "pointer" : "not-allowed",
+              cursor: canSubmit ? "var(--cursor-hand)" : "var(--cursor-block)",
             }}
             data-ocid="username_prompt.submit_button"
           >

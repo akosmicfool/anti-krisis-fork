@@ -17,9 +17,19 @@ mixin (
     tribeState.memberTribeMap.get(p);
   };
 
-  /// Get the calling user's own profile, with tribeId populated.
+  /// All-time AK69 score that drives the player badge tiers.
+  func scoreForBadge(p : Principal) : Float {
+    ScoringLib.playerScore(scoringState, p, "alltime");
+  };
+
+  /// Get the calling user's own profile, with tribeId populated and the badge
+  /// level projected from the current score (ProfileLib.withBadgeScore) —
+  /// the owner's own page must agree with what viewers see.
   public shared query ({ caller }) func getMyProfile() : async ?ProfileTypes.PublicProfile {
-    ProfileLib.getProfile(profileState, caller, getTribeForPrincipal);
+    switch (ProfileLib.getProfile(profileState, caller, getTribeForPrincipal)) {
+      case null null;
+      case (?pub) ?ProfileLib.withBadgeScore(pub, scoreForBadge(caller));
+    };
   };
 
   /// Returns true if the caller already has a profile with a non-empty username set.
@@ -33,9 +43,21 @@ mixin (
     ProfileLib.isUsernameAvailable(profileState, caller, username);
   };
 
-  /// Fetch any user's public profile by username (read-only, no auth required), with tribeId populated.
+  /// Fetch any user's public profile by username (read-only, no auth required),
+  /// with tribeId populated and the badge level projected from the OWNER's
+  /// current score (ProfileLib.withBadgeScore) — a player who qualifies for a
+  /// badge shows it on their public profile without any self-visit (the stored
+  /// ratchet only advances when the owner opens their own profile).
   public shared query func getProfileByUsername(username : Text) : async ?ProfileTypes.PublicProfile {
-    ProfileLib.getProfileByUsername(profileState, username, getTribeForPrincipal);
+    switch (ProfileLib.getPrincipalByUsername(profileState, username)) {
+      case null null;
+      case (?owner) {
+        switch (ProfileLib.getProfile(profileState, owner, getTribeForPrincipal)) {
+          case null null;
+          case (?pub) ?ProfileLib.withBadgeScore(pub, scoreForBadge(owner));
+        };
+      };
+    };
   };
 
   /// Reverse lookup: return the principal that owns a given username, or null if not found.

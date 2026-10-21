@@ -9,6 +9,7 @@ import {
   YAxis,
 } from "recharts";
 import { useProtocolBurnSummary } from "../../hooks/use-backend";
+import { formatGrit } from "../../lib/format";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -22,14 +23,6 @@ function formatUSDValue(usd: number): string {
   if (usd >= 1)
     return `$${usd.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   return `$${usd.toFixed(2)}`;
-}
-
-function formatGrit(amount: bigint): string {
-  const num = Number(amount);
-  if (num >= 1_000_000_000) return `${(num / 1_000_000_000).toFixed(2)}B`;
-  if (num >= 1_000_000) return `${(num / 1_000_000).toFixed(2)}M`;
-  if (num >= 1_000) return `${(num / 1_000).toFixed(2)}K`;
-  return num.toLocaleString();
 }
 
 // ─── Stat Card ────────────────────────────────────────────────────────────────
@@ -46,7 +39,7 @@ function StatCard({
       <span className="text-xs uppercase tracking-widest font-mono text-white truncate">
         {label}
       </span>
-      <span className="font-mono font-bold text-base sm:text-xl text-accent truncate">
+      <span className="font-display font-bold text-xl sm:text-[25px] text-accent truncate">
         {value}
       </span>
     </div>
@@ -237,7 +230,7 @@ export function BurnInfoSection() {
 
   return (
     <section
-      className="py-8 sm:py-16 px-4 bg-background"
+      className="py-8 sm:py-16 px-4 bg-transparent"
       data-ocid="overview.burninfo_section"
     >
       <div className="max-w-4xl mx-auto">
@@ -255,10 +248,10 @@ export function BurnInfoSection() {
         {/* Subtitle */}
         <p className="font-body text-sm sm:text-base text-foreground/85 leading-relaxed mb-6 sm:mb-8">
           Every burn is an{" "}
-          <span className="text-accent font-normal">
-            irreversible act of coordination
-          </span>
-          . GRIT is earned for the sacrifice and spent for mining $AKK.
+          <span className="text-accent font-normal italic">
+            irreversible act of coordination.
+          </span>{" "}
+          GRIT is earned in exchange and spent to mine $AKK.
         </p>
 
         {isLoading ? (

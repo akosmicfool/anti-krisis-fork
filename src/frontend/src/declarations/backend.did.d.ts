@@ -123,6 +123,7 @@ export interface Profile {
   'username' : string,
   'superpowers' : string,
   'displayName' : string,
+  'interests' : string,
   'born' : string,
   'socials' : Array<SocialLink>,
   'coverImage' : string,
@@ -144,6 +145,7 @@ export interface ProfileInput {
   'username' : string,
   'superpowers' : string,
   'displayName' : string,
+  'interests' : string,
   'born' : string,
   'socials' : Array<SocialLink>,
   'coverImage' : string,
@@ -159,6 +161,7 @@ export interface PublicProfile {
   'tribeId' : [] | [string],
   'superpowers' : string,
   'displayName' : string,
+  'interests' : string,
   'born' : string,
   'socials' : Array<SocialLink>,
   'coverImage' : string,
@@ -291,7 +294,6 @@ export interface _SERVICE {
   'getFeePercent' : ActorMethod<[], number>,
   'getFeeRecipient' : ActorMethod<[], [] | [string]>,
   'getGritIssuanceRate' : ActorMethod<[], bigint>,
-  'getHistoryBasedAk69Stockpile' : ActorMethod<[], number>,
   'getIsLaunched' : ActorMethod<[], boolean>,
   'getLaunchGate' : ActorMethod<
     [],
@@ -308,6 +310,7 @@ export interface _SERVICE {
       'launchTimeEnabled' : boolean,
     }
   >,
+  'getLedgerAkkSupply' : ActorMethod<[], bigint>,
   'getLedgerMintingAccount' : ActorMethod<[], [] | [Account]>,
   'getMinerCreationFees' : ActorMethod<[], Array<ChainFeeEntry>>,
   'getMintRetryStats' : ActorMethod<
@@ -327,6 +330,7 @@ export interface _SERVICE {
   'getMyTribe' : ActorMethod<[], [] | [Tribe]>,
   'getPendingMints' : ActorMethod<[], Array<MintRetryView>>,
   'getPlayerBurnSummary' : ActorMethod<[Principal], Array<[string, number]>>,
+  'getPlayerCount' : ActorMethod<[], bigint>,
   'getPlayerRank' : ActorMethod<[Principal, string], [] | [bigint]>,
   'getPlayerScore' : ActorMethod<[Principal, string], number>,
   'getPlayerStreak' : ActorMethod<[Principal], bigint>,
@@ -365,6 +369,7 @@ export interface _SERVICE {
   'getTribeAkkFromHistory' : ActorMethod<[TribeId], bigint>,
   'getTribeBurnSummary' : ActorMethod<[string], Array<[string, number]>>,
   'getTribeByName' : ActorMethod<[string], [] | [Tribe]>,
+  'getTribeCount' : ActorMethod<[], bigint>,
   'getTribeLiveStats' : ActorMethod<
     [TribeId],
     [] | [{ 'memberCount' : bigint, 'totalGrit' : bigint, 'totalAkk' : bigint }]
@@ -376,6 +381,10 @@ export interface _SERVICE {
   >,
   'getTribeRank' : ActorMethod<[string, string], [] | [bigint]>,
   'getTribeScore' : ActorMethod<[string, string], number>,
+  'getTribeWindowedTotals' : ActorMethod<
+    [string],
+    { 'totalGrit' : bigint, 'totalAkk' : bigint }
+  >,
   'getUserMiningStats' : ActorMethod<
     [],
     { 'blocksMined' : bigint, 'akkWon' : bigint, 'gritSpent' : bigint }
